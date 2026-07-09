@@ -85,4 +85,6 @@ lr=0.01(Adam 기준 높음) 튜닝, 스케줄러, early stopping, 시드 고정.
 - 실시간 추론: 구 PyQt5 앱 대신 웹 Live 탭으로 재설계 ([04_webapp_design.md](04_webapp_design.md) §1.5,
   마일스톤 M5). 모델 성능 검증 뒤 구현하며, `infer_plot copy*.py` 난립의 원인이었던
   학습-추론 전처리 불일치는 `transforms` 공용 모듈로 차단
+- 데이터 품질 진단: 원천 캐시/라벨/데이터셋이 학습 가능한 상태인지 별도 Diagnostics 탭에서 확인.
+  누락·중복 timestamp, OHLC 이상값, MA NaN 비율, 라벨 분포, split 누수 여부를 학습 전 점검
 - `.pkl` 직렬화(`tobytes`) 대신 parquet/npz 등 검토 — 가변 길이 시퀀스 저장 방식 결정 필요

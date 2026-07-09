@@ -235,3 +235,7 @@ temp/
 *.csv
 *.png
 *.parquet
+
+# Node / frontend
+node_modules/
+web/dist/

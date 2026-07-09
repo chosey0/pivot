@@ -35,6 +35,10 @@
   1단위 캐시에서 로컬 리샘플링으로 합성하는 방안을 추후 검토
 - 내부적으로 타임프레임은 `{type: day|minute|tick, unit: int}` 객체로 다루고,
   경로/API 문자열로는 `day`/`min{N}`/`tick{N}` 코드를 사용
+- 수집 기간은 선택적으로 지정할 수 있다. UI/API는 `start`/`end` 날짜(`YYYY-MM-DD`)를 받고,
+  일봉·분봉은 `end`를 Kiwoom `base_date`로, 세 타임프레임 모두 `start`를 SDK `start_date`로 넘긴다.
+  틱봉은 SDK에 `base_date` 인자가 없으므로 조회 후 `end` 날짜 이내로 필터링해 캐시에 병합한다.
+  기간을 지정하지 않으면 기존 캐시의 마지막 봉 이후만 증분 수집한다.
 
 | 용도 | 사용 모듈 | 근거 |
 |---|---|---|
@@ -44,7 +48,10 @@
 **주의 (분봉/틱봉)**:
 
 - 조회량이 일봉 대비 크게 늘어 rate limit·수집 시간 부담이 큼 — 캐시 필수, 증분 갱신 설계
-- 브로커가 보관하는 과거 분/틱 데이터의 기간 한계는 실측으로 확인 필요
+- M1 실측(2026-07-09, 005930):
+  - `min1`: 95,639봉, 2025-07-01 09:00:00 ~ 2026-07-09 15:30:00, 최초 전체 수집 약 28초
+  - `tick30`: 240,762봉, 2026-06-11 09:00:14 ~ 2026-07-09 15:19:57, 최초 전체 수집 약 95초
+  - 두 캐시는 timestamp 오름차순이며 중복 timestamp 0건. `/api/chart` 응답도 분/틱 time을 unix 초 숫자로 반환
 - 이평선 기준 결정 필요: 해당 타임프레임 기준 rolling(기본) vs 일봉 이평선 병합(구 프로젝트의
   `*_ma.csv` merge 방식) — 프리셋 옵션 `ma_source: self | daily`로 둘 다 지원
 
@@ -89,7 +96,7 @@ async def fetch_daily(symbol: str, base_date: str):
 bars = asyncio.run(fetch_daily("005930", "2026-07-09"))
 ```
 
-반환 모델 `ChartBar`: `market, symbol, interval, timestamp, open, high, low, close, volume, raw(원본 응답)`
+반환 모델 `ChartBar`: `market, symbol, interval, timestamp, open, high, low, close, volume, amount, raw(원본 응답)`
 
 ## 5. 내부 스키마 매핑
 
@@ -100,8 +107,8 @@ bars = asyncio.run(fetch_daily("005930", "2026-07-09"))
 | `Time` | `timestamp` | DatetimeIndex, 과거 → 최근 오름차순 정렬 |
 | `Open/High/Low/Close` | `open/high/low/close` | |
 | `Volume` | `volume` | |
-| `Amount` (거래대금) | `raw`에서 추출 (없으면 `close × volume` 근사) | 유동성 필터(백로그 B5)에 사용 |
-| `5`, `20`, `120` (이평선) | **직접 계산** — `Close.rolling(n).mean()` | ⚠ HTS CSV에는 포함돼 있었지만 SDK 응답에는 없음 |
+| `Amount` (거래대금) | `ChartBar.amount` | 유동성 필터(백로그 B5)에 사용 |
+| 이평선 컬럼(예: `5`, `20`, `60`, `120`) | **직접 계산** — `Close.rolling(n).mean()` | ⚠ HTS CSV에는 포함돼 있었지만 SDK 응답에는 없음. 기간 n은 차트 요청/전처리 프리셋에서 선택 |
 
 **이평선 직접 계산에 따른 이점**:
 
@@ -109,7 +116,7 @@ bars = asyncio.run(fetch_daily("005930", "2026-07-09"))
 - HTS 값과 달리 계산 기준(단순/지수, 수정주가 여부)을 우리가 통제
 
 **주의**: 이평선을 직접 계산하면 시퀀스 앞쪽 `n-1`개 봉은 NaN이다.
-120일선 기준 최소 120봉 이전 데이터까지 여유 있게 조회해야 학습 구간이 잘리지 않는다.
+가장 긴 이평선 기준 최소 `max(n)`봉 이전 데이터까지 여유 있게 조회해야 학습 구간이 잘리지 않는다.
 
 ## 6. 수집 파이프라인 구성 (구현 예정)
 
@@ -136,6 +143,6 @@ ChartBar 리스트 → 표준 DataFrame 변환 + 이평선 계산
 | 한국투자 HTS 포맷 고정 | 브로커 중립 (`ChartBar` → 표준 스키마) |
 | 콤마 제거/타입 변환/역순 정렬 파싱 | 불필요 (SDK가 파싱 완료된 dataclass 반환) |
 | 분봉 연도 추정 핵 (백로그 A8) | 불필요 — SDK가 완전한 timestamp 제공 → **A8 해소** |
-| 이평선 5/20/120 HTS 제공값 사용 | 직접 계산 |
+| 이평선 5/20/120 HTS 제공값 사용 | 프리셋/차트 요청 기간 기준 직접 계산 |
 | `env.yaml` 자격증명 | 환경변수 (`Credentials.from_env()`) |
 | 원시가 (수정주가 여부 불명확) | `adjusted=True` 수정주가 명시 |

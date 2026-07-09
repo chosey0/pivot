@@ -16,8 +16,14 @@ spec, and we reimplement it with known defects fixed.
 
 ## Current status
 
-**Documentation phase — no application code exists yet.** Implementation follows the
-milestones (M0 scaffolding → M5 live inference) defined in `docs/04_webapp_design.md`.
+**M1 (data ingestion + real chart) done**: broker-modules Kiwoom day/min/tick candles,
+watchlist JSON storage, parquet cache/status, `/api/chart` real candles with MA/volume,
+and Vite/React Watchlist UI are implemented and verified. Next milestone:
+**M2 preprocessing lab** (fractal preview, markers, parameter diff, sample window highlight).
+Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7.
+
+Run dev servers: `uv run uvicorn server.main:app --reload` (port 8000) and
+`cd web && npm run dev` (port 5173, proxies `/api` and `/ws` to 8000).
 
 ## Documents are the source of truth
 
@@ -28,7 +34,7 @@ Read these before writing any code, and **update them when a decision changes**:
 | `docs/01_legacy_pipeline.md` | Legacy pipeline spec (data → fractal labeling → training → live app). Reimplementation baseline. |
 | `docs/02_improvement_backlog.md` | Known defects (group A: fix during reimplementation), method experiments (B), engineering (C). |
 | `docs/03_data_ingestion.md` | Data ingestion via broker-modules SDK: timeframes (day / N-minute / N-tick), broker choice, caching, schema mapping. |
-| `docs/04_webapp_design.md` | Web workbench design: 5 tabs, preset concept, API, storage layout, milestones. |
+| `docs/04_webapp_design.md` | Web workbench design: 6 tabs, preset concept, data diagnostics, API, storage layout, milestones. |
 | `docs/05_package_layout.md` | Repository/package layout: `pivot/` domain library + `server/` + `web/`, dependency extras. Authoritative for folder structure. |
 
 Docs are written in Korean; keep them in Korean. The user communicates in Korean.
