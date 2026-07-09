@@ -226,3 +226,12 @@ __marimo__/
 
 *.pt
 .DS_Store
+
+# Data / artifacts
+data/
+models/saved/
+temp/
+*.pkl
+*.csv
+*.png
+*.parquet

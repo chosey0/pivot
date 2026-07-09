@@ -23,3 +23,4 @@
 | [docs/01_legacy_pipeline.md](docs/01_legacy_pipeline.md) | 구 Fractal 프로젝트 파이프라인 정리 (데이터 → 라벨링 → 학습 → 실시간 추론) |
 | [docs/02_improvement_backlog.md](docs/02_improvement_backlog.md) | 구 코드에서 발견된 문제점과 개선 백로그 |
 | [docs/03_data_ingestion.md](docs/03_data_ingestion.md) | 데이터 수집 설계 (broker-modules SDK 사용) |
+| [docs/04_package_layout.md](docs/04_package_layout.md) | 패키지 구조 설계 (`pivot/` 라이브러리 + `scripts/` CLI) |

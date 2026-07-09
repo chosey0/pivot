@@ -1,0 +1,29 @@
+[project]
+name = "pivot"
+version = "0.1.0"
+description = "윌리엄스 프랙탈 고점/저점 확정 예측 — 캔들 시퀀스 분류 파이프라인"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "broker-modules",
+    "pandas",
+    "pyarrow",
+]
+
+[project.optional-dependencies]
+train = [
+    "torch",
+    "scikit-learn",
+]
+viz = [
+    "finplot",
+]
+
+[tool.uv.sources]
+broker-modules = { git = "https://github.com/chosey0/broker-modules.git" }
+# 로컬 개발 시:
+# broker-modules = { path = "../broker-modules", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
