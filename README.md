@@ -10,10 +10,13 @@
 원천 데이터는 HTS 수동 CSV 대신 [broker-modules](https://github.com/chosey0/broker-modules)
 증권사 OpenAPI SDK로 직접 조회한다.
 
+모든 작업은 웹 애플리케이션(전처리 워크벤치) 위에서 수행한다:
+차트로 프랙탈 라벨링 결과를 확인하며 파라미터를 튜닝하고, 프리셋으로 저장해 전체 종목에 일괄 적용.
+
 ## 진행 방식
 
-1. **문서화** — 구 프로젝트의 파이프라인/설계를 문서로 정리 ← 현재 단계
-2. **재구현** — 문서 기반으로 전처리부터 순서대로 새로 구현
+1. **문서화** — 구 프로젝트의 파이프라인/설계를 정리, 웹 워크벤치 설계 ← 현재 단계
+2. **재구현** — 설계 문서 기반으로 M0(스캐폴딩)부터 마일스톤 순서대로 구현
 3. **개선** — 백로그의 개선 항목을 실험하며 반영
 
 ## 문서
@@ -23,4 +26,5 @@
 | [docs/01_legacy_pipeline.md](docs/01_legacy_pipeline.md) | 구 Fractal 프로젝트 파이프라인 정리 (데이터 → 라벨링 → 학습 → 실시간 추론) |
 | [docs/02_improvement_backlog.md](docs/02_improvement_backlog.md) | 구 코드에서 발견된 문제점과 개선 백로그 |
 | [docs/03_data_ingestion.md](docs/03_data_ingestion.md) | 데이터 수집 설계 (broker-modules SDK 사용) |
+| [docs/04_webapp_design.md](docs/04_webapp_design.md) | 웹 전처리 워크벤치 설계 (FastAPI + React + lightweight-charts) |
 | [docs/04_package_layout.md](docs/04_package_layout.md) | 패키지 구조 설계 (`pivot/` 라이브러리 + `scripts/` CLI) |

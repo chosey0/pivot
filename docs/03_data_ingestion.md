@@ -19,13 +19,34 @@
 - Python **3.12+**, HTTPX + WebSockets 기반, **전체 API가 async** (`async with` 컨텍스트 매니저 필수)
 - 패키지 관리는 uv 기준
 
-## 2. 브로커 선택
+## 2. 타임프레임과 브로커 선택
+
+학습 데이터의 타임프레임은 **일봉 / N분봉 / N틱봉** 중 선택할 수 있어야 한다 (N 기본값 1).
+국내 캔들은 세 종류 모두 Kiwoom 모듈로 조회한다.
+
+| 타임프레임 | Kiwoom 메서드 | 지원 단위 (N) | 코드 표기 |
+|---|---|---|---|
+| 일봉 | `daily(symbol, base_date)` | — | `day` |
+| N분봉 | `minute(symbol, interval_minutes, base_date)` | 1, 3, 5, 10, 15, 30, 45, 60 (기본 1) | `min{N}` (예: `min1`, `min5`) |
+| N틱봉 | `tick(symbol, tick_scope)` | 1, 3, 5, 10, 30 (기본 1) | `tick{N}` (예: `tick1`, `tick30`) |
+
+- 공통 옵션: `adjusted=True`(수정주가), `max_pages=None`(전체 페이지 조회)
+- 단위 N은 **SDK가 지원하는 값 목록에서 선택** (UI는 드롭다운). 지원 외의 N이 필요해지면
+  1단위 캐시에서 로컬 리샘플링으로 합성하는 방안을 추후 검토
+- 내부적으로 타임프레임은 `{type: day|minute|tick, unit: int}` 객체로 다루고,
+  경로/API 문자열로는 `day`/`min{N}`/`tick{N}` 코드를 사용
 
 | 용도 | 사용 모듈 | 근거 |
 |---|---|---|
-| **국내 일봉** (주 학습 데이터) | `brokers.kiwoom` | KIS 모듈은 국내 일봉 미지원. Kiwoom은 `daily()` + `adjusted=True`(수정주가) + `max_pages=None`(전체 이력) 지원 |
-| 국내 분봉 (추후 분봉 실험 시) | `brokers.kiwoom` 또는 `brokers.kis` | Kiwoom `minute()`(interval 1~60분), KIS `domestic.chart.minute()`(1분봉) |
+| **국내 캔들 (일/분/틱)** — 학습 데이터 | `brokers.kiwoom` | 위 표. KIS 모듈은 국내는 1분봉만 지원 |
 | 실시간 체결 (추론 단계) | `brokers.kis` 또는 `brokers.kiwoom` | 둘 다 실시간 체결 WebSocket 지원. 구 프로젝트가 KIS 웹소켓 기반이었으므로 KIS 우선 검토 |
+
+**주의 (분봉/틱봉)**:
+
+- 조회량이 일봉 대비 크게 늘어 rate limit·수집 시간 부담이 큼 — 캐시 필수, 증분 갱신 설계
+- 브로커가 보관하는 과거 분/틱 데이터의 기간 한계는 실측으로 확인 필요
+- 이평선 기준 결정 필요: 해당 타임프레임 기준 rolling(기본) vs 일봉 이평선 병합(구 프로젝트의
+  `*_ma.csv` merge 방식) — 프리셋 옵션 `ma_source: self | daily`로 둘 다 지원
 
 ## 3. 설치 및 인증
 
@@ -97,7 +118,7 @@ bars = asyncio.run(fetch_daily("005930", "2026-07-09"))
    │  fetch (async, rate limit 고려)
    ▼
 ChartBar 리스트 → 표준 DataFrame 변환 + 이평선 계산
-   │  캐시 저장: data/raw/{broker}/{interval}/{symbol}.parquet
+   │  캐시 저장: data/raw/{broker}/{timeframe}/{symbol}.parquet   # timeframe = day | min{N} | tick{N}
    ▼
 이후 단계는 기존 전처리와 동일: calc_fractal() → create_dataset()
 ```

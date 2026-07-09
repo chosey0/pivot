@@ -1,0 +1,296 @@
+# 웹 애플리케이션 설계 — 워크벤치
+
+모든 작업(데이터 수집 → 전처리 검증 → 일괄 데이터셋 생성 → 모델 학습/평가 → 실시간 추론)을
+웹 UI 위에서 수행한다. 핵심 사용 흐름:
+
+> 관심종목 등록 → 캔들 수집 → **차트에서 프랙탈 라벨링 결과를 눈으로 확인하며 파라미터 튜닝**
+> → 파라미터를 프리셋으로 저장 → 몇 종목으로 스팟체크 → **프리셋을 전체 종목에 일괄 적용**해 학습 데이터셋 생성
+> → 데이터셋으로 **모델 학습·평가** → 체크포인트를 골라 **실시간 추론**으로 검증
+
+## 0. 확정된 기술 결정
+
+| 항목 | 결정 |
+|---|---|
+| 백엔드 | FastAPI (Python 3.12+, uv) — broker-modules가 async/httpx 기반이라 자연스럽게 맞음 |
+| 프론트엔드 | React + TypeScript + Vite |
+| 차트 | TradingView **lightweight-charts v5** (`addSeries` + `createSeriesMarkers`) |
+| 파라미터 변경 반영 | 자동 재계산 (300~500ms 디바운스) |
+| 일괄 처리 대상 | 웹에서 관리하는 관심종목 리스트 (보조: 거래대금 상위 N 일괄 추가) |
+| 전처리 로직 위치 | `pivot/` 순수 파이썬 패키지 — 웹과 무관하게 동작, FastAPI는 이를 호출만 |
+
+## 1. 화면 구성 (5개 탭)
+
+| 탭 | 역할 | 구 프로젝트 대응 |
+|---|---|---|
+| 종목 & 데이터 | 관심종목/수집/캐시 관리 | HTS 수동 다운로드 |
+| 전처리 실험실 | 파라미터 튜닝 + 라벨링 검증 | `data_main.py` + finplot 확인 코드 |
+| 일괄 처리 & 데이터셋 | 프리셋 일괄 적용, 데이터셋 검수 | `data_main.py` |
+| 학습 & 평가 | 학습 실행/모니터링, run 비교, 차트 검증 | `train_main.py`, `test_main*.py` |
+| 실시간 추론 | 실시간 체결 수신 + 모델 판정 | `main.py` (PyQt5 앱) |
+
+### 1.1 종목 & 데이터 (Watchlist)
+
+- 종목 검색(심볼 마스터) → 관심종목 추가/제거
+- **타임프레임 선택 수집**: 일봉 / N분봉 / N틱봉 중 선택해 수집
+  - 타입(일/분/틱) + 단위 드롭다운 (분: 1,3,5,10,15,30,45,60 / 틱: 1,3,5,10,30 — 기본값 1)
+  - 같은 종목이라도 타임프레임별로 캐시가 분리됨 (`data/raw/{broker}/{timeframe}/{symbol}.parquet`)
+- 관심종목 테이블: 종목명/코드, **타임프레임별 캐시 상태**(수집 기간, 봉 수, 마지막 갱신), 수집/갱신 버튼
+- 전체 갱신 버튼 (rate limit 고려해 순차 실행, 진행률 표시)
+- 보조 기능: "거래대금 상위 N 종목 일괄 추가"
+
+### 1.2 전처리 실험실 (Lab) — 핵심 화면
+
+```
+┌────────────┬──────────────────────────────────────┬───────────────┐
+│ 관심종목    │  캔들차트 (lightweight-charts)         │ 파라미터 패널   │
+│ 리스트      │   - 캔들 + MA 라인(5/20/120)          │  fractal n     │
+│ (클릭 시    │   - 프랙탈 마커:                       │  max_len       │
+│  차트 로드) │     ▲ 저점(0)  ▼ 고점(1)  ● 무시(2)   │  피처 선택      │
+│            │   - 마커 클릭 → 해당 샘플의            │  필터 토글:     │
+│            │     입력 윈도우(max_len봉) 하이라이트    │   정배열/거래대금│
+│            │                                      │  라벨 모드      │
+│            ├──────────────────────────────────────┤ ───────────── │
+│            │  통계 바: 샘플 수, 클래스 분포(0/1/2),  │ 프리셋 저장/    │
+│            │  이전 파라미터 대비 증감(Δ)             │ 불러오기       │
+└────────────┴──────────────────────────────────────┴───────────────┘
+```
+
+- 파라미터 패널 최상단에서 **타임프레임 선택** (일봉 / N분봉 / N틱봉, 프리셋에 포함).
+  변경 시 해당 타임프레임 캐시로 차트를 다시 로드 (미수집이면 수집 유도)
+- 파라미터를 바꾸면 디바운스 후 `/preprocess/preview` 호출 → 마커/통계 즉시 갱신
+- **파라미터 변화에 따른 데이터 변화 확인**: 직전 계산 결과와의 diff를 통계 바에 표시
+  (예: "샘플 142 → 118 (−24), 저점 51 → 40")
+- 마커 클릭 시 그 샘플이 모델에 들어가는 실제 입력 구간(max_len봉)을 차트 위에 하이라이트
+  → "하나하나 직접 확인" 요구사항 충족
+- 샘플 상세 패널(선택): 해당 시퀀스의 스케일링 후 값 미리보기
+
+### 1.3 일괄 처리 & 데이터셋 (Datasets)
+
+- 프리셋 선택 + 대상(관심종목 전체 또는 선택) → **일괄 전처리 실행**
+- 진행 상황: SSE로 종목별 진행률/성공/실패/샘플 수 스트리밍
+- 완료 시 데이터셋 카드 생성: 이름, 생성일, 사용 프리셋(파라미터 스냅샷), 샘플 수, 클래스 분포
+- 데이터셋 상세 = **샘플 브라우저**: 샘플을 페이지 단위로 넘기며 미니 차트로 개별 검수
+  (라벨별 필터, 무작위 샘플링 보기)
+
+### 1.4 학습 & 평가 (Training)
+
+구 `train_main.py`(학습) + `test_main*.py`(finplot 육안 평가)의 웹 버전.
+
+```
+┌───────────────────────────────┬──────────────────────────────────┐
+│ Run 목록 (이력)                │  새 Run 설정                       │
+│  - run_id, 데이터셋, 상태       │   데이터셋 선택 (프리셋 스냅샷 표시)  │
+│  - best acc/F1, 생성일         │   모델: CNN1D | (추후 확장)         │
+│  - 클릭 → 상세                 │   epochs, batch, lr, sampler,      │
+│                               │   train/val 분리 방식(종목/기간)     │
+│                               │   [학습 시작]                       │
+├───────────────────────────────┴──────────────────────────────────┤
+│ Run 상세                                                          │
+│  ① 학습 곡선: epoch별 train/val loss·acc 실시간 갱신 (SSE)          │
+│  ② 평가: confusion matrix, 클래스별 precision/recall/F1 (val 기준)  │
+│  ③ 차트 검증: 종목 선택 → 캔들차트에 실제 프랙탈 마커 vs 모델 예측     │
+│     마커를 겹쳐 표시 (맞춤/틀림 색 구분) ← 구 test_main.py 대체       │
+│  ④ 체크포인트 목록: epoch별 .pt, "실시간 추론에 사용" 지정            │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+- **Run** = 데이터셋 + 하이퍼파라미터 + 결과(곡선/지표/체크포인트)의 묶음.
+  메타를 json으로 저장해 run 간 비교 가능 (구 `models/saved/{name}.json` 방식 계승)
+- 학습은 장기 job: **별도 프로세스**로 실행 (torch 학습이 FastAPI 이벤트 루프를 막지 않도록),
+  진행 상황은 파일/큐 경유로 SSE 스트리밍, 중단 버튼 제공
+- 평가 지표는 백로그 A5(train/val 분리)·A6(클래스별 지표) 반영이 전제
+- ③ 차트 검증은 Lab과 같은 차트 컴포넌트 재사용: 실제 라벨(▲▼)과 예측(테두리/색 변형)을
+  한 차트에 겹치고, 오분류만 필터해 보는 토글 제공
+
+### 1.5 실시간 추론 (Live)
+
+구 `main.py`(PyQt5 + KIS 웹소켓 + `infer_plot*.py`)의 웹 버전.
+
+```
+┌────────────────────┬──────────────────────────────────────────────┐
+│ 구독 테이블          │  실시간 캔들차트 (선택 종목)                     │
+│  종목 검색/추가       │   - 과거 봉 로드 후 체결가로 현재 봉 실시간 갱신   │
+│  종목별:             │   - 모델 판정 마커: 저점/고점 확률 표시            │
+│   현재가, 등락률      │  하단: 최근 판정 로그 (시각, 종목, 클래스, 확률)   │
+│   최근 판정 결과      │                                              │
+│  사용 모델(체크포인트) │                                              │
+└────────────────────┴──────────────────────────────────────────────┘
+```
+
+- 데이터 경로: **증권사 WebSocket ↔ FastAPI(중계·집계·추론) ↔ 브라우저 WebSocket**
+  - 증권사 연결·인증키는 서버에만 존재, 브라우저는 서버 WS만 구독
+  - 서버가 체결 틱을 봉(현재 봉 갱신 + 봉 마감)으로 집계 → 봉 마감 시점마다 시퀀스 구성 → 추론
+  - 브라우저는 `series.update()`로 현재 봉 갱신, 판정 발생 시 마커 추가
+- 추론 입력은 전처리와 **동일한 `pivot` 패키지의 스케일링/시퀀스 구성 함수** 사용
+  (학습-추론 전처리 불일치 방지 — 구 프로젝트에서 `infer_plot copy*.py`가 난립했던 원인 제거)
+- 체크포인트 선택: Training 탭에서 "실시간 추론에 사용"으로 지정한 모델 기본 로드
+- 장 마감/미개장 시간대엔 마지막 캐시 차트 + "장 종료" 상태 표시
+
+## 2. 핵심 개념: 전처리 프리셋
+
+Lab에서 튜닝한 파라미터 집합을 이름 붙여 저장. Lab(단건)과 일괄 처리(전체)가 **같은 프리셋을
+공유**하므로 "몇 종목으로 확인한 그대로 전체에 적용"이 보장된다.
+
+```jsonc
+// data/meta/presets/day20_ma20120_cls3.json
+{
+  "name": "day20_ma20120_cls3",
+  "timeframe": { "type": "day", "unit": 1 },       // day | minute | tick, 분/틱은 N 단위 (기본 1)
+  "fractal": { "n": 20 },                          // center rolling window 크기
+  "ma_windows": [5, 20, 120],                      // 직접 계산할 이평선
+  "ma_source": "self",                             // self(해당 타임프레임 rolling) | daily(일봉 이평 병합, 구 방식)
+  "features": ["Open", "High", "Low", "Close", "20", "120"],
+  "sample": { "max_len": 20 },
+  "labeling": {                                    // 백로그 B2 실험을 위해 모드화
+    "mode": "cls3",                                // cls3 | cls2_drop | cls4 | with_negative
+    "ignore_rule": "ma20 < ma120"
+  },
+  "filters": {
+    "ma_alignment": null,                          // null | "20>120" | "5>20>120"
+    "min_amount": null                             // 원 단위, null이면 미적용
+  },
+  "created_at": "...", "updated_at": "..."
+}
+```
+
+데이터셋 메타에는 사용한 프리셋의 **스냅샷**을 통째로 저장한다 (프리셋을 나중에 수정해도
+데이터셋 재현 가능 — 구 프로젝트의 `{dataset}.json` 메타 방식 계승).
+
+## 3. API 설계
+
+| Method | Path | 설명 |
+|---|---|---|
+| GET | `/api/symbols/search?q=` | 심볼 마스터 검색 |
+| GET/POST/DELETE | `/api/watchlist` | 관심종목 CRUD |
+| POST | `/api/watchlist/bulk-top?n=` | 거래대금 상위 N 일괄 추가 |
+| POST | `/api/ingest` | `{symbols[], timeframe}` 수집/갱신 → job_id (timeframe = `day`/`min{N}`/`tick{N}`) |
+| GET | `/api/ingest/status` | 종목 × 타임프레임별 캐시 상태 |
+| GET | `/api/chart/{symbol}?timeframe=` | 캔들 + MA (lightweight-charts 데이터 형식으로 반환) |
+| POST | `/api/preprocess/preview` | `{symbol, params}` → 프랙탈 마커 + 샘플 목록(윈도우 범위/라벨) + 클래스 통계 |
+| GET/POST/PUT/DELETE | `/api/presets` | 프리셋 CRUD |
+| POST | `/api/preprocess/batch` | `{preset, symbols[]}` → job_id (BackgroundTask) |
+| GET | `/api/jobs/{id}/events` | SSE: 진행률/종목별 결과 |
+| GET | `/api/datasets` | 데이터셋 목록 + 메타 |
+| GET | `/api/datasets/{name}/samples?label=&offset=&limit=` | 샘플 브라우저용 페이지 조회 |
+| GET | `/api/datasets/{name}/samples/{i}` | 샘플 1건 상세 (시퀀스 원본/스케일링 값) |
+| GET/POST | `/api/runs` | 학습 run 목록 / 새 학습 시작 (`{dataset, hyperparams}` → job_id) |
+| GET | `/api/runs/{id}` | run 상세 (설정, 곡선, 평가 지표, 체크포인트 목록) |
+| GET | `/api/runs/{id}/events` | SSE: epoch별 loss/acc 실시간 스트리밍 |
+| POST | `/api/runs/{id}/stop` | 학습 중단 |
+| POST | `/api/runs/{id}/evaluate` | `{symbol}` → 차트 검증용 예측 결과 (실제 라벨 vs 예측) |
+| PUT | `/api/live/model` | 실시간 추론에 사용할 체크포인트 지정 |
+| GET/POST/DELETE | `/api/live/subscriptions` | 실시간 구독 종목 관리 |
+| WS | `/ws/live` | 브라우저용 WebSocket: 현재 봉 갱신 + 모델 판정 이벤트 푸시 |
+
+설계 원칙:
+
+- `preview`와 `batch`는 **동일한 `pivot` 패키지 함수**를 호출 (단건/일괄이 같은 코드 경로 → 결과 불일치 방지)
+- 수집(ingest)과 전처리(preprocess)는 완전 분리 — 전처리는 항상 로컬 캐시(parquet)만 읽음
+- 장기 작업(수집, 일괄 전처리)은 job + SSE 패턴 통일
+
+## 4. 저장 구조 (파일 기반, DB 없음)
+
+```
+data/
+├─ raw/{broker}/{timeframe}/{symbol}.parquet    # 캔들 캐시, timeframe = day | min{N} | tick{N}
+├─ meta/
+│  ├─ watchlist.json
+│  └─ presets/{name}.json
+└─ datasets/{name}/
+   ├─ samples.parquet                           # 시퀀스 샘플 (가변 길이 → list 컬럼)
+   └─ meta.json                                 # 프리셋 스냅샷 + 통계
+
+models/
+└─ runs/{run_id}/
+   ├─ config.json                               # 데이터셋명 + 프리셋 스냅샷 + 하이퍼파라미터
+   ├─ history.json                              # epoch별 loss/acc/지표
+   ├─ metrics.json                              # 최종 평가 (confusion matrix, 클래스별 P/R/F1)
+   └─ checkpoints/epoch_{n}.pt
+```
+
+단일 사용자 로컬 도구이므로 DB 없이 파일로 시작. (필요해지면 SQLite로 승격)
+
+## 5. lightweight-charts v5 연동 세부
+
+```ts
+import { createChart, CandlestickSeries, LineSeries, createSeriesMarkers } from 'lightweight-charts';
+
+const chart = createChart(container, options);
+const candles = chart.addSeries(CandlestickSeries);           // v5: addSeries(타입, 옵션)
+const ma20 = chart.addSeries(LineSeries, { color: '#5A639C' });
+const ma120 = chart.addSeries(LineSeries, { color: '#A0937D' });
+
+// 프랙탈/라벨 마커 — v5는 별도 프리미티브
+const markers = createSeriesMarkers(candles, [
+  { time: '2026-07-01', position: 'belowBar', shape: 'arrowUp',   color: '#26a69a', text: 'L' },  // 저점(0)
+  { time: '2026-07-04', position: 'aboveBar', shape: 'arrowDown', color: '#ef5350', text: 'H' },  // 고점(1)
+  { time: '2026-07-08', position: 'aboveBar', shape: 'circle',    color: '#9e9e9e' },             // 무시(2)
+]);
+markers.setMarkers(next);   // 파라미터 변경 시 갱신
+```
+
+- 시간값: 일봉은 `'yyyy-mm-dd'` 문자열, 분봉/틱봉은 unix timestamp(초) — 백엔드가 이 형식으로 내려줌.
+  lightweight-charts는 시간값이 **고유하고 오름차순**이어야 하므로, 같은 초에 여러 봉이 생길 수
+  있는 틱봉은 백엔드에서 시간 충돌을 해소해 내려준다 (열린 결정 참고)
+- 라벨 표시 규약: 저점 `arrowUp/belowBar/초록`, 고점 `arrowDown/aboveBar/빨강`, 무시 `circle/회색`
+- 샘플 입력 윈도우 하이라이트: 마커 클릭(`subscribeClick`) → 해당 구간을 반투명 배경으로 표시
+  (v5 plugin primitive로 구현, 1차 구현은 간단히 해당 구간 라인/영역 시리즈 오버레이로 대체 가능)
+- 미니 차트(샘플 브라우저): 옵션 축소판 차트 재사용 (스케일/그리드 최소화)
+
+## 6. 리포지토리 구조
+
+```
+pivot/
+├─ pivot/                  # 순수 도메인 패키지 (웹 무관, 테스트 대상)
+│  ├─ ingest/              #   broker-modules 래퍼, 캐시 저장/로드, 심볼 마스터
+│  ├─ preprocess/          #   fractal.py, sampling.py(시퀀스/라벨), scaling.py
+│  ├─ train/               #   모델 정의(cnn1d.py), 학습 루프, 평가 지표, run 관리
+│  ├─ infer/               #   체크포인트 로드, 봉 집계(tick→bar), 실시간 시퀀스 구성/추론
+│  └─ config.py            #   프리셋/run 설정 스키마 (pydantic)
+├─ server/                 # FastAPI 앱
+│  ├─ main.py
+│  ├─ routers/             #   symbols, watchlist, ingest, preprocess, presets, datasets, runs, live
+│  ├─ jobs.py              #   job 상태 + SSE (학습은 별도 프로세스 실행)
+│  └─ live.py              #   증권사 WS 구독 관리 + 브라우저 WS 브로드캐스트
+├─ web/                    # Vite + React + TS
+│  └─ src/
+│     ├─ api/              #   fetch 클라이언트 (타입 공유)
+│     ├─ components/chart/ #   lightweight-charts 래퍼 훅/컴포넌트
+│     └─ pages/            #   Watchlist / Lab / Datasets / Training / Live
+├─ docs/
+└─ pyproject.toml          # uv, broker-modules git 의존성
+```
+
+- 개발: `uvicorn server.main:app --reload` + `vite dev` (proxy `/api` → 8000)
+- 배포(로컬 사용): `vite build` 산출물을 FastAPI `StaticFiles`로 서빙 → 프로세스 하나로 실행
+
+## 7. 구현 마일스톤
+
+| 단계 | 내용 | 완료 기준 |
+|---|---|---|
+| **M0** | 스캐폴딩: uv 프로젝트 + FastAPI + Vite/React + 차트 컴포넌트 | 더미 데이터 캔들차트가 브라우저에 뜬다 |
+| **M1** | 수집: broker-modules 연동(Kiwoom 일봉), watchlist, parquet 캐시, 차트+MA 표시 | 관심종목 추가 → 수집 → 실데이터 차트 확인 |
+| **M2** | 전처리 실험실: `pivot.preprocess` 재구현(백로그 A 반영), preview API, 파라미터 패널 + 마커 + 통계 diff | 파라미터 조작 시 마커/통계가 실시간 갱신, 샘플 윈도우 하이라이트 |
+| **M3** | 프리셋 + 일괄 처리: preset CRUD, batch job + SSE, 데이터셋 저장 + 샘플 브라우저 | 프리셋으로 전체 종목 일괄 전처리 → 데이터셋 생성/검수 |
+| **M4** | 학습 & 평가: `pivot.train` (백로그 A5/A6/B1 베이스라인), run 관리 + 학습 곡선 SSE, 차트 검증 | 웹에서 학습 시작 → 곡선/지표 확인 → 차트에서 예측 vs 실제 비교 |
+| **M5** | 실시간 추론: 증권사 WS 중계, 봉 집계 + 실시간 추론, Live 화면 | 장중에 구독 종목의 실시간 판정이 차트에 표시 |
+
+M2에서 재구현하는 전처리는 [01_legacy_pipeline.md](01_legacy_pipeline.md)를 명세로 하되
+[02_improvement_backlog.md](02_improvement_backlog.md)의 A그룹(정밀도, Time 저장, 검증 분리 등)을 반영한다.
+
+## 8. 열린 결정 (구현하며 확정)
+
+- 샘플 저장 시 스케일링 적용 시점 (백로그 A4): 데이터셋 생성 시 원본 저장 + 스케일링은 로더에서 vs 스케일링 완료본 저장 — 샘플 브라우저에서 원본 값도 보여줘야 하므로 **원본 저장** 우선
+- 거래대금 상위 N 조회 소스: broker-modules 지원 여부 확인 필요 (미지원 시 KRX 모듈 또는 수집된 캐시 기준 계산)
+- 타임프레임 구현 순서: 수집/전처리/학습 로직은 처음부터 타임프레임 무관(agnostic)하게 만들되,
+  검증은 일봉 → 분봉 → 틱봉 순으로 진행 (분/틱은 수집량·보관 기간 실측 필요)
+- 틱봉의 시간축 처리: 같은 초에 봉이 여러 개 생기면 lightweight-charts가 거부하므로
+  ① 초 단위로 오프셋 부여, ② 순번 기반 가상 시간축 중 택일 (프랙탈 계산은 순서만 중요해서 영향 없음)
+- `Amount` 필드: Kiwoom `ChartBar.raw`에서 추출 가능한지 확인 (03 문서 참고)
+- 학습 디바이스: 현재 개발 머신이 macOS이므로 MPS/CPU 기준 (구 프로젝트는 CUDA).
+  현행 모델 크기(CNN1D)면 CPU로도 충분 — 디바이스 자동 감지(`mps > cpu`)로 시작
+- 실시간 추론의 판정 주기: 봉 마감 시마다 vs 틱마다(현재 미완성 봉 포함) —
+  학습 데이터가 "확정된 봉"으로 구성되므로 **봉 마감 시 판정**을 기본으로 하고,
+  틱 단위 잠정 판정은 옵션으로 (구 프로젝트는 틱마다 추론 시도)
+- 일봉 기준 실시간 추론의 의미: 일봉 모델이면 판정은 하루 1회(장 마감 무렵)가 자연스러움.
+  장중 잠정 판정(현재까지의 당일 봉을 마지막 봉으로 간주)을 보조 표시할지 결정 필요
