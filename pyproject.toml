@@ -8,15 +8,17 @@ dependencies = [
     "broker-modules",
     "pandas",
     "pyarrow",
+    "pydantic",
 ]
 
 [project.optional-dependencies]
+server = [
+    "fastapi",
+    "uvicorn",
+]
 train = [
     "torch",
     "scikit-learn",
-]
-viz = [
-    "finplot",
 ]
 
 [tool.uv.sources]

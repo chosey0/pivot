@@ -1,0 +1,81 @@
+# 패키지/저장소 구조 설계
+
+`pivot/` 파이썬 패키지(순수 도메인 라이브러리)와 진입점을 분리한다.
+웹 애플리케이션 설계([04_webapp_design.md](04_webapp_design.md)) 기준으로 진입점은
+`server/`(FastAPI)와 `web/`(React)이다. 서브패키지는 파이프라인 단계 순서를 따르며,
+**구현 순서대로 하나씩 추가한다** (빈 placeholder를 미리 만들지 않는다).
+
+## 목표 구조
+
+```
+pivot/                        # 저장소 루트
+├── pyproject.toml            # uv + hatchling, broker-modules git 의존성
+├── pivot/                    # 파이썬 패키지 — 순수 도메인, 웹 비의존
+│   ├── __init__.py
+│   ├── config.py             # 프리셋/run 설정 스키마 (pydantic) — 재현성의 단위 (백로그 C)
+│   ├── ingestion/            # ① 데이터 수집 — docs/03
+│   │   ├── fetch.py          #   broker-modules 비동기 조회 (타임프레임: day/min{N}/tick{N}, rate limit)
+│   │   ├── schema.py         #   ChartBar → 표준 DataFrame 변환 + 스키마 검증
+│   │   ├── indicators.py     #   이평선 직접 계산 (ma_source: self | daily)
+│   │   └── cache.py          #   parquet 캐시 입출력 (증분 갱신)
+│   ├── labeling/             # ② 프랙탈 라벨링
+│   │   └── fractal.py        #   calc_fractal + 옵션 필터(정배열/유동성, B5) + 라벨 모드(B2)
+│   ├── dataset/              # ③ 시퀀스 샘플 생성/로딩
+│   │   ├── build.py          #   샘플 생성 (low/high 루프 통합 A7, float 직렬화 A1, Time 제외 A2)
+│   │   ├── transforms.py     #   스케일링 공용 모듈 — 학습·실시간 추론 공유 (A4), torch 비의존
+│   │   └── loader.py         #   torch Dataset + collate (마스킹/패딩 A3)
+│   ├── models/               # ④ 모델
+│   │   └── cnn1d.py          #   재현 베이스라인 (B1 비교 실험의 기준점)
+│   ├── training/             # ⑤ 학습/평가
+│   │   ├── train.py          #   학습 루프 (종목 단위 split A5, 안정화 B6)
+│   │   ├── metrics.py        #   클래스별 P/R/F1, confusion matrix (A6)
+│   │   ├── runs.py           #   run 생성/조회 — config·history·checkpoint 관리
+│   │   └── evaluate.py       #   종목 히스토리에 모델 적용 → 실제 라벨 vs 예측 (웹 차트 검증용)
+│   └── realtime/             # ⑥ 실시간 추론 (M5)
+│       ├── aggregate.py      #   체결 틱 → 봉 집계 (현재 봉 갱신/마감)
+│       └── infer.py          #   체크포인트 로드 + transforms 재사용 시퀀스 구성/판정
+├── server/                   # FastAPI 앱 — pivot 패키지 호출만, 도메인 로직 없음
+│   ├── main.py               #   앱 조립, web 빌드 정적 서빙
+│   ├── routers/              #   symbols, watchlist, ingest, preprocess, presets, datasets, runs, live
+│   ├── jobs.py               #   장기 작업(수집/일괄 전처리/학습) 상태 + SSE, 학습은 별도 프로세스
+│   └── live.py               #   증권사 WS 구독 관리 + 브라우저 WS 브로드캐스트
+├── web/                      # Vite + React + TS — docs/04 §5·§6
+│   └── src/                  #   api/, components/chart/, pages/{Watchlist,Lab,Datasets,Training,Live}
+├── data/                     # git 미추적 — docs/04 §4
+│   ├── raw/                  #   수집 캐시: {broker}/{timeframe}/{symbol}.parquet
+│   ├── meta/                 #   watchlist.json, presets/{name}.json
+│   └── datasets/             #   {name}/samples.parquet + meta.json (프리셋 스냅샷)
+├── models/                   # git 미추적
+│   └── runs/{run_id}/        #   config.json, history.json, metrics.json, checkpoints/
+└── docs/
+```
+
+## 설계 원칙
+
+- **패키지 = 라이브러리, server/web = 진입점.** `server/`는 인자 검증·job 관리·직렬화만 하고
+  도메인 로직은 전부 `pivot/`에 둔다. 구 프로젝트에서 `scripts/data/dataset.py`에
+  파이프라인 로직이 살던 구조를 뒤집는다. (필요해지면 `scripts/`에 얇은 CLI 래퍼를
+  추가할 수 있지만, 반드시 `pivot/` 함수 호출만 한다)
+- **단건 미리보기(Lab)와 일괄 처리(batch)는 같은 `pivot/` 함수를 호출한다.**
+  호출자별로 파이프라인을 복제하지 않는다.
+- **단계 간 결합은 데이터 계약(표준 DataFrame 스키마)으로만.** ingestion의 출력
+  (`Time` 인덱스 + `Open/High/Low/Close/Volume/Amount` + 이평선 컬럼)이 labeling 이후의 입력.
+  브로커 의존성은 ingestion과 `server/live.py` 안에 가둔다.
+- **`transforms.py`는 torch 비의존.** 실시간 추론에서도 같은 스케일링을 재현해야 하므로(A4)
+  numpy/pandas 수준으로 유지하고, torch 의존은 `loader.py`·`models/`·`training/`·
+  `realtime/infer.py`에만 둔다.
+- **모든 로직은 타임프레임 무관(agnostic).** 타임프레임은 프리셋의 값일 뿐,
+  ingestion 이후 단계는 봉의 종류를 몰라야 한다.
+- 시각화 평가는 웹 차트(Training 탭 차트 검증)로 수행한다 — 초기 계획의 finplot
+  기반 `evaluation/plot.py`는 폐기 (`viz` extra 불필요).
+
+## 의존성 구분 (pyproject)
+
+| 구분 | 패키지 | 용도 |
+|---|---|---|
+| core | broker-modules, pandas, pyarrow, pydantic | 수집 ①~③ (transforms까지) |
+| `server` extra | fastapi, uvicorn | 웹 서버 (SSE/WebSocket은 fastapi로 처리) |
+| `train` extra | torch, scikit-learn | 로더/모델/학습 ③(loader)~⑤, 실시간 추론 ⑥ |
+
+개발 실행: `uv run --env-file .env uvicorn server.main:app --reload` + `web/`에서 `npm run dev`
+(Vite proxy `/api` → 8000). 배포(로컬 사용)는 `vite build` 산출물을 FastAPI가 정적 서빙.

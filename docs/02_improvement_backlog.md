@@ -79,7 +79,10 @@ lr=0.01(Adam 기준 높음) 튜닝, 스케줄러, early stopping, 시드 고정.
 
 - 데이터 수집: HTS 수동 CSV → broker-modules SDK 조회로 대체, 수집(fetch)과 전처리를 분리하고
   조회 결과는 로컬 캐시(parquet)에 저장 — 상세 설계는 [03_data_ingestion.md](03_data_ingestion.md)
-- 패키지 구조: `pivot/` 파이썬 패키지 + `scripts/` 실행 스크립트 분리 (문서 → 구현 순서대로 추가)
+- 패키지 구조: `pivot/` 순수 도메인 패키지 + `server/`(FastAPI)·`web/`(React) 진입점 분리 —
+  상세는 [05_package_layout.md](05_package_layout.md) (문서 → 구현 순서대로 추가)
 - 실험 관리: 데이터셋/모델 메타를 json으로 남기던 방식은 유지하되 설정(config) 기반으로 정리
-- 실시간 추론(PyQt5 + 웹소켓)은 모델 성능이 검증된 뒤에 이식 (`infer_plot copy*.py` 정리 포함)
+- 실시간 추론: 구 PyQt5 앱 대신 웹 Live 탭으로 재설계 ([04_webapp_design.md](04_webapp_design.md) §1.5,
+  마일스톤 M5). 모델 성능 검증 뒤 구현하며, `infer_plot copy*.py` 난립의 원인이었던
+  학습-추론 전처리 불일치는 `transforms` 공용 모듈로 차단
 - `.pkl` 직렬화(`tobytes`) 대신 parquet/npz 등 검토 — 가변 길이 시퀀스 저장 방식 결정 필요

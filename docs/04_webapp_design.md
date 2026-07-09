@@ -239,28 +239,12 @@ markers.setMarkers(next);   // 파라미터 변경 시 갱신
 
 ## 6. 리포지토리 구조
 
-```
-pivot/
-├─ pivot/                  # 순수 도메인 패키지 (웹 무관, 테스트 대상)
-│  ├─ ingest/              #   broker-modules 래퍼, 캐시 저장/로드, 심볼 마스터
-│  ├─ preprocess/          #   fractal.py, sampling.py(시퀀스/라벨), scaling.py
-│  ├─ train/               #   모델 정의(cnn1d.py), 학습 루프, 평가 지표, run 관리
-│  ├─ infer/               #   체크포인트 로드, 봉 집계(tick→bar), 실시간 시퀀스 구성/추론
-│  └─ config.py            #   프리셋/run 설정 스키마 (pydantic)
-├─ server/                 # FastAPI 앱
-│  ├─ main.py
-│  ├─ routers/             #   symbols, watchlist, ingest, preprocess, presets, datasets, runs, live
-│  ├─ jobs.py              #   job 상태 + SSE (학습은 별도 프로세스 실행)
-│  └─ live.py              #   증권사 WS 구독 관리 + 브라우저 WS 브로드캐스트
-├─ web/                    # Vite + React + TS
-│  └─ src/
-│     ├─ api/              #   fetch 클라이언트 (타입 공유)
-│     ├─ components/chart/ #   lightweight-charts 래퍼 훅/컴포넌트
-│     └─ pages/            #   Watchlist / Lab / Datasets / Training / Live
-├─ docs/
-└─ pyproject.toml          # uv, broker-modules git 의존성
-```
+상세 구조와 설계 원칙은 **[05_package_layout.md](05_package_layout.md)**가 기준이다. 요약:
 
+- `pivot/` — 순수 도메인 패키지 (ingestion → labeling → dataset → models → training → realtime).
+  웹 비의존, 파이프라인 로직은 전부 여기에
+- `server/` — FastAPI. `pivot/` 함수 호출·job 관리·직렬화만 (routers, jobs.py, live.py)
+- `web/` — Vite + React + TS (api/, components/chart/, pages/{Watchlist,Lab,Datasets,Training,Live})
 - 개발: `uvicorn server.main:app --reload` + `vite dev` (proxy `/api` → 8000)
 - 배포(로컬 사용): `vite build` 산출물을 FastAPI `StaticFiles`로 서빙 → 프로세스 하나로 실행
 

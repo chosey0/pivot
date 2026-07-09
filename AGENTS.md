@@ -28,7 +28,8 @@ Read these before writing any code, and **update them when a decision changes**:
 | `docs/01_legacy_pipeline.md` | Legacy pipeline spec (data → fractal labeling → training → live app). Reimplementation baseline. |
 | `docs/02_improvement_backlog.md` | Known defects (group A: fix during reimplementation), method experiments (B), engineering (C). |
 | `docs/03_data_ingestion.md` | Data ingestion via broker-modules SDK: timeframes (day / N-minute / N-tick), broker choice, caching, schema mapping. |
-| `docs/04_webapp_design.md` | Web workbench design: 5 tabs, preset concept, API, storage layout, repo structure, milestones. |
+| `docs/04_webapp_design.md` | Web workbench design: 5 tabs, preset concept, API, storage layout, milestones. |
+| `docs/05_package_layout.md` | Repository/package layout: `pivot/` domain library + `server/` + `web/`, dependency extras. Authoritative for folder structure. |
 
 Docs are written in Korean; keep them in Korean. The user communicates in Korean.
 
@@ -47,8 +48,10 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
 
 ## Architecture rules
 
-- `pivot/` is a **pure domain package** (ingest, preprocess, train, infer) with no web
-  dependencies. `server/` (FastAPI) only orchestrates it; `web/` is the UI.
+- `pivot/` is a **pure domain package** (ingestion → labeling → dataset → models →
+  training → realtime; see `docs/05_package_layout.md`) with no web dependencies.
+  `server/` (FastAPI) only orchestrates it; `web/` is the UI. Add subpackages in
+  implementation order — no empty placeholders.
 - Single-symbol preview and batch preprocessing **must call the same `pivot` functions** —
   never duplicate the pipeline per caller.
 - Live inference must reuse the same scaling/sequence-building code as training
