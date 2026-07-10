@@ -18,6 +18,7 @@ pivot/                        # 저장소 루트
 │   │   ├── schema.py         #   ChartBar → 표준 DataFrame 변환 + 스키마 검증
 │   │   ├── indicators.py     #   이평선 직접 계산 (ma_source: self | daily)
 │   │   └── cache.py          #   parquet 캐시 입출력 (증분 갱신)
+│   ├── symbols/              #   KIS 종목마스터 정규화 + Supabase domestic_master 업서트/검색
 │   ├── labeling/             # ② 프랙탈 라벨링
 │   │   └── fractal.py        #   calc_fractal + 옵션 필터(정배열/유동성, B5) + 라벨 모드(B2)
 │   ├── dataset/              # ③ 시퀀스 샘플 생성/로딩
@@ -83,6 +84,7 @@ pivot/                        # 저장소 루트
 | 구분 | 패키지 | 용도 |
 |---|---|---|
 | core | broker-modules, pandas, pyarrow, pydantic | 수집 ①~③ (transforms까지) |
+| core | httpx | Supabase REST 종목마스터 업서트/검색 |
 | `server` extra | fastapi, uvicorn | 웹 서버 (SSE/WebSocket은 fastapi로 처리) |
 | `train` extra | torch, scikit-learn | 로더/모델/학습 ③(loader)~⑤, 실시간 추론 ⑥ |
 

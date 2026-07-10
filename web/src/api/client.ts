@@ -29,6 +29,13 @@ export interface WatchItem {
   name: string
 }
 
+export interface SymbolSuggestion {
+  symbol: string
+  name: string
+  market: string
+  score: number
+}
+
 export interface CacheStatus {
   bars: number
   first: string
@@ -135,6 +142,10 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
 export const api = {
   dummyChart: () => fetchJson<ChartResponse>('/api/chart/dummy'),
   watchlist: () => fetchJson<WatchItem[]>('/api/watchlist'),
+  symbolSearch: (query: string, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ q: query, limit: '10' })
+    return fetchJson<SymbolSuggestion[]>(`/api/symbols/search?${params}`, { signal })
+  },
   addWatchItem: (item: WatchItem) =>
     fetchJson<WatchItem[]>('/api/watchlist', {
       method: 'POST',

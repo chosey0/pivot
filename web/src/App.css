@@ -168,11 +168,65 @@ button:disabled {
   gap: 8px;
 }
 
+.symbol-search-box {
+  position: relative;
+}
+
 .add-form .primary {
   border-color: #b7ecc1;
   background: #daf9de;
   color: #166534;
   white-space: nowrap;
+}
+
+.symbol-suggestions {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 8;
+  overflow: hidden;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+}
+
+.symbol-suggestion {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.symbol-suggestion.active {
+  background: #eff6ff;
+}
+
+.symbol-suggestion strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.symbol-suggestion span,
+.symbol-suggestion em {
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.symbol-suggestion.muted {
+  display: block;
+  color: #64748b;
 }
 
 .range-grid {

@@ -626,6 +626,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "broker-modules" },
+    { name = "httpx" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -650,6 +651,7 @@ dev = [
 requires-dist = [
     { name = "broker-modules", git = "https://github.com/chosey0/broker-modules.git" },
     { name = "fastapi", marker = "extra == 'server'" },
+    { name = "httpx" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },

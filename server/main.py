@@ -3,13 +3,14 @@ import random
 
 from fastapi import FastAPI
 
-from server.routers import chart, ingest, preprocess, watchlist
+from server.routers import chart, ingest, preprocess, symbols, watchlist
 
 app = FastAPI(title="pivot workbench")
 app.include_router(watchlist.router)
 app.include_router(ingest.router)
 app.include_router(chart.router)
 app.include_router(preprocess.router)
+app.include_router(symbols.router)
 
 
 @app.get("/api/health")

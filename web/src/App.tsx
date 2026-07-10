@@ -3,6 +3,7 @@ import {
   api,
   type CacheStatus,
   type ChartResponse,
+  type SymbolSuggestion,
   type TimeframeCode,
   type WatchItem,
 } from './api/client'
@@ -149,6 +150,12 @@ function App() {
   const [timeframeUnit, setTimeframeUnit] = useState(1)
   const [symbolInput, setSymbolInput] = useState('005930')
   const [nameInput, setNameInput] = useState('삼성전자')
+  const [symbolSuggestions, setSymbolSuggestions] = useState<SymbolSuggestion[]>([])
+  const [symbolSuggestionOpen, setSymbolSuggestionOpen] = useState(false)
+  const [symbolSuggestionIndex, setSymbolSuggestionIndex] = useState(0)
+  const [symbolSearchField, setSymbolSearchField] = useState<'symbol' | 'name'>('symbol')
+  const [symbolSearchTouched, setSymbolSearchTouched] = useState(false)
+  const [symbolSearchLoading, setSymbolSearchLoading] = useState(false)
   const [rangeEnabled, setRangeEnabled] = useState(false)
   const [startDate, setStartDate] = useState(today)
   const [endDate, setEndDate] = useState(today)
@@ -259,6 +266,10 @@ function App() {
       }
     })
   }, [displayedOhlc, displayedOhlcPreviousClose])
+  const symbolSearchQuery = useMemo(
+    () => (symbolSearchField === 'symbol' ? symbolInput : nameInput).trim(),
+    [nameInput, symbolInput, symbolSearchField],
+  )
 
   const refreshWatchlist = useCallback(async () => {
     const items = await api.watchlist()
@@ -319,6 +330,58 @@ function App() {
     setSelectedOhlc(chart?.candles[chart.candles.length - 1] ?? null)
   }, [chart])
 
+  useEffect(() => {
+    if (!symbolSearchTouched || symbolSearchQuery.length < 2) {
+      setSymbolSuggestions([])
+      setSymbolSuggestionOpen(false)
+      setSymbolSearchLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setSymbolSearchLoading(true)
+      api.symbolSearch(symbolSearchQuery, controller.signal)
+        .then((items) => {
+          setSymbolSuggestions(items)
+          setSymbolSuggestionIndex(0)
+          setSymbolSuggestionOpen(items.length > 0)
+        })
+        .catch((e: Error) => {
+          if (e.name !== 'AbortError') setError(e.message)
+        })
+        .finally(() => setSymbolSearchLoading(false))
+    }, 180)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [symbolSearchQuery, symbolSearchTouched])
+
+  function selectSymbolSuggestion(item: SymbolSuggestion) {
+    setSymbolInput(item.symbol)
+    setNameInput(item.name)
+    setSymbolSuggestionOpen(false)
+    setSymbolSuggestions([])
+  }
+
+  function handleSymbolSuggestKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (!symbolSuggestionOpen || symbolSuggestions.length === 0) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setSymbolSuggestionIndex((current) => (current + 1) % symbolSuggestions.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setSymbolSuggestionIndex((current) =>
+        current === 0 ? symbolSuggestions.length - 1 : current - 1,
+      )
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      selectSymbolSuggestion(symbolSuggestions[symbolSuggestionIndex])
+    } else if (event.key === 'Escape') {
+      setSymbolSuggestionOpen(false)
+    }
+  }
+
   async function addWatchItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const symbol = symbolInput.trim()
@@ -329,6 +392,7 @@ function App() {
       const items = await api.addWatchItem({ symbol, name: nameInput.trim() })
       setWatchlist(items)
       setSelectedSymbol(symbol)
+      setSymbolSuggestionOpen(false)
       await refreshStatus(items, timeframe)
       setMessage(`${symbol}을 종목 목록에 추가했습니다.`)
     } catch (e) {
@@ -610,28 +674,81 @@ function App() {
 
               <section className="control-section">
                 <h2>종목 추가</h2>
-                <form className="add-form" onSubmit={addWatchItem}>
-                  <label className="field">
-                    종목코드
-                    <input
-                      maxLength={12}
-                      onChange={(event) => setSymbolInput(event.target.value)}
-                      placeholder="005930"
-                      value={symbolInput}
-                    />
-                  </label>
-                  <label className="field">
-                    종목명
-                    <input
-                      onChange={(event) => setNameInput(event.target.value)}
-                      placeholder="삼성전자"
-                      value={nameInput}
-                    />
-                  </label>
-                  <button className="primary" disabled={loading} type="submit">
-                    추가
-                  </button>
-                </form>
+                <div className="symbol-search-box">
+                  <form className="add-form" onSubmit={addWatchItem}>
+                    <label className="field">
+                      종목코드
+                      <input
+                        autoComplete="off"
+                        maxLength={12}
+                        onChange={(event) => {
+                          setSymbolSearchField('symbol')
+                          setSymbolSearchTouched(true)
+                          setSymbolInput(event.target.value)
+                        }}
+                        onFocus={() => {
+                          setSymbolSearchField('symbol')
+                          setSymbolSearchTouched(true)
+                          setSymbolSuggestionOpen(symbolSuggestions.length > 0)
+                        }}
+                        onKeyDown={handleSymbolSuggestKeyDown}
+                        placeholder="005930"
+                        value={symbolInput}
+                      />
+                    </label>
+                    <label className="field">
+                      종목명
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => {
+                          setSymbolSearchField('name')
+                          setSymbolSearchTouched(true)
+                          setNameInput(event.target.value)
+                        }}
+                        onFocus={() => {
+                          setSymbolSearchField('name')
+                          setSymbolSearchTouched(true)
+                          setSymbolSuggestionOpen(symbolSuggestions.length > 0)
+                        }}
+                        onKeyDown={handleSymbolSuggestKeyDown}
+                        placeholder="삼성전자"
+                        value={nameInput}
+                      />
+                    </label>
+                    <button className="primary" disabled={loading} type="submit">
+                      추가
+                    </button>
+                  </form>
+                  {(symbolSuggestionOpen || symbolSearchLoading) && (
+                    <div className="symbol-suggestions" role="listbox">
+                      {symbolSearchLoading && symbolSuggestions.length === 0 ? (
+                        <div className="symbol-suggestion muted">검색 중...</div>
+                      ) : (
+                        symbolSuggestions.map((item, index) => (
+                          <button
+                            className={
+                              index === symbolSuggestionIndex
+                                ? 'symbol-suggestion active'
+                                : 'symbol-suggestion'
+                            }
+                            key={item.symbol}
+                            onMouseDown={(event) => {
+                              event.preventDefault()
+                              selectSymbolSuggestion(item)
+                            }}
+                            onMouseEnter={() => setSymbolSuggestionIndex(index)}
+                            role="option"
+                            type="button"
+                          >
+                            <strong>{item.name}</strong>
+                            <span>{item.symbol}</span>
+                            <em>{item.market}</em>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
               </section>
 
               <section className="control-section grow">
