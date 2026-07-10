@@ -23,12 +23,17 @@
 
 ```bash
 uv sync --extra server
-uv run uvicorn server.main:app --reload   # 백엔드 :8000
-cd web && npm install && npm run dev      # 프론트 :5173 (/api → 8000 프록시)
+npm --prefix web install
+scripts/run-api.sh   # 백엔드 :8000, .env 자동 로드
+scripts/run-web.sh   # 프론트 :5173 (/api → 8000 프록시)
 ```
 
-국내 종목 검색을 쓰려면 Supabase에 `supabase/migrations/20260710_domestic_master.sql`을 적용한 뒤,
-백엔드 실행 상태에서 `POST /api/symbols/sync`로 KOSPI/KOSDAQ 보통주 master를 업서트한다.
+국내 종목 검색을 쓰려면 Supabase에 `supabase/migrations/20260710_domestic_master.sql`을 적용한 뒤
+KIS 종목마스터를 갱신한다.
+
+```bash
+scripts/update-domestic-master.sh
+```
 
 ## 문서
 

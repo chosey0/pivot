@@ -364,6 +364,21 @@ button:disabled {
   background: #ffffff;
 }
 
+.chart-loading-more {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  margin: 0;
+  padding: 6px 9px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.9);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .indicator-overlay {
   position: absolute;
   inset: 0;

@@ -56,6 +56,7 @@ const DEFAULT_MA_SETTINGS: MovingAverageSetting[] = [
 const KRW_FORMATTER = new Intl.NumberFormat('ko-KR', {
   maximumFractionDigits: 0,
 })
+const INTRADAY_CHART_LIMIT = 5000
 
 function cloneMaSettings(settings: MovingAverageSetting[]) {
   return settings.map((setting) => ({ ...setting }))
@@ -139,6 +140,57 @@ function changeTone(value: number | null) {
   return 'neutral'
 }
 
+function isMissingCacheError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('404 Not Found') && message.includes('no cached data')
+}
+
+function chartLimitFor(timeframe: TimeframeCode) {
+  return timeframe === 'day' ? undefined : INTRADAY_CHART_LIMIT
+}
+
+function mergeOlderChart(current: ChartResponse, older: ChartResponse): ChartResponse {
+  const candleByTime = new Map<string | number, ChartResponse['candles'][number]>()
+  for (const candle of [...older.candles, ...current.candles]) {
+    candleByTime.set(candle.time, candle)
+  }
+  const candles = [...candleByTime.values()].sort((a, b) =>
+    typeof a.time === 'number' && typeof b.time === 'number'
+      ? a.time - b.time
+      : String(a.time).localeCompare(String(b.time)),
+  )
+  const times = new Set(candles.map((candle) => candle.time))
+  const volumeByTime = new Map<string | number, ChartResponse['volumes'][number]>()
+  for (const point of [...older.volumes, ...current.volumes]) {
+    if (times.has(point.time)) volumeByTime.set(point.time, point)
+  }
+  const volumes = [...volumeByTime.values()].sort((a, b) =>
+    typeof a.time === 'number' && typeof b.time === 'number'
+      ? a.time - b.time
+      : String(a.time).localeCompare(String(b.time)),
+  )
+  const ma: Record<string, ChartResponse['ma'][string]> = {}
+  for (const window of new Set([...Object.keys(older.ma), ...Object.keys(current.ma)])) {
+    const lineByTime = new Map<string | number, ChartResponse['ma'][string][number]>()
+    for (const point of [...(older.ma[window] ?? []), ...(current.ma[window] ?? [])]) {
+      if (times.has(point.time)) lineByTime.set(point.time, point)
+    }
+    ma[window] = [...lineByTime.values()].sort((a, b) =>
+      typeof a.time === 'number' && typeof b.time === 'number'
+        ? a.time - b.time
+        : String(a.time).localeCompare(String(b.time)),
+    )
+  }
+  return {
+    ...current,
+    candles,
+    volumes,
+    ma,
+    has_more: older.has_more,
+    next_before: older.next_before,
+  }
+}
+
 function App() {
   const today = new Date().toISOString().slice(0, 10)
   const [activeTab, setActiveTab] = useState<TabId>('watchlist')
@@ -171,6 +223,8 @@ function App() {
   const [presetNameInput, setPresetNameInput] = useState(DEFAULT_INDICATOR_PRESET_NAME)
   const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [chartFitKey, setChartFitKey] = useState('')
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -296,20 +350,49 @@ function App() {
     nextMaWindows: number[],
   ) => {
     if (!symbol) return
+    setSelectedSymbol(symbol)
     setLoading(true)
     setError(null)
     try {
-      const next = await api.chart(symbol, nextTimeframe, nextMaWindows)
+      const next = await api.chart(symbol, nextTimeframe, nextMaWindows, {
+        limit: chartLimitFor(nextTimeframe),
+      })
       setChart(next)
-      setSelectedSymbol(symbol)
+      setSelectedOhlc(next.candles.at(-1) ?? null)
+      setChartFitKey(`${symbol}:${nextTimeframe}:${Date.now()}`)
       setMessage(`${symbol} ${nextTimeframe} 차트를 불러왔습니다.`)
     } catch (e) {
       setChart(null)
-      setError(e instanceof Error ? e.message : String(e))
+      if (isMissingCacheError(e)) {
+        setMessage(`${symbol} ${nextTimeframe} 캐시가 없습니다. 수집 버튼을 눌러 먼저 데이터를 수집하세요.`)
+      } else {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
       setLoading(false)
     }
   }, [])
+
+  const loadOlderChart = useCallback(async () => {
+    if (!chart || !selectedSymbol || !chart.has_more || loadingOlder) return
+    const first = chart.candles[0]
+    if (!first) return
+    setLoadingOlder(true)
+    setError(null)
+    try {
+      const older = await api.chart(selectedSymbol, timeframe, maWindows, {
+        limit: chartLimitFor(timeframe),
+        before: first.time,
+      })
+      setChart((current) => (current ? mergeOlderChart(current, older) : older))
+    } catch (e) {
+      if (!isMissingCacheError(e)) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [chart, loadingOlder, maWindows, selectedSymbol, timeframe])
 
   useEffect(() => {
     refreshWatchlist()
@@ -327,7 +410,13 @@ function App() {
   }, [indicatorPresets])
 
   useEffect(() => {
-    setSelectedOhlc(chart?.candles[chart.candles.length - 1] ?? null)
+    setSelectedOhlc((current) => {
+      if (!chart) return null
+      if (current && chart.candles.some((candle) => candle.time === current.time)) {
+        return current
+      }
+      return chart.candles.at(-1) ?? null
+    })
   }, [chart])
 
   useEffect(() => {
@@ -842,6 +931,7 @@ function App() {
               {message && !error && <p className="message">{message}</p>}
               <div className="chart-area">
                 {loading && !chart ? <p className="empty">불러오는 중...</p> : null}
+                {loadingOlder && chart ? <p className="chart-loading-more">과거 데이터 불러오는 중...</p> : null}
                 {chart && (
                   <div className="chart-legend">
                     <div className="ohlc-row">
@@ -899,8 +989,12 @@ function App() {
                 )}
                 {chart ? (
                   <CandleChart
+                    canLoadMoreOlder={Boolean(chart.has_more)}
                     candles={chart.candles}
+                    fitContentKey={chartFitKey}
+                    isLoadingOlder={loadingOlder}
                     ma={chart.ma}
+                    onLoadMoreOlder={loadOlderChart}
                     onOhlcChange={setSelectedOhlc}
                     visibleIndicators={visibleIndicators}
                     volumes={chart.volumes}

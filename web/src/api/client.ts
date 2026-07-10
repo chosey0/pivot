@@ -22,6 +22,8 @@ export interface ChartResponse {
   candles: Candle[]
   volumes: VolumePoint[]
   ma: Record<string, LinePoint[]>
+  has_more?: boolean
+  next_before?: string | null
 }
 
 export interface WatchItem {
@@ -57,6 +59,11 @@ export interface IngestResponse {
 export interface IngestOptions {
   start?: string
   end?: string
+}
+
+export interface ChartOptions {
+  limit?: number
+  before?: string | number
 }
 
 export interface PreviewMarker {
@@ -172,9 +179,16 @@ export const api = {
     })
     return fetchJson<Record<string, CacheStatus | null>>(`/api/ingest/status?${params}`)
   },
-  chart: (symbol: string, timeframe: TimeframeCode, maWindows: number[] = []) => {
+  chart: (
+    symbol: string,
+    timeframe: TimeframeCode,
+    maWindows: number[] = [],
+    options: ChartOptions = {},
+  ) => {
     const params = new URLSearchParams({ timeframe })
     if (maWindows.length > 0) params.set('ma', maWindows.join(','))
+    if (options.limit) params.set('limit', String(options.limit))
+    if (options.before !== undefined) params.set('before', String(options.before))
     return fetchJson<ChartResponse>(`/api/chart/${encodeURIComponent(symbol)}?${params}`)
   },
   preprocessPreview: (symbol: string, params: PreviewParams, signal?: AbortSignal) =>

@@ -57,6 +57,10 @@ interface Props {
   highlightRange?: TimeRange | null
   onOhlcChange?: (point: OhlcPoint) => void
   onTimeClick?: (time: string | number) => void
+  onLoadMoreOlder?: () => void
+  canLoadMoreOlder?: boolean
+  isLoadingOlder?: boolean
+  fitContentKey?: string
 }
 
 /** lightweight-charts 내부 시간값(BusinessDay 객체 등)을 API 시간값으로 되돌린다. */
@@ -85,6 +89,50 @@ function formatTimeLabel(time: Time): string {
 /** 원화 가격축: 소수점 없이 천 단위 구분 표기 (예: 1,000,000). */
 function formatKrwPrice(price: number): string {
   return Math.round(price).toLocaleString('ko-KR')
+}
+
+function compareTimes(a: string | number, b: string | number): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  return String(a).localeCompare(String(b))
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function uniqueSortedByTime<T extends { time: string | number }>(rows: T[]): T[] {
+  const byTime = new Map<string | number, T>()
+  for (const row of rows) {
+    byTime.set(row.time, row)
+  }
+  return [...byTime.values()].sort((a, b) => compareTimes(a.time, b.time))
+}
+
+function toCandlestickData(candles: Candle[]): CandlestickData<Time>[] {
+  return uniqueSortedByTime(
+    candles.filter(
+      (candle) =>
+        isFiniteNumber(candle.open) &&
+        isFiniteNumber(candle.high) &&
+        isFiniteNumber(candle.low) &&
+        isFiniteNumber(candle.close),
+    ),
+  ).map((candle) => ({
+    time: candle.time as Time,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  }))
+}
+
+function toLineData(points: LinePoint[], validTimes: Set<string | number>): LineData<Time>[] {
+  return uniqueSortedByTime(
+    points.filter((point) => validTimes.has(point.time) && isFiniteNumber(point.value)),
+  ).map((point) => ({
+    time: point.time as Time,
+    value: point.value,
+  }))
 }
 
 function toSeriesMarker(marker: ChartMarker): SeriesMarker<Time> {
@@ -161,6 +209,10 @@ export function CandleChart({
   highlightRange = null,
   onOhlcChange,
   onTimeClick,
+  onLoadMoreOlder,
+  canLoadMoreOlder = false,
+  isLoadingOlder = false,
+  fitContentKey = '',
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -171,11 +223,19 @@ export function CandleChart({
   const highlightRef = useRef<RangeHighlightPrimitive | null>(null)
   const onOhlcChangeRef = useRef(onOhlcChange)
   const onTimeClickRef = useRef(onTimeClick)
+  const onLoadMoreOlderRef = useRef(onLoadMoreOlder)
+  const canLoadMoreOlderRef = useRef(canLoadMoreOlder)
+  const isLoadingOlderRef = useRef(isLoadingOlder)
+  const dataLengthRef = useRef(0)
+  const fitContentKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     onOhlcChangeRef.current = onOhlcChange
     onTimeClickRef.current = onTimeClick
-  }, [onOhlcChange, onTimeClick])
+    onLoadMoreOlderRef.current = onLoadMoreOlder
+    canLoadMoreOlderRef.current = canLoadMoreOlder
+    isLoadingOlderRef.current = isLoadingOlder
+  }, [onOhlcChange, onTimeClick, onLoadMoreOlder, canLoadMoreOlder, isLoadingOlder])
 
   useEffect(() => {
     const container = containerRef.current
@@ -226,8 +286,18 @@ export function CandleChart({
       if (param.time === undefined) return
       onTimeClickRef.current?.(timeToKey(param.time))
     })
+    const rangeHandler = () => {
+      const currentRange = chart.timeScale().getVisibleLogicalRange()
+      if (!currentRange || !canLoadMoreOlderRef.current || isLoadingOlderRef.current) return
+      const barsInfo = series.barsInLogicalRange(currentRange)
+      if (barsInfo && barsInfo.barsBefore < 50) {
+        onLoadMoreOlderRef.current?.()
+      }
+    }
+    chart.timeScale().subscribeVisibleLogicalRangeChange(rangeHandler)
 
     return () => {
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(rangeHandler)
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
@@ -295,21 +365,53 @@ export function CandleChart({
       })
     }
 
-    seriesRef.current.setData(candles as CandlestickData<Time>[])
-    volumeSeriesRef.current?.setData(
-      volumes.map((point, index) => ({
-        ...point,
-        color:
-          candles[index] && candles[index].close >= candles[index].open
-            ? 'rgba(229, 72, 77, 0.45)'
-            : 'rgba(59, 130, 246, 0.45)',
-      })) as HistogramData<Time>[],
+    const previousLength = dataLengthRef.current
+    const previousRange = chart.timeScale().getVisibleLogicalRange()
+    const candleData = toCandlestickData(candles)
+    const validTimes = new Set(candleData.map((candle) => timeToKey(candle.time)))
+    const candleDirection = new Map(
+      candleData.map((candle) => [timeToKey(candle.time), candle.close >= candle.open]),
     )
-    for (const [window, series] of Object.entries(maSeriesRef.current)) {
-      series.setData((ma[window] ?? []) as LineData<Time>[])
+    const volumeData = uniqueSortedByTime(
+      volumes.filter((point) => validTimes.has(point.time) && isFiniteNumber(point.value)),
+    ).map((point) => ({
+      time: point.time as Time,
+      value: point.value,
+      color: candleDirection.get(point.time)
+        ? 'rgba(229, 72, 77, 0.45)'
+        : 'rgba(59, 130, 246, 0.45)',
+    })) as HistogramData<Time>[]
+    const maDataByWindow = Object.fromEntries(
+      Object.keys(maSeriesRef.current).map((window) => [
+        window,
+        toLineData(ma[window] ?? [], validTimes),
+      ]),
+    ) as Record<string, LineData<Time>[]>
+    const addedBefore = Math.max(candleData.length - previousLength, 0)
+    const replacingContent = fitContentKeyRef.current !== fitContentKey
+
+    if (previousLength > 0 && (addedBefore > 0 || replacingContent)) {
+      for (const series of Object.values(maSeriesRef.current)) {
+        series.setData([])
+      }
     }
-    chart.timeScale().fitContent()
-  }, [candles, volumes, ma, visibleIndicators])
+
+    seriesRef.current.setData(candleData)
+    volumeSeriesRef.current?.setData(volumeData)
+    for (const [window, series] of Object.entries(maSeriesRef.current)) {
+      series.setData(maDataByWindow[window] ?? [])
+    }
+    if (replacingContent) {
+      chart.timeScale().fitContent()
+      fitContentKeyRef.current = fitContentKey
+    } else if (previousRange && addedBefore > 0) {
+      chart.timeScale().setVisibleLogicalRange({
+        from: previousRange.from + addedBefore,
+        to: previousRange.to + addedBefore,
+      })
+    }
+    dataLengthRef.current = candleData.length
+  }, [candles, volumes, ma, visibleIndicators, fitContentKey])
 
   useEffect(() => {
     markersApiRef.current?.setMarkers(markers.map(toSeriesMarker))
