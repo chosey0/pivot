@@ -119,6 +119,12 @@ export function Lab() {
     [],
   )
 
+  const selectedSymbolLabel = useMemo(() => {
+    if (!selectedSymbol) return ''
+    const name = watchlist.find((item) => item.symbol === selectedSymbol)?.name
+    return name ? `${name} • ${selectedSymbol}` : selectedSymbol
+  }, [selectedSymbol, watchlist])
+
   const highlightRange = useMemo<TimeRange | null>(
     () =>
       selectedSample
@@ -211,10 +217,10 @@ export function Lab() {
     <>
       <aside className="side-panel lab-symbols">
         <section className="control-section grow">
-          <h2>관심종목</h2>
+          <h2>종목</h2>
           <div className="watch-table">
             {watchlist.length === 0 ? (
-              <p className="empty">종목 & 데이터 탭에서 관심종목을 먼저 추가하세요.</p>
+              <p className="empty">종목 & 데이터 탭에서 종목을 먼저 추가하세요.</p>
             ) : (
               watchlist.map((item) => (
                 <div
@@ -239,7 +245,7 @@ export function Lab() {
       <section className="chart-panel">
         <div className="chart-toolbar">
           <div>
-            <h2>{selectedSymbol ? `${selectedSymbol} 전처리 미리보기` : '종목을 선택하세요'}</h2>
+            <h2>{selectedSymbolLabel ? `${selectedSymbolLabel} 전처리 미리보기` : '종목을 선택하세요'}</h2>
             <span>
               {timeframe} · 프랙탈 n={fractalN} · max_len={maxLen}
               {loading ? ' · 계산 중...' : ''}

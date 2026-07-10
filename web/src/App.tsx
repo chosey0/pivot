@@ -232,6 +232,11 @@ function App() {
       }))
       .filter((item) => item.missingBars > 0)
   }, [chart, draftMaSettings])
+  const selectedSymbolLabel = useMemo(() => {
+    if (!selectedSymbol) return ''
+    const name = watchlist.find((item) => item.symbol === selectedSymbol)?.name
+    return name ? `${name} • ${selectedSymbol}` : selectedSymbol
+  }, [selectedSymbol, watchlist])
   const displayedOhlc = selectedOhlc ?? chart?.candles[chart.candles.length - 1] ?? null
   const displayedOhlcPreviousClose = useMemo(() => {
     if (!chart || !displayedOhlc) return null
@@ -325,7 +330,7 @@ function App() {
       setWatchlist(items)
       setSelectedSymbol(symbol)
       await refreshStatus(items, timeframe)
-      setMessage(`${symbol}을 관심종목에 추가했습니다.`)
+      setMessage(`${symbol}을 종목 목록에 추가했습니다.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -348,7 +353,7 @@ function App() {
         setSelectedSymbol(items[0]?.symbol ?? '')
         setChart(null)
       }
-      setMessage(`${symbol}을 관심종목에서 제거했습니다.`)
+      setMessage(`${symbol}을 종목 목록에서 제거했습니다.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -604,7 +609,7 @@ function App() {
               </section>
 
               <section className="control-section">
-                <h2>관심종목 추가</h2>
+                <h2>종목 추가</h2>
                 <form className="add-form" onSubmit={addWatchItem}>
                   <label className="field">
                     종목코드
@@ -631,7 +636,7 @@ function App() {
 
               <section className="control-section grow">
                 <div className="section-title-row">
-                  <h2>관심종목</h2>
+                  <h2>종목</h2>
                   <button
                     className="ghost"
                     disabled={loading || watchlist.length === 0}
@@ -643,7 +648,7 @@ function App() {
                 </div>
                 <div className="watch-table">
                   {watchlist.length === 0 ? (
-                    <p className="empty">종목코드와 이름을 직접 입력해 관심종목을 추가하세요.</p>
+                    <p className="empty">종목코드와 이름을 직접 입력해 종목을 추가하세요.</p>
                   ) : (
                     watchlist.map((item) => {
                       const status = statuses[item.symbol]
@@ -689,7 +694,7 @@ function App() {
             <section className="chart-panel">
               <div className="chart-toolbar">
                 <div>
-                  <h2>{selectedSymbol || '종목을 선택하세요'}</h2>
+                  <h2>{selectedSymbolLabel || '종목을 선택하세요'}</h2>
                   <span>
                     {timeframe} · 캔들
                     {visibleIndicators.movingAverages.length > 0

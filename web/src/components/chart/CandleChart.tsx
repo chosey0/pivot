@@ -68,6 +68,25 @@ function timeToKey(time: Time): string | number {
   return time
 }
 
+/** 크로스헤어 시간 라벨: 일봉 yyyy-mm-dd, 분/틱봉(unix 초)은 초 단위까지. */
+function formatTimeLabel(time: Time): string {
+  if (typeof time === 'number') {
+    // 백엔드가 naive(KST 벽시계) 시각을 UTC epoch로 직렬화하므로 UTC getter로 복원
+    const date = new Date(time * 1000)
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return (
+      `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}` +
+      ` ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}`
+    )
+  }
+  return String(timeToKey(time))
+}
+
+/** 원화 가격축: 소수점 없이 천 단위 구분 표기 (예: 1,000,000). */
+function formatKrwPrice(price: number): string {
+  return Math.round(price).toLocaleString('ko-KR')
+}
+
 function toSeriesMarker(marker: ChartMarker): SeriesMarker<Time> {
   const time = marker.time as Time
   if (marker.label === 0) {
@@ -171,6 +190,10 @@ export function CandleChart({
       grid: {
         vertLines: { color: 'rgba(107, 114, 128, 0.12)' },
         horzLines: { color: 'rgba(107, 114, 128, 0.12)' },
+      },
+      localization: {
+        timeFormatter: formatTimeLabel,
+        priceFormatter: formatKrwPrice,
       },
       timeScale: { borderVisible: false },
       rightPriceScale: { borderVisible: false },
