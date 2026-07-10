@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  type PresetJson,
   type PreviewParams,
   type PreviewResponse,
   type PreviewSample,
@@ -63,6 +64,9 @@ export function Lab() {
   const [selectedSample, setSelectedSample] = useState<PreviewSample | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [presetName, setPresetName] = useState('')
+  const [presetSaving, setPresetSaving] = useState(false)
+  const [presetStatus, setPresetStatus] = useState<string | null>(null)
   const lastStatsRef = useRef<PreviewStats | null>(null)
   const requestSeqRef = useRef(0)
 
@@ -222,6 +226,42 @@ export function Lab() {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [moveSample, selectedSample])
+
+  async function savePreset() {
+    const name = presetName.trim()
+    if (!name || presetSaving) return
+    setPresetSaving(true)
+    setPresetStatus(null)
+    try {
+      // 차트 표시 지표와 학습 피처 선택을 프리셋에 함께 보존한다 (docs/04 §2)
+      const preset: PresetJson = {
+        ...params,
+        name,
+        chart_indicators: {
+          preset: name,
+          moving_averages: LAB_MA_LINES.map((line) => ({
+            window: line.window,
+            color: line.color,
+            line_width: 1,
+            chart: true,
+            feature: featureWindows.includes(line.window),
+          })),
+          volume: { chart: false, feature: volumeFeature },
+        },
+      }
+      // 같은 이름이 있으면 새 버전, 없으면 신규 생성 (목록은 name asc, version desc 정렬)
+      const sameName = (await api.presets()).filter((row) => row.name === name)
+      const saved =
+        sameName.length > 0
+          ? await api.createPresetVersion(sameName[0].id, preset)
+          : await api.createPreset(preset)
+      setPresetStatus(`'${saved.name}' v${saved.version} 저장 완료 — 데이터셋 탭에서 사용할 수 있습니다.`)
+    } catch (e) {
+      setPresetStatus(`저장 실패: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setPresetSaving(false)
+    }
+  }
 
   function toggleFeatureWindow(window: number) {
     setFeatureWindows((current) =>
@@ -506,6 +546,31 @@ export function Lab() {
             <span>{(preview?.features.columns ?? featureColumns).join(', ')}</span>
             <em>입력 차원 {(preview?.features.columns ?? featureColumns).length}</em>
           </div>
+        </section>
+
+        <section className="control-section">
+          <h2>프리셋 저장</h2>
+          <label className="field">
+            프리셋 이름
+            <input
+              onChange={(event) => setPresetName(event.target.value)}
+              placeholder="예: day20_ma20120_cls3"
+              type="text"
+              value={presetName}
+            />
+          </label>
+          <button
+            className="primary"
+            disabled={presetSaving || presetName.trim() === ''}
+            onClick={savePreset}
+            type="button"
+          >
+            {presetSaving ? '저장 중...' : '현재 파라미터를 프리셋으로 저장'}
+          </button>
+          {presetStatus && <p className="hint">{presetStatus}</p>}
+          <p className="hint">
+            같은 이름으로 저장하면 새 버전이 생성됩니다. 일괄 적용은 데이터셋 탭에서 실행합니다.
+          </p>
         </section>
       </aside>
     </>

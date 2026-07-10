@@ -860,3 +860,138 @@ button:disabled {
   margin: 8px 0 0;
   color: #6b7280;
 }
+
+/* ── 데이터셋 탭 ────────────────────────────────────────────── */
+
+.datasets-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.preset-version {
+  color: #2563eb;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.batch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+}
+
+.batch-symbols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.batch-symbols .muted-text {
+  font-weight: 400;
+}
+
+.batch-progress {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #2563eb;
+  transition: width 0.3s ease;
+}
+
+.symbol-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.symbol-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 12px;
+}
+
+.symbol-chip.running {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.symbol-chip.succeeded {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.symbol-chip.failed {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.dataset-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.dataset-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.4fr) 90px minmax(120px, 1fr) 130px minmax(160px, 1.2fr) 150px;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13px;
+}
+
+.dataset-row:last-child {
+  border-bottom: none;
+}
+
+.dataset-head {
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.dataset-status.ready {
+  color: #047857;
+  font-weight: 700;
+}
+
+.dataset-status.building {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.dataset-status.failed {
+  color: #b91c1c;
+  font-weight: 700;
+}

@@ -10,6 +10,7 @@ import {
 import type { OhlcPoint, VisibleIndicators } from './components/chart/CandleChart'
 import { CandleChart } from './components/chart/CandleChart'
 import { ChartPanel } from './components/chart/ChartPanel'
+import { Datasets } from './pages/Datasets'
 import { Lab } from './pages/Lab'
 import './App.css'
 
@@ -1218,7 +1219,7 @@ function App() {
         )}
 
         {activeTab === 'lab' && <Lab />}
-        {activeTab === 'datasets' && renderPlaceholder('데이터셋: M3에서 일괄 처리와 샘플 브라우저를 연결합니다.')}
+        {activeTab === 'datasets' && <Datasets />}
         {activeTab === 'diagnostics' && renderPlaceholder('데이터 진단: M3에서 품질 리포트를 연결합니다.')}
         {activeTab === 'training' && renderPlaceholder('학습: M4에서 run 관리와 평가 지표를 연결합니다.')}
         {activeTab === 'live' && renderPlaceholder('실시간: M5에서 WebSocket 추론을 연결합니다.')}

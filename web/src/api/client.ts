@@ -118,6 +118,93 @@ export interface PreviewParams {
   filters: { ma_alignment: '20>120' | '5>20>120' | null; min_amount: number | null }
 }
 
+export interface ChartIndicatorsConfig {
+  preset: string
+  moving_averages: {
+    window: number
+    color: string
+    line_width: number
+    chart: boolean
+    feature: boolean
+  }[]
+  volume: { chart: boolean; feature: boolean }
+}
+
+// Supabase training_presets.preset 전체 JSON (PreprocessPreset)
+export interface PresetJson extends PreviewParams {
+  name: string
+  chart_indicators?: ChartIndicatorsConfig
+}
+
+export interface PresetRow {
+  id: number
+  name: string
+  version: number
+  schema_version: number
+  preset: PresetJson
+  archived_at: string | null
+  created_at: string
+}
+
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+export interface JobRow {
+  id: number
+  kind: string
+  status: JobStatus
+  completed_items: number
+  total_items: number
+  error: string | null
+  result: Record<string, unknown> | null
+}
+
+export type DatasetStatus = 'building' | 'ready' | 'failed'
+
+export interface DatasetRow {
+  id: number
+  name: string
+  preset_id: number
+  timeframe: string
+  status: DatasetStatus
+  feature_columns: string[]
+  sample_count: number
+  symbol_count: number
+  class_counts: Record<string, number>
+  failure_message: string | null
+  created_at: string
+  completed_at: string | null
+  preset_snapshot: {
+    preset_name?: string
+    preset_version?: number
+    split?: { method: string; seed: number; ratios: Record<string, number> }
+  }
+}
+
+export interface DatasetSymbolRow {
+  symbol: string
+  split: 'train' | 'validation' | 'test' | null
+  status: 'pending' | 'running' | 'ready' | 'failed'
+  sample_count: number
+  class_counts: Record<string, number>
+  error: string | null
+}
+
+export interface DatasetDetail extends DatasetRow {
+  symbols: DatasetSymbolRow[]
+  shards: {
+    symbol: string
+    shard_index: number
+    size_bytes: number
+    row_count: number
+    sha256: string
+  }[]
+}
+
+export interface BatchStartResponse {
+  job_id: number
+  dataset_id: number
+}
+
 export type TimeframeCode =
   | 'day'
   | 'min1'
@@ -197,4 +284,30 @@ export const api = {
       body: JSON.stringify({ symbol, params }),
       signal,
     }),
+  presets: (includeArchived = false) =>
+    fetchJson<PresetRow[]>(`/api/presets?include_archived=${includeArchived}`),
+  createPreset: (preset: PresetJson) =>
+    fetchJson<PresetRow>('/api/presets', {
+      method: 'POST',
+      body: JSON.stringify({ preset }),
+    }),
+  createPresetVersion: (presetId: number, preset: PresetJson) =>
+    fetchJson<PresetRow>(`/api/presets/${presetId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ preset }),
+    }),
+  archivePreset: (presetId: number) =>
+    fetchJson<PresetRow>(`/api/presets/${presetId}`, { method: 'DELETE' }),
+  preprocessBatch: (presetId: number, datasetName: string, symbols: string[]) =>
+    fetchJson<BatchStartResponse>('/api/preprocess/batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        preset_id: presetId,
+        dataset_name: datasetName,
+        symbols,
+      }),
+    }),
+  job: (jobId: number) => fetchJson<JobRow>(`/api/jobs/${jobId}`),
+  datasets: () => fetchJson<DatasetRow[]>('/api/datasets'),
+  dataset: (datasetId: number) => fetchJson<DatasetDetail>(`/api/datasets/${datasetId}`),
 }

@@ -5,6 +5,9 @@ from typing import Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 MINUTE_UNITS = (1, 3, 5, 10, 15, 30, 45, 60)
+# 저장된 프리셋 JSON(PreprocessPreset)의 스키마 버전. 필드가 호환 불가능하게
+# 바뀌면 올리고, 로드 시 검증한다 (training_presets.schema_version).
+PRESET_SCHEMA_VERSION = 1
 TICK_UNITS = (1, 3, 5, 10, 30)
 DEFAULT_MA_WINDOWS = (5, 20, 60, 120)
 BASE_FEATURES = ("Open", "High", "Low", "Close")

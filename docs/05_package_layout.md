@@ -18,13 +18,20 @@ pivot/                        # 저장소 루트
 │   │   ├── schema.py         #   ChartBar → 표준 DataFrame 변환 + 스키마 검증
 │   │   ├── indicators.py     #   이평선 직접 계산 (ma_source: self | daily)
 │   │   └── cache.py          #   parquet 캐시 입출력 (증분 갱신)
+│   ├── env.py                #   저장소 루트 .env 로더 (프로세스 환경변수 우선)
 │   ├── symbols/              #   KIS 종목마스터 정규화 + Supabase domestic_master 업서트/검색
+│   ├── storage/              #   Supabase 학습 데이터 저장소 경계 — docs/06 계약 소유
+│   │   ├── supabase.py       #   PostgREST(메타데이터)·Storage(객체) 클라이언트 분리
+│   │   ├── presets.py        #   training_presets repository (버전 증가·archive·검증)
+│   │   ├── jobs.py           #   jobs/job_events repository (상태 전이 강제)
+│   │   └── datasets.py       #   datasets/dataset_symbols/dataset_shards repository
 │   ├── labeling/             # ② 프랙탈 라벨링
 │   │   └── fractal.py        #   calc_fractal + 옵션 필터(정배열/유동성, B5) + 라벨 모드(B2)
 │   ├── dataset/              # ③ 시퀀스 샘플 생성/로딩
 │   │   ├── build.py          #   샘플 생성 (low/high 루프 통합 A7, float 직렬화 A1, Time 제외 A2)
+│   │   ├── shards.py         #   샘플 → parquet shard 직렬화 (SHA-256, 50MiB 미만 분할)
+│   │   ├── batch.py          #   일괄 전처리 파이프라인 (run_preprocess 재사용, split 배정, 업로드 검증)
 │   │   ├── transforms.py     #   스케일링 공용 모듈 — 학습·실시간 추론 공유 (A4), torch 비의존
-│   │   ├── storage.py        #   Supabase dataset 메타데이터 + private parquet shard 저장 계약
 │   │   └── loader.py         #   Storage shard 로딩 + torch Dataset/collate (마스킹/패딩 A3)
 │   ├── diagnostics/          #   데이터 품질 진단 — raw cache / preset preview / dataset 리포트
 │   │   └── quality.py        #   timestamp, OHLC, MA NaN, 라벨 분포, split 누수 검사
@@ -79,8 +86,9 @@ pivot/                        # 저장소 루트
 - **학습 관련 데이터의 단일 원본은 Supabase다.** 프리셋, job, 데이터셋/종목/분할 메타데이터,
   진단 리포트, run/epoch/평가 메타데이터는 Postgres에 저장한다. 데이터셋 shard와 모델
   artifact는 private Storage에 저장하며 로컬 파일은 실행 중 임시 캐시로만 사용한다.
-- **Supabase 접근은 저장소 경계에서만 수행한다.** `pivot/`의 저장 인터페이스가 메타데이터와
-  artifact 계약을 소유하고, `server/`는 서버 전용 키를 주입해 호출만 한다. 브라우저에는
+- **Supabase 접근은 저장소 경계에서만 수행한다.** `pivot/storage/`가 메타데이터와
+  artifact 계약을 소유하고 (초기 설계의 `dataset/storage.py`를 프리셋·job까지 포괄하는
+  전용 서브패키지로 확장), `server/`는 서버 전용 키를 주입해 호출만 한다. 브라우저에는
   secret/service-role 키나 private object URL을 노출하지 않는다.
 - 시각화 평가는 웹 차트(Training 탭 차트 검증)로 수행한다 — 초기 계획의 finplot
   기반 `evaluation/plot.py`는 폐기 (`viz` extra 불필요).

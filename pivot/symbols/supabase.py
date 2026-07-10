@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import httpx
 
+from pivot.env import env_value
 from pivot.symbols.master import DomesticMasterEntry
 
 DEFAULT_TABLE = "domestic_master"
-ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 
 @dataclass(frozen=True)
@@ -23,20 +21,18 @@ class SupabaseConfig:
 
     @classmethod
     def from_env(cls) -> "SupabaseConfig":
-        env_file = _read_env_file(ENV_PATH)
-        url = _env_value("SUPABASE_URL", env_file).rstrip("/")
+        url = env_value("SUPABASE_URL").rstrip("/")
         key = (
-            _env_value("SUPABASE_SERVICE_ROLE_KEY", env_file)
-            or _env_value("SUPABASE_SECRET_KEY", env_file)
-            or _env_value("SUPABASE_KEY", env_file)
-            or ""
+            env_value("SUPABASE_SERVICE_ROLE_KEY")
+            or env_value("SUPABASE_SECRET_KEY")
+            or env_value("SUPABASE_KEY")
         )
         if not url or not key:
             raise RuntimeError("SUPABASE_URL and a server-side Supabase key are required")
         return cls(
             url=url,
             key=key,
-            table=_env_value("SUPABASE_DOMESTIC_TABLE", env_file) or DEFAULT_TABLE,
+            table=env_value("SUPABASE_DOMESTIC_TABLE") or DEFAULT_TABLE,
         )
 
 
@@ -106,24 +102,3 @@ def _error_detail(response: httpx.Response) -> str:
     if code == "42P01":
         return "domestic_master table is missing; apply supabase/migrations/20260710_domestic_master.sql first"
     return str(message or payload)
-
-
-def _env_value(name: str, env_file: dict[str, str]) -> str:
-    return os.getenv(name) or env_file.get(name, "")
-
-
-def _read_env_file(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("\"'")
-        if key:
-            values[key] = value
-    return values

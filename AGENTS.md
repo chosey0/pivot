@@ -25,10 +25,17 @@ pandas-center-rolling alignment fixed by tests, lag `(n-1)//2`, labels 0/1/2, fi
 `pivot/dataset/build.py` (`run_preprocess` shared by preview and future batch),
 `POST /api/preprocess/preview`, and the Lab tab (debounced param recalc, v5 markers via
 `createSeriesMarkers`, stats diff bar, sample window highlight primitive, feature preview)
-are implemented and browser-verified. Remaining for M3: preset CRUD/저장, batch jobs + SSE,
-datasets, diagnostics. The M3 Supabase Postgres/private Storage foundation is migrated and
-verified; application repositories and UI flows are not implemented yet. Milestones M0–M5
-are defined in `docs/04_webapp_design.md` §7.
+are implemented and browser-verified.
+
+**M3-A (presets + batch datasets) done**: `pivot/storage/` owns the Supabase boundary
+(PostgREST/Storage clients split, preset/job/dataset repositories), `pivot/dataset/shards.py`
++ `batch.py` build parquet shards (SHA-256 verified re-download before metadata insert,
+deterministic symbol-level splits), preset CRUD is version-bump/archive only,
+`POST /api/preprocess/batch` runs a durable job (jobs/job_events) streamed via
+`GET /api/jobs/{id}/events` SSE, and the Datasets tab + Lab preset save are browser-verified.
+Remaining for **M3-B**: sample browser (shard download/페이지 조회), diagnostics tab +
+`diagnostic_reports`, dataset/run 삭제·orphan 정리 job, batch cancel API.
+Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7.
 
 Run dev servers: `uv run uvicorn server.main:app --reload` (port 8000) and
 `cd web && npm run dev` (port 5173, proxies `/api` and `/ws` to 8000).
