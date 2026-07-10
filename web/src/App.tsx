@@ -8,6 +8,7 @@ import {
 } from './api/client'
 import type { OhlcPoint, VisibleIndicators } from './components/chart/CandleChart'
 import { CandleChart } from './components/chart/CandleChart'
+import { Lab } from './pages/Lab'
 import './App.css'
 
 type TabId = 'watchlist' | 'lab' | 'datasets' | 'diagnostics' | 'training' | 'live'
@@ -992,8 +993,7 @@ function App() {
           </>
         )}
 
-        {activeTab === 'lab' &&
-          renderPlaceholder('전처리 실험실: M2에서 프랙탈 마커와 파라미터 미리보기를 연결합니다.')}
+        {activeTab === 'lab' && <Lab />}
         {activeTab === 'datasets' && renderPlaceholder('데이터셋: M3에서 일괄 처리와 샘플 브라우저를 연결합니다.')}
         {activeTab === 'diagnostics' && renderPlaceholder('데이터 진단: M3에서 품질 리포트를 연결합니다.')}
         {activeTab === 'training' && renderPlaceholder('학습: M4에서 run 관리와 평가 지표를 연결합니다.')}

@@ -239,3 +239,6 @@ temp/
 # Node / frontend
 node_modules/
 web/dist/
+
+# Playwright MCP artifacts
+.playwright-mcp/

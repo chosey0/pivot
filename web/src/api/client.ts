@@ -52,6 +52,58 @@ export interface IngestOptions {
   end?: string
 }
 
+export interface PreviewMarker {
+  time: string | number
+  position: number
+  kind: 'low' | 'high'
+  label: 0 | 1 | 2
+  price: number
+}
+
+export interface PreviewSample {
+  index: number
+  label: 0 | 1 | 2
+  kind: 'low' | 'high'
+  length: number
+  start_time: string | number
+  end_time: string | number
+  start_position: number
+  end_position: number
+}
+
+export interface PreviewStats {
+  bars: number
+  points: number
+  samples: number
+  class_counts: Record<string, number>
+  dropped_nan: number
+  dropped_filters: number
+  dropped_ignore: number
+  confirmation_lag: number
+}
+
+export interface PreviewFeatures {
+  columns: string[]
+  dimension: number
+}
+
+export interface PreviewResponse extends ChartResponse {
+  markers: PreviewMarker[]
+  samples: PreviewSample[]
+  stats: PreviewStats
+  features: PreviewFeatures
+}
+
+export interface PreviewParams {
+  timeframe: { type: 'day' | 'minute' | 'tick'; unit: number }
+  fractal: { n: number }
+  ma_windows: number[]
+  features: string[]
+  sample: { max_len: number }
+  labeling: { mode: 'cls3' | 'cls2_drop'; ignore_rule: 'ma20<ma120' | 'none' }
+  filters: { ma_alignment: '20>120' | '5>20>120' | null; min_amount: number | null }
+}
+
 export type TimeframeCode =
   | 'day'
   | 'min1'
@@ -114,4 +166,10 @@ export const api = {
     if (maWindows.length > 0) params.set('ma', maWindows.join(','))
     return fetchJson<ChartResponse>(`/api/chart/${encodeURIComponent(symbol)}?${params}`)
   },
+  preprocessPreview: (symbol: string, params: PreviewParams, signal?: AbortSignal) =>
+    fetchJson<PreviewResponse>('/api/preprocess/preview', {
+      method: 'POST',
+      body: JSON.stringify({ symbol, params }),
+      signal,
+    }),
 }

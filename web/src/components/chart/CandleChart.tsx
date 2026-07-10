@@ -1,11 +1,18 @@
 import { useEffect, useRef } from 'react'
 import {
   createChart,
+  createSeriesMarkers,
   CandlestickSeries,
   HistogramSeries,
   LineSeries,
   type IChartApi,
   type ISeriesApi,
+  type IPrimitivePaneRenderer,
+  type IPrimitivePaneView,
+  type ISeriesMarkersPluginApi,
+  type ISeriesPrimitive,
+  type SeriesAttachedParameter,
+  type SeriesMarker,
   type CandlestickData,
   type HistogramData,
   type LineData,
@@ -29,12 +36,95 @@ export interface OhlcPoint {
   close: number
 }
 
+// 프랙탈 라벨 마커. label 규약: 0=저점, 1=고점, 2=무시 (docs/04 §5)
+export interface ChartMarker {
+  time: string | number
+  kind: 'low' | 'high'
+  label: 0 | 1 | 2
+}
+
+export interface TimeRange {
+  from: string | number
+  to: string | number
+}
+
 interface Props {
   candles: Candle[]
   volumes?: VolumePoint[]
   ma?: Record<string, LinePoint[]>
   visibleIndicators?: VisibleIndicators
+  markers?: ChartMarker[]
+  highlightRange?: TimeRange | null
   onOhlcChange?: (point: OhlcPoint) => void
+  onTimeClick?: (time: string | number) => void
+}
+
+/** lightweight-charts 내부 시간값(BusinessDay 객체 등)을 API 시간값으로 되돌린다. */
+function timeToKey(time: Time): string | number {
+  if (typeof time === 'object') {
+    const pad = (value: number) => String(value).padStart(2, '0')
+    return `${time.year}-${pad(time.month)}-${pad(time.day)}`
+  }
+  return time
+}
+
+function toSeriesMarker(marker: ChartMarker): SeriesMarker<Time> {
+  const time = marker.time as Time
+  if (marker.label === 0) {
+    return { time, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', text: 'L' }
+  }
+  if (marker.label === 1) {
+    return { time, position: 'aboveBar', shape: 'arrowDown', color: '#ef5350', text: 'H' }
+  }
+  return {
+    time,
+    position: marker.kind === 'low' ? 'belowBar' : 'aboveBar',
+    shape: 'circle',
+    color: '#9e9e9e',
+  }
+}
+
+/** 샘플 입력 윈도우 하이라이트 — v5 series primitive로 반투명 배경을 그린다 (docs/04 §5). */
+class RangeHighlightPrimitive implements ISeriesPrimitive<Time> {
+  private chart: IChartApi | null = null
+  private requestUpdate: (() => void) | null = null
+  private range: TimeRange | null = null
+
+  attached(param: SeriesAttachedParameter<Time>) {
+    this.chart = param.chart
+    this.requestUpdate = param.requestUpdate
+  }
+
+  detached() {
+    this.chart = null
+    this.requestUpdate = null
+  }
+
+  setRange(range: TimeRange | null) {
+    this.range = range
+    this.requestUpdate?.()
+  }
+
+  paneViews(): readonly IPrimitivePaneView[] {
+    const draw: IPrimitivePaneRenderer['draw'] = (target) => {
+      const { chart, range } = this
+      if (!chart || !range) return
+      const timeScale = chart.timeScale()
+      const from = timeScale.timeToCoordinate(range.from as Time)
+      const to = timeScale.timeToCoordinate(range.to as Time)
+      // 양 끝이 모두 화면 밖이면 (전부 가림/전부 벗어남 구분 불가) 그리지 않는다
+      if (from === null && to === null) return
+      target.useBitmapCoordinateSpace((scope) => {
+        const ratio = scope.horizontalPixelRatio
+        const left = from !== null ? from * ratio : 0
+        const right = to !== null ? to * ratio : scope.bitmapSize.width
+        if (right <= left) return
+        scope.context.fillStyle = 'rgba(37, 99, 235, 0.14)'
+        scope.context.fillRect(left, 0, right - left, scope.bitmapSize.height)
+      })
+    }
+    return [{ renderer: () => ({ draw }) }]
+  }
 }
 
 export function CandleChart({
@@ -48,18 +138,25 @@ export function CandleChart({
     ],
     volume: true,
   },
+  markers = [],
+  highlightRange = null,
   onOhlcChange,
+  onTimeClick,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const maSeriesRef = useRef<Record<string, ISeriesApi<'Line'>>>({})
+  const markersApiRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
+  const highlightRef = useRef<RangeHighlightPrimitive | null>(null)
   const onOhlcChangeRef = useRef(onOhlcChange)
+  const onTimeClickRef = useRef(onTimeClick)
 
   useEffect(() => {
     onOhlcChangeRef.current = onOhlcChange
-  }, [onOhlcChange])
+    onTimeClickRef.current = onTimeClick
+  }, [onOhlcChange, onTimeClick])
 
   useEffect(() => {
     const container = containerRef.current
@@ -87,6 +184,10 @@ export function CandleChart({
     })
     chartRef.current = chart
     seriesRef.current = series
+    markersApiRef.current = createSeriesMarkers(series, [])
+    const highlight = new RangeHighlightPrimitive()
+    series.attachPrimitive(highlight)
+    highlightRef.current = highlight
     chart.subscribeCrosshairMove((param) => {
       const point = param.seriesData.get(series)
       if (!point || !('open' in point)) return
@@ -98,6 +199,10 @@ export function CandleChart({
         close: point.close,
       })
     })
+    chart.subscribeClick((param) => {
+      if (param.time === undefined) return
+      onTimeClickRef.current?.(timeToKey(param.time))
+    })
 
     return () => {
       chart.remove()
@@ -105,6 +210,8 @@ export function CandleChart({
       seriesRef.current = null
       volumeSeriesRef.current = null
       maSeriesRef.current = {}
+      markersApiRef.current = null
+      highlightRef.current = null
     }
   }, [])
 
@@ -180,6 +287,14 @@ export function CandleChart({
     }
     chart.timeScale().fitContent()
   }, [candles, volumes, ma, visibleIndicators])
+
+  useEffect(() => {
+    markersApiRef.current?.setMarkers(markers.map(toSeriesMarker))
+  }, [markers, candles])
+
+  useEffect(() => {
+    highlightRef.current?.setRange(highlightRange)
+  }, [highlightRange, candles])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }

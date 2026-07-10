@@ -117,20 +117,96 @@ class ChartIndicators(BaseModel):
         return self
 
 
+class FractalConfig(BaseModel):
+    """윌리엄스 프랙탈 center rolling window 설정.
+
+    창 크기 n의 프랙탈은 미래 `(n-1) // 2`봉이 지나야 확정되는 후행 지표다
+    (pandas center rolling 정렬, pivot/labeling/fractal.py 참고).
+    """
+
+    n: int = 20
+
+    @model_validator(mode="after")
+    def _check_n(self) -> Self:
+        if self.n < 3:
+            raise ValueError("fractal n must be >= 3")
+        return self
+
+    @property
+    def confirmation_lag(self) -> int:
+        return (self.n - 1) // 2
+
+
+class SampleConfig(BaseModel):
+    """시퀀스 샘플 설정. max_len = 라벨 봉을 끝으로 하는 입력 윈도우 길이 상한."""
+
+    max_len: int = 20
+
+    @model_validator(mode="after")
+    def _check_max_len(self) -> Self:
+        if self.max_len < 1:
+            raise ValueError("sample max_len must be >= 1")
+        return self
+
+
+class LabelingConfig(BaseModel):
+    """라벨 규약: 0=저점, 1=고점, 2=무시 (백로그 B2 모드화).
+
+    - cls3: 무시 규칙에 걸린 고점/저점을 label 2로 덮어씀 (구 방식)
+    - cls2_drop: 무시 규칙에 걸린 샘플을 제외하고 0/1만 유지
+    """
+
+    mode: Literal["cls3", "cls2_drop"] = "cls3"
+    ignore_rule: Literal["ma20<ma120", "none"] = "ma20<ma120"
+
+
+class FilterConfig(BaseModel):
+    """라벨링 단계 필터 (백로그 B5). 걸린 프랙탈 지점은 샘플에서 제외한다."""
+
+    ma_alignment: Literal["20>120", "5>20>120"] | None = None
+    min_amount: int | None = None
+
+    @model_validator(mode="after")
+    def _check_min_amount(self) -> Self:
+        if self.min_amount is not None and self.min_amount < 0:
+            raise ValueError("min_amount must be >= 0")
+        return self
+
+
 class PreprocessPreset(BaseModel):
     """전처리 프리셋.
 
     `features`는 학습 데이터에 들어갈 컬럼 목록이다. 차트에 보조지표를 표시하더라도
     여기에서 제외하면 데이터셋 피처로 사용하지 않는다.
+    name은 저장된 프리셋(M3 CRUD)에서만 필수이고, Lab preview는 이름 없이 쓴다.
     """
 
-    name: str
+    name: str = ""
     timeframe: Timeframe = Field(default_factory=Timeframe)
+    fractal: FractalConfig = Field(default_factory=FractalConfig)
     ma_windows: list[int] = Field(default_factory=lambda: list(DEFAULT_MA_WINDOWS))
     chart_indicators: ChartIndicators = Field(default_factory=ChartIndicators)
     features: list[str] = Field(
         default_factory=lambda: [*BASE_FEATURES, "20", "120"]
     )
+    sample: SampleConfig = Field(default_factory=SampleConfig)
+    labeling: LabelingConfig = Field(default_factory=LabelingConfig)
+    filters: FilterConfig = Field(default_factory=FilterConfig)
+
+    @property
+    def required_ma_windows(self) -> list[int]:
+        """전처리 계산에 필요한 이평 기간 전체 (ignore 규칙·필터·피처 포함)."""
+        needed = set(self.ma_windows)
+        if self.labeling.ignore_rule == "ma20<ma120":
+            needed |= {20, 120}
+        if self.filters.ma_alignment == "20>120":
+            needed |= {20, 120}
+        elif self.filters.ma_alignment == "5>20>120":
+            needed |= {5, 20, 120}
+        for feature in self.features:
+            if feature.isdigit():
+                needed.add(int(feature))
+        return sorted(needed)
 
     @model_validator(mode="after")
     def _check_features(self) -> Self:

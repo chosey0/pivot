@@ -1,0 +1,199 @@
+"""윌리엄스 프랙탈 라벨링 검증. 창 정렬·확정 lag·라벨 규약을 고정한다."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from pivot.config import FilterConfig, LabelingConfig, PreprocessPreset
+from pivot.dataset.build import build_samples, run_preprocess
+from pivot.labeling.fractal import calc_fractal, confirmation_lag, label_points
+
+
+def make_df(highs, lows=None, amount=1_000_000_000) -> pd.DataFrame:
+    highs = np.asarray(highs, dtype=float)
+    lows = np.asarray(lows, dtype=float) if lows is not None else highs - 1.0
+    index = pd.date_range("2026-01-01", periods=len(highs), freq="D", name="Time")
+    close = (highs + lows) / 2
+    return pd.DataFrame(
+        {
+            "Open": close,
+            "High": highs,
+            "Low": lows,
+            "Close": close,
+            "Volume": 1000,
+            "Amount": amount,
+        },
+        index=index,
+    )
+
+
+def ramp(length: int, start=100.0, stop=110.0) -> np.ndarray:
+    """tie가 생기지 않는 완만한 단조 시리즈."""
+    return np.linspace(start, stop, length)
+
+
+class TestCalcFractal:
+    def test_center_peak_is_marked(self):
+        # n=5: 과거 2 + 중심 + 미래 2. 위치 10에 유일한 고점 스파이크.
+        highs = ramp(21)
+        highs[10] += 50
+        df = calc_fractal(make_df(highs), n=5)
+        assert list(df["fractal_high"].dropna().index) == [df.index[10]]
+
+    def test_low_is_marked(self):
+        highs = ramp(21)
+        lows = highs - 1
+        lows[10] -= 50
+        df = calc_fractal(make_df(highs, lows), n=5)
+        assert list(df["fractal_low"].dropna().index) == [df.index[10]]
+
+    def test_tail_lag_bars_never_confirmed(self):
+        # 마지막 (n-1)//2봉은 미래 확인 봉 부족 → 스파이크여도 라벨 금지.
+        n = 21
+        lag = confirmation_lag(n)  # 10
+        highs = ramp(60)
+        highs[-3] += 50  # lag 구간 안의 스파이크
+        df = calc_fractal(make_df(highs), n=n)
+        assert df["fractal_high"].iloc[-lag:].isna().all()
+
+    def test_head_bars_without_past_window_not_confirmed(self):
+        n = 20
+        past = n // 2
+        highs = ramp(60)
+        highs[3] += 50  # 과거 창 부족 구간의 스파이크
+        df = calc_fractal(make_df(highs), n=n)
+        assert df["fractal_high"].iloc[:past].isna().all()
+
+    def test_window_alignment_matches_pandas_center_rolling(self):
+        # 구 파이프라인(pandas center rolling)과 같은 정렬인지 무작위 시리즈로 확인.
+        rng = np.random.default_rng(7)
+        highs = rng.uniform(10, 20, 200)
+        for n in (5, 20, 21):
+            df = calc_fractal(make_df(highs), n=n)
+            series = pd.Series(highs)
+            expected = series == series.rolling(n, center=True, min_periods=n).max()
+            assert (
+                df["fractal_high"].notna().to_numpy() == expected.to_numpy()
+            ).all(), f"n={n}"
+
+    def test_n_must_be_at_least_3(self):
+        with pytest.raises(ValueError):
+            calc_fractal(make_df(ramp(10)), n=2)
+
+
+class TestLabelPoints:
+    def make_trend_df(self, invert=False):
+        # 완만한 추세 + 위치 130 고점 / 140 저점 스파이크 (MA120 확보 구간).
+        base = ramp(200, 100, 140)
+        if invert:
+            base = base[::-1].copy()
+        highs = base.copy()
+        highs[130] += 50
+        lows = base - 2
+        lows[140] -= 50
+        df = make_df(highs, lows)
+        for w in (5, 20, 120):
+            df[str(w)] = df["Close"].rolling(w).mean()
+        return df
+
+    def test_labels_follow_convention(self):
+        # 상승 추세(정배열): 저점=0, 고점=1.
+        df = self.make_trend_df()
+        points, _ = label_points(df, n=5)
+        by_pos = {int(row.position): int(row.label) for row in points.itertuples()}
+        assert by_pos[130] == 1  # fractal high
+        assert by_pos[140] == 0  # fractal low
+
+    def test_ignore_rule_overrides_to_2(self):
+        # 하락 추세(역배열, MA20 < MA120): 고점/저점 모두 2로 덮어씀.
+        df = self.make_trend_df(invert=True)
+        points, _ = label_points(df, n=5, labeling=LabelingConfig(mode="cls3"))
+        assert not points.empty
+        assert (points["label"] == 2).all()
+
+    def test_cls2_drop_removes_ignored(self):
+        df = self.make_trend_df(invert=True)
+        points, stats = label_points(df, n=5, labeling=LabelingConfig(mode="cls2_drop"))
+        assert (points["label"] != 2).all() if not points.empty else True
+        assert stats["dropped_ignore"] > 0
+
+    def test_min_amount_filter_drops_points(self):
+        df = self.make_trend_df()
+        all_points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
+        filtered, stats = label_points(
+            df,
+            n=5,
+            labeling=LabelingConfig(ignore_rule="none"),
+            filters=FilterConfig(min_amount=2_000_000_000),  # amount=1e9 → 전부 탈락
+        )
+        assert len(all_points) > 0
+        assert filtered.empty
+        assert stats["dropped_filters"] == len(all_points)
+
+    def test_bar_that_is_both_high_and_low_yields_two_points(self):
+        highs = ramp(21)
+        lows = highs - 1
+        highs[10] += 50
+        lows[10] -= 50
+        df = make_df(highs, lows)
+        points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
+        assert sorted(points["kind"]) == ["high", "low"]
+
+
+class TestBuildSamples:
+    def make_spike_df(self, length: int, spike_at: int) -> pd.DataFrame:
+        highs = ramp(length)
+        highs[spike_at] += 50
+        return make_df(highs)
+
+    def test_window_is_last_max_len_bars(self):
+        df = self.make_spike_df(60, spike_at=40)
+        points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
+        samples, dropped = build_samples(
+            df, points, max_len=20, feature_columns=["Open", "High", "Low", "Close"]
+        )
+        assert dropped == 0
+        [sample] = samples
+        assert sample.end_position == 40
+        assert sample.start_position == 21
+        assert sample.length == 20
+        assert sample.label == 1
+
+    def test_short_head_window_is_variable_length(self):
+        df = self.make_spike_df(30, spike_at=5)
+        points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
+        samples, _ = build_samples(df, points, max_len=20, feature_columns=["Close"])
+        [sample] = samples
+        assert sample.start_position == 0
+        assert sample.length == 6
+
+    def test_nan_feature_window_is_dropped(self):
+        # MA20 확보 전 구간의 프랙탈은 피처 NaN → 샘플 제외.
+        df = self.make_spike_df(60, spike_at=10)
+        df["20"] = df["Close"].rolling(20).mean()
+        points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
+        assert len(points) == 1
+        samples, dropped = build_samples(
+            df, points, max_len=20, feature_columns=["Close", "20"]
+        )
+        assert samples == []
+        assert dropped == 1
+
+
+class TestRunPreprocess:
+    def test_end_to_end_stats(self):
+        rng = np.random.default_rng(11)
+        close = 100 + np.cumsum(rng.normal(0, 1, 400))
+        highs = close + rng.uniform(0.5, 2, 400)
+        lows = close - rng.uniform(0.5, 2, 400)
+        df = make_df(highs, lows)
+        preset = PreprocessPreset(name="test")
+        result = run_preprocess(df, preset)
+        stats = result.stats
+        assert stats["bars"] == 400
+        assert stats["samples"] == sum(stats["class_counts"].values())
+        assert stats["points"] == stats["samples"] + stats["dropped_nan"]
+        assert stats["confirmation_lag"] == confirmation_lag(20)
+        assert result.feature_columns == ["Open", "High", "Low", "Close", "20", "120"]
+        # 마지막 lag봉에는 라벨 지점이 없어야 한다 (미확정 구간).
+        assert (result.points["position"] < 400 - confirmation_lag(20)).all()

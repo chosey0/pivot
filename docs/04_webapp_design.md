@@ -229,7 +229,7 @@ Lab에서 튜닝한 파라미터 집합을 이름 붙여 저장. Lab(단건)과 
 | POST | `/api/ingest` | `{symbols[], timeframe, start?, end?}` 수집/갱신 (timeframe = `day`/`min{N}`/`tick{N}`, 날짜 범위는 선택) |
 | GET | `/api/ingest/status` | 종목 × 타임프레임별 캐시 상태 |
 | GET | `/api/chart/{symbol}?timeframe=&ma=` | 캔들 + 요청한 MA 기간 + 거래량 (lightweight-charts 데이터 형식으로 반환, `ma=5,20,60,120`) |
-| POST | `/api/preprocess/preview` | `{symbol, params}` → 프랙탈 마커 + 샘플 목록(윈도우 범위/라벨) + 클래스 통계 |
+| POST | `/api/preprocess/preview` | `{symbol, params}` → 캔들/MA/거래량 + 프랙탈 마커 + 샘플 목록(윈도우 범위/라벨) + 클래스 통계 (Lab이 한 번에 차트를 그리도록 chart 응답 포맷 포함) |
 | GET/POST/PUT/DELETE | `/api/presets` | 프리셋 CRUD |
 | POST | `/api/preprocess/batch` | `{preset, symbols[]}` → job_id (BackgroundTask) |
 | GET | `/api/jobs/{id}/events` | SSE: 진행률/종목별 결과 |
