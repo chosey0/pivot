@@ -26,7 +26,9 @@ pandas-center-rolling alignment fixed by tests, lag `(n-1)//2`, labels 0/1/2, fi
 `POST /api/preprocess/preview`, and the Lab tab (debounced param recalc, v5 markers via
 `createSeriesMarkers`, stats diff bar, sample window highlight primitive, feature preview)
 are implemented and browser-verified. Remaining for M3: preset CRUD/저장, batch jobs + SSE,
-datasets, diagnostics. Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7.
+datasets, diagnostics. The M3 Supabase Postgres/private Storage foundation is migrated and
+verified; application repositories and UI flows are not implemented yet. Milestones M0–M5
+are defined in `docs/04_webapp_design.md` §7.
 
 Run dev servers: `uv run uvicorn server.main:app --reload` (port 8000) and
 `cd web && npm run dev` (port 5173, proxies `/api` and `/ws` to 8000).
@@ -42,6 +44,7 @@ Read these before writing any code, and **update them when a decision changes**:
 | `docs/03_data_ingestion.md` | Data ingestion via broker-modules SDK: timeframes (day / N-minute / N-tick), broker choice, caching, schema mapping. |
 | `docs/04_webapp_design.md` | Web workbench design: 6 tabs, preset concept, data diagnostics, API, storage layout, milestones. |
 | `docs/05_package_layout.md` | Repository/package layout: `pivot/` domain library + `server/` + `web/`, dependency extras. Authoritative for folder structure. |
+| `docs/06_supabase_training_storage.md` | Supabase schema, private bucket paths, lifecycle, access, and retention contract for presets through training runs. |
 
 Docs are written in Korean; keep them in Korean. The user communicates in Korean.
 
@@ -54,7 +57,11 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
 - **Frontend**: React + TypeScript + Vite. Charts use **lightweight-charts v5**
   (`chart.addSeries(CandlestickSeries)`, markers via `createSeriesMarkers`) — do not use
   v4 APIs like `series.setMarkers`.
-- **Storage**: file-based (parquet + json), no database. Layout in `docs/04_webapp_design.md` §4.
+- **Storage**: hybrid. Raw candle parquet and the watchlist remain local operational data.
+  Presets, jobs, dataset metadata, diagnostics, runs, epochs, and evaluations use Supabase
+  Postgres; dataset shards and model artifacts use private Supabase Storage. Supabase is the
+  source of truth for training-related data; local copies are disposable execution cache.
+  See `docs/04_webapp_design.md` §4 and `docs/06_supabase_training_storage.md`.
 - **Timeframes** are first-class: `day` / `min{N}` / `tick{N}` (N defaults to 1; allowed N
   comes from the Kiwoom SDK). Core logic must be timeframe-agnostic.
 
@@ -68,8 +75,10 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
   never duplicate the pipeline per caller.
 - Live inference must reuse the same scaling/sequence-building code as training
   (the legacy project drifted apart here; don't repeat it).
-- Preprocessing parameters live in named **presets**; datasets and training runs store a
-  full preset snapshot for reproducibility.
+- Preprocessing parameters live in named **presets** in Supabase; datasets and training runs
+  store full immutable snapshots for reproducibility.
+- Only the FastAPI backend may use the Supabase secret/service-role key. The browser must
+  never receive it or access private training buckets directly.
 - Label convention: `0` = fractal low, `1` = fractal high, `2` = ignore (MA20 < MA120 at
   the labeled bar).
 - When reimplementing legacy behavior, apply backlog group A fixes (float features, no

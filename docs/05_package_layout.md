@@ -24,7 +24,8 @@ pivot/                        # 저장소 루트
 │   ├── dataset/              # ③ 시퀀스 샘플 생성/로딩
 │   │   ├── build.py          #   샘플 생성 (low/high 루프 통합 A7, float 직렬화 A1, Time 제외 A2)
 │   │   ├── transforms.py     #   스케일링 공용 모듈 — 학습·실시간 추론 공유 (A4), torch 비의존
-│   │   └── loader.py         #   torch Dataset + collate (마스킹/패딩 A3)
+│   │   ├── storage.py        #   Supabase dataset 메타데이터 + private parquet shard 저장 계약
+│   │   └── loader.py         #   Storage shard 로딩 + torch Dataset/collate (마스킹/패딩 A3)
 │   ├── diagnostics/          #   데이터 품질 진단 — raw cache / preset preview / dataset 리포트
 │   │   └── quality.py        #   timestamp, OHLC, MA NaN, 라벨 분포, split 누수 검사
 │   ├── models/               # ④ 모델
@@ -32,7 +33,7 @@ pivot/                        # 저장소 루트
 │   ├── training/             # ⑤ 학습/평가
 │   │   ├── train.py          #   학습 루프 (종목 단위 split A5, 안정화 B6)
 │   │   ├── metrics.py        #   클래스별 P/R/F1, confusion matrix (A6)
-│   │   ├── runs.py           #   run 생성/조회 — config·history·checkpoint 관리
+│   │   ├── runs.py           #   Supabase run/epoch/평가 메타데이터 + checkpoint 관리
 │   │   └── evaluate.py       #   종목 히스토리에 모델 적용 → 실제 라벨 vs 예측 (웹 차트 검증용)
 │   └── realtime/             # ⑥ 실시간 추론 (M5)
 │       ├── aggregate.py      #   체결 틱 → 봉 집계 (현재 봉 갱신/마감)
@@ -44,13 +45,12 @@ pivot/                        # 저장소 루트
 │   └── live.py               #   증권사 WS 구독 관리 + 브라우저 WS 브로드캐스트
 ├── web/                      # Vite + React + TS — docs/04 §5·§6
 │   └── src/                  #   api/, components/chart/, pages/{Watchlist,Lab,Datasets,Diagnostics,Training,Live}
-├── data/                     # git 미추적 — docs/04 §4
+├── data/                     # git 미추적 — 로컬 운영 데이터/임시 캐시, docs/04 §4
 │   ├── raw/                  #   수집 캐시: {broker}/{timeframe}/{symbol}.parquet
-│   ├── meta/                 #   watchlist.json, presets/{name}.json
-│   ├── diagnostics/          #   선택 저장한 데이터 품질 리포트 json
-│   └── datasets/             #   {name}/samples.parquet + meta.json (프리셋 스냅샷)
-├── models/                   # git 미추적
-│   └── runs/{run_id}/        #   config.json, history.json, metrics.json, checkpoints/
+│   ├── meta/                 #   watchlist.json
+│   └── tmp/                  #   Storage 업로드/다운로드 중 재생성 가능한 작업 캐시
+├── supabase/
+│   └── migrations/          #   종목마스터 + 학습 메타데이터/Storage bucket DDL
 └── docs/
 ```
 
@@ -76,6 +76,12 @@ pivot/                        # 저장소 루트
   `realtime/infer.py`에만 둔다.
 - **모든 로직은 타임프레임 무관(agnostic).** 타임프레임은 프리셋의 값일 뿐,
   ingestion 이후 단계는 봉의 종류를 몰라야 한다.
+- **학습 관련 데이터의 단일 원본은 Supabase다.** 프리셋, job, 데이터셋/종목/분할 메타데이터,
+  진단 리포트, run/epoch/평가 메타데이터는 Postgres에 저장한다. 데이터셋 shard와 모델
+  artifact는 private Storage에 저장하며 로컬 파일은 실행 중 임시 캐시로만 사용한다.
+- **Supabase 접근은 저장소 경계에서만 수행한다.** `pivot/`의 저장 인터페이스가 메타데이터와
+  artifact 계약을 소유하고, `server/`는 서버 전용 키를 주입해 호출만 한다. 브라우저에는
+  secret/service-role 키나 private object URL을 노출하지 않는다.
 - 시각화 평가는 웹 차트(Training 탭 차트 검증)로 수행한다 — 초기 계획의 finplot
   기반 `evaluation/plot.py`는 폐기 (`viz` extra 불필요).
 
@@ -84,7 +90,7 @@ pivot/                        # 저장소 루트
 | 구분 | 패키지 | 용도 |
 |---|---|---|
 | core | broker-modules, pandas, pyarrow, pydantic | 수집 ①~③ (transforms까지) |
-| core | httpx | Supabase REST 종목마스터 업서트/검색 |
+| core | httpx | Supabase REST 종목마스터 및 학습 메타데이터/Storage 접근 |
 | `server` extra | fastapi, uvicorn | 웹 서버 (SSE/WebSocket은 fastapi로 처리) |
 | `train` extra | torch, scikit-learn | 로더/모델/학습 ③(loader)~⑤, 실시간 추론 ⑥ |
 
