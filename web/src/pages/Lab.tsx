@@ -41,6 +41,11 @@ function diffText(current: number, previous: number | undefined) {
   return `${previous.toLocaleString()} → ${current.toLocaleString()} (${delta > 0 ? '+' : ''}${delta.toLocaleString()})`
 }
 
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+}
+
 export function Lab() {
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
   const [selectedSymbol, setSelectedSymbol] = useState('')
@@ -199,6 +204,25 @@ export function Lab() {
     [preview],
   )
 
+  useEffect(() => {
+    if (!selectedSample) return
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || isEditableTarget(event.target)) return
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        moveSample(-1)
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault()
+        moveSample(1)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [moveSample, selectedSample])
+
   function toggleFeatureWindow(window: number) {
     setFeatureWindows((current) =>
       current.includes(window)
@@ -308,7 +332,7 @@ export function Lab() {
                     #{selectedSample.index} · {LABEL_TEXT[selectedSample.label]} ·{' '}
                     {selectedSample.kind === 'low' ? '프랙탈 저점' : '프랙탈 고점'} · 윈도우{' '}
                     {selectedSample.length}봉 ({String(selectedSample.start_time)} ~{' '}
-                    {String(selectedSample.end_time)})
+                    {String(selectedSample.end_time)}) · ←/→ 이동
                   </span>
                 ) : (
                   <span className="muted-text">

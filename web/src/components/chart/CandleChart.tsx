@@ -419,6 +419,45 @@ export function CandleChart({
 
   useEffect(() => {
     highlightRef.current?.setRange(highlightRange)
+    const chart = chartRef.current
+    if (!chart || !highlightRange) return
+
+    const timeScale = chart.timeScale()
+    const visibleRange = timeScale.getVisibleLogicalRange()
+    const highlightFromIndex = timeScale.timeToIndex(highlightRange.from as Time)
+    const highlightToIndex = timeScale.timeToIndex(highlightRange.to as Time)
+    if (!visibleRange || highlightFromIndex === null || highlightToIndex === null) return
+
+    const highlightFrom = Math.min(Number(highlightFromIndex), Number(highlightToIndex))
+    const highlightTo = Math.max(Number(highlightFromIndex), Number(highlightToIndex))
+    if (highlightFrom >= visibleRange.from && highlightTo <= visibleRange.to) return
+
+    const visibleWidth = Math.max(visibleRange.to - visibleRange.from, 20)
+    const highlightWidth = Math.max(highlightTo - highlightFrom, 1)
+    const padding = Math.min(Math.max(visibleWidth * 0.15, 5), Math.max(visibleWidth * 0.3, 5))
+
+    if (highlightWidth + padding * 2 >= visibleWidth) {
+      timeScale.setVisibleLogicalRange({
+        from: highlightFrom - padding,
+        to: highlightTo + padding,
+      })
+      return
+    }
+
+    if (highlightFrom < visibleRange.from) {
+      const nextFrom = highlightFrom - padding
+      timeScale.setVisibleLogicalRange({
+        from: nextFrom,
+        to: nextFrom + visibleWidth,
+      })
+      return
+    }
+
+    const nextTo = highlightTo + padding
+    timeScale.setVisibleLogicalRange({
+      from: nextTo - visibleWidth,
+      to: nextTo,
+    })
   }, [highlightRange, candles])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
