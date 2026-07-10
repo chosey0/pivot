@@ -9,6 +9,7 @@ import {
 } from './api/client'
 import type { OhlcPoint, VisibleIndicators } from './components/chart/CandleChart'
 import { CandleChart } from './components/chart/CandleChart'
+import { ChartPanel } from './components/chart/ChartPanel'
 import { Lab } from './pages/Lab'
 import './App.css'
 
@@ -897,42 +898,33 @@ function App() {
               </section>
             </aside>
 
-            <section className="chart-panel">
-              <div className="chart-toolbar">
-                <div>
-                  <h2>{selectedSymbolLabel || '종목을 선택하세요'}</h2>
-                  <span>
-                    {timeframe} · 캔들
-                    {visibleIndicators.movingAverages.length > 0
-                      ? ` + 이동평균선 ${legendText}`
-                      : ''}
-                    {visibleIndicators.volume ? ' + 거래량' : ''}
-                  </span>
-                </div>
-                <button
-                  className="indicator-button"
-                  onClick={openIndicatorPanel}
-                  type="button"
-                >
-                  + 보조지표
-                </button>
-                {selectedSymbol && (
+            <ChartPanel
+              actions={
+                <>
                   <button
-                    className="ghost"
-                    disabled={loading}
-                    onClick={() => loadChart(selectedSymbol, timeframe, maWindows)}
+                    className="indicator-button"
+                    onClick={openIndicatorPanel}
                     type="button"
                   >
-                    차트 새로고침
+                    + 보조지표
                   </button>
-                )}
-              </div>
-              {error && <p className="error">오류: {error}</p>}
-              {message && !error && <p className="message">{message}</p>}
-              <div className="chart-area">
-                {loading && !chart ? <p className="empty">불러오는 중...</p> : null}
-                {loadingOlder && chart ? <p className="chart-loading-more">과거 데이터 불러오는 중...</p> : null}
-                {chart && (
+                  {selectedSymbol && (
+                    <button
+                      className="ghost"
+                      disabled={loading}
+                      onClick={() => loadChart(selectedSymbol, timeframe, maWindows)}
+                      type="button"
+                    >
+                      차트 새로고침
+                    </button>
+                  )}
+                </>
+              }
+              emptyText="수집된 종목을 선택하면 실데이터 차트가 표시됩니다."
+              error={error}
+              hasContent={Boolean(chart)}
+              legend={
+                chart ? (
                   <div className="chart-legend">
                     <div className="ohlc-row">
                       {ohlcItems.map((item) => (
@@ -986,25 +978,16 @@ function App() {
                       </div>
                     )}
                   </div>
-                )}
-                {chart ? (
-                  <CandleChart
-                    canLoadMoreOlder={Boolean(chart.has_more)}
-                    candles={chart.candles}
-                    fitContentKey={chartFitKey}
-                    isLoadingOlder={loadingOlder}
-                    ma={chart.ma}
-                    onLoadMoreOlder={loadOlderChart}
-                    onOhlcChange={setSelectedOhlc}
-                    visibleIndicators={visibleIndicators}
-                    volumes={chart.volumes}
-                  />
-                ) : (
-                  !loading && <p className="empty">수집된 종목을 선택하면 실데이터 차트가 표시됩니다.</p>
-                )}
-                {indicatorPanelOpen && (
-                  <div className="indicator-overlay" role="dialog" aria-modal="true">
-                    <div className="indicator-modal">
+                ) : null
+              }
+              loading={loading}
+              message={message}
+              overlay={
+                <>
+                  {loadingOlder && chart ? <p className="chart-loading-more">과거 데이터 불러오는 중...</p> : null}
+                  {indicatorPanelOpen && (
+                    <div className="indicator-overlay" role="dialog" aria-modal="true">
+                      <div className="indicator-modal">
                       <aside className="indicator-menu">
                         <h3>상단 지표</h3>
                         <button className="indicator-menu-item active" type="button">
@@ -1201,11 +1184,36 @@ function App() {
                           </button>
                         </div>
                       </section>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            </section>
+                  )}
+                </>
+              }
+              subtitle={
+                <>
+                  {timeframe} · 캔들
+                  {visibleIndicators.movingAverages.length > 0
+                    ? ` + 이동평균선 ${legendText}`
+                    : ''}
+                  {visibleIndicators.volume ? ' + 거래량' : ''}
+                </>
+              }
+              title={selectedSymbolLabel || '종목을 선택하세요'}
+            >
+              {chart ? (
+                <CandleChart
+                  canLoadMoreOlder={Boolean(chart.has_more)}
+                  candles={chart.candles}
+                  fitContentKey={chartFitKey}
+                  isLoadingOlder={loadingOlder}
+                  ma={chart.ma}
+                  onLoadMoreOlder={loadOlderChart}
+                  onOhlcChange={setSelectedOhlc}
+                  visibleIndicators={visibleIndicators}
+                  volumes={chart.volumes}
+                />
+              ) : null}
+            </ChartPanel>
           </>
         )}
 

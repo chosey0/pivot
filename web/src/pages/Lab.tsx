@@ -10,6 +10,7 @@ import {
 } from '../api/client'
 import type { TimeRange, VisibleIndicators } from '../components/chart/CandleChart'
 import { CandleChart } from '../components/chart/CandleChart'
+import { ChartPanel } from '../components/chart/ChartPanel'
 
 const MINUTE_UNITS = [1, 3, 5, 10, 15, 30, 45, 60]
 const TICK_UNITS = [1, 3, 5, 10, 30]
@@ -209,6 +210,9 @@ export function Lab() {
   const stats = preview?.stats ?? null
   const classCount = (label: number) => stats?.class_counts?.[String(label)] ?? 0
   const prevClassCount = (label: number) => prevStats?.class_counts?.[String(label)]
+  const previewError = error
+    ? `${error}${error.includes('404') ? ' — 종목 & 데이터 탭에서 해당 타임프레임을 먼저 수집하세요.' : ''}`
+    : null
 
   return (
     <>
@@ -239,98 +243,96 @@ export function Lab() {
         </section>
       </aside>
 
-      <section className="chart-panel">
-        <div className="chart-toolbar">
-          <div>
-            <h2>{selectedSymbolLabel ? `${selectedSymbolLabel} 전처리 미리보기` : '종목을 선택하세요'}</h2>
-            <span>
-              {timeframe} · 프랙탈 n={fractalN}
-              {loading ? ' · 계산 중...' : ''}
-            </span>
-          </div>
-        </div>
-        {error && (
-          <p className="error">
-            오류: {error}
-            {error.includes('404') ? ' — 종목 & 데이터 탭에서 해당 타임프레임을 먼저 수집하세요.' : ''}
-          </p>
-        )}
-        <div className="chart-area">
-          {preview ? (
-            <CandleChart
-              candles={preview.candles}
-              highlightRange={highlightRange}
-              ma={preview.ma}
-              markers={preview.markers}
-              onTimeClick={selectSampleByTime}
-              visibleIndicators={visibleIndicators}
-              volumes={preview.volumes}
-            />
-          ) : (
-            <p className="empty">{loading ? '계산 중...' : '미리보기 결과가 없습니다.'}</p>
-          )}
-        </div>
-        {stats && (
-          <div className="lab-stats-bar">
-            <div className="lab-stat">
-              <strong>샘플 {stats.samples.toLocaleString()}</strong>
-              {diffText(stats.samples, prevStats?.samples) && (
-                <em>{diffText(stats.samples, prevStats?.samples)}</em>
-              )}
-            </div>
-            <div className="lab-stat low">
-              <strong>저점(0) {classCount(0).toLocaleString()}</strong>
-              {diffText(classCount(0), prevClassCount(0)) && (
-                <em>{diffText(classCount(0), prevClassCount(0))}</em>
-              )}
-            </div>
-            <div className="lab-stat high">
-              <strong>고점(1) {classCount(1).toLocaleString()}</strong>
-              {diffText(classCount(1), prevClassCount(1)) && (
-                <em>{diffText(classCount(1), prevClassCount(1))}</em>
-              )}
-            </div>
-            <div className="lab-stat ignore">
-              <strong>무시(2) {classCount(2).toLocaleString()}</strong>
-              {diffText(classCount(2), prevClassCount(2)) && (
-                <em>{diffText(classCount(2), prevClassCount(2))}</em>
-              )}
-            </div>
-            <div className="lab-stat muted">
-              <span>
-                라벨 지점 {stats.points.toLocaleString()} · NaN 제외 {stats.dropped_nan.toLocaleString()}
-                {stats.dropped_unpaired > 0 ? ` · 짝 없음 제외 ${stats.dropped_unpaired.toLocaleString()}` : ''}
-                {stats.dropped_filters > 0 ? ` · 필터 제외 ${stats.dropped_filters.toLocaleString()}` : ''}
-                {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
-              </span>
-              <span>미확정: 마지막 {stats.confirmation_lag}봉 (미래 확인 대기)</span>
-            </div>
-          </div>
-        )}
-        {preview && (
-          <div className="lab-sample-bar">
-            <button onClick={() => moveSample(-1)} type="button">
-              ◀ 이전 샘플
-            </button>
-            <button onClick={() => moveSample(1)} type="button">
-              다음 샘플 ▶
-            </button>
-            {selectedSample ? (
-              <span>
-                #{selectedSample.index} · {LABEL_TEXT[selectedSample.label]} ·{' '}
-                {selectedSample.kind === 'low' ? '프랙탈 저점' : '프랙탈 고점'} · 윈도우{' '}
-                {selectedSample.length}봉 ({String(selectedSample.start_time)} ~{' '}
-                {String(selectedSample.end_time)})
-              </span>
-            ) : (
-              <span className="muted-text">
-                마커가 있는 봉을 클릭하면 직전 반대 마커부터 해당 마커까지의 입력 윈도우가
-                하이라이트됩니다.
-              </span>
+      <ChartPanel
+        emptyText="미리보기 결과가 없습니다."
+        error={previewError}
+        hasContent={Boolean(preview)}
+        loading={loading}
+        loadingText="계산 중..."
+        subtitle={
+          <>
+            {timeframe} · 프랙탈 n={fractalN}
+            {loading ? ' · 계산 중...' : ''}
+          </>
+        }
+        title={selectedSymbolLabel ? `${selectedSymbolLabel} 전처리 미리보기` : '종목을 선택하세요'}
+        footer={
+          <>
+            {stats && (
+              <div className="lab-stats-bar">
+                <div className="lab-stat">
+                  <strong>샘플 {stats.samples.toLocaleString()}</strong>
+                  {diffText(stats.samples, prevStats?.samples) && (
+                    <em>{diffText(stats.samples, prevStats?.samples)}</em>
+                  )}
+                </div>
+                <div className="lab-stat low">
+                  <strong>저점(0) {classCount(0).toLocaleString()}</strong>
+                  {diffText(classCount(0), prevClassCount(0)) && (
+                    <em>{diffText(classCount(0), prevClassCount(0))}</em>
+                  )}
+                </div>
+                <div className="lab-stat high">
+                  <strong>고점(1) {classCount(1).toLocaleString()}</strong>
+                  {diffText(classCount(1), prevClassCount(1)) && (
+                    <em>{diffText(classCount(1), prevClassCount(1))}</em>
+                  )}
+                </div>
+                <div className="lab-stat ignore">
+                  <strong>무시(2) {classCount(2).toLocaleString()}</strong>
+                  {diffText(classCount(2), prevClassCount(2)) && (
+                    <em>{diffText(classCount(2), prevClassCount(2))}</em>
+                  )}
+                </div>
+                <div className="lab-stat muted">
+                  <span>
+                    라벨 지점 {stats.points.toLocaleString()} · NaN 제외 {stats.dropped_nan.toLocaleString()}
+                    {stats.dropped_unpaired > 0 ? ` · 짝 없음 제외 ${stats.dropped_unpaired.toLocaleString()}` : ''}
+                    {stats.dropped_filters > 0 ? ` · 필터 제외 ${stats.dropped_filters.toLocaleString()}` : ''}
+                    {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
+                  </span>
+                  <span>미확정: 마지막 {stats.confirmation_lag}봉 (미래 확인 대기)</span>
+                </div>
+              </div>
             )}
-          </div>
-        )}
-      </section>
+            {preview && (
+              <div className="lab-sample-bar">
+                <button onClick={() => moveSample(-1)} type="button">
+                  ◀ 이전 샘플
+                </button>
+                <button onClick={() => moveSample(1)} type="button">
+                  다음 샘플 ▶
+                </button>
+                {selectedSample ? (
+                  <span>
+                    #{selectedSample.index} · {LABEL_TEXT[selectedSample.label]} ·{' '}
+                    {selectedSample.kind === 'low' ? '프랙탈 저점' : '프랙탈 고점'} · 윈도우{' '}
+                    {selectedSample.length}봉 ({String(selectedSample.start_time)} ~{' '}
+                    {String(selectedSample.end_time)})
+                  </span>
+                ) : (
+                  <span className="muted-text">
+                    마커가 있는 봉을 클릭하면 직전 반대 마커부터 해당 마커까지의 입력 윈도우가
+                    하이라이트됩니다.
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        }
+      >
+        {preview ? (
+          <CandleChart
+            candles={preview.candles}
+            highlightRange={highlightRange}
+            ma={preview.ma}
+            markers={preview.markers}
+            onTimeClick={selectSampleByTime}
+            visibleIndicators={visibleIndicators}
+            volumes={preview.volumes}
+          />
+        ) : null}
+      </ChartPanel>
 
       <aside className="side-panel lab-params">
         <section className="control-section">
