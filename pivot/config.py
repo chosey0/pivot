@@ -137,18 +137,6 @@ class FractalConfig(BaseModel):
         return (self.n - 1) // 2
 
 
-class SampleConfig(BaseModel):
-    """시퀀스 샘플 설정. max_len = 라벨 봉을 끝으로 하는 입력 윈도우 길이 상한."""
-
-    max_len: int = 20
-
-    @model_validator(mode="after")
-    def _check_max_len(self) -> Self:
-        if self.max_len < 1:
-            raise ValueError("sample max_len must be >= 1")
-        return self
-
-
 class LabelingConfig(BaseModel):
     """라벨 규약: 0=저점, 1=고점, 2=무시 (백로그 B2 모드화).
 
@@ -189,7 +177,6 @@ class PreprocessPreset(BaseModel):
     features: list[str] = Field(
         default_factory=lambda: [*BASE_FEATURES, "20", "120"]
     )
-    sample: SampleConfig = Field(default_factory=SampleConfig)
     labeling: LabelingConfig = Field(default_factory=LabelingConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
 

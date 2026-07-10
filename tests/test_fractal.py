@@ -141,43 +141,64 @@ class TestLabelPoints:
 
 
 class TestBuildSamples:
-    def make_spike_df(self, length: int, spike_at: int) -> pd.DataFrame:
+    def make_swing_df(self, length: int, highs_at=(), lows_at=()) -> pd.DataFrame:
+        """완만한 ramp 위에 지정 위치의 고점/저점 스파이크를 얹은 시리즈."""
         highs = ramp(length)
-        highs[spike_at] += 50
-        return make_df(highs)
+        lows = highs - 1
+        for position in highs_at:
+            highs[position] += 50
+        for position in lows_at:
+            lows[position] -= 50
+        return make_df(highs, lows)
 
-    def test_window_is_last_max_len_bars(self):
-        df = self.make_spike_df(60, spike_at=40)
+    def test_window_spans_from_previous_opposite_marker(self):
+        # 고점@30 → 저점@50: 저점 샘플의 윈도우 = 직전 고점(30)부터 저점(50)까지.
+        df = self.make_swing_df(80, highs_at=(30,), lows_at=(50,))
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
-        samples, dropped = build_samples(
-            df, points, max_len=20, feature_columns=["Open", "High", "Low", "Close"]
+        samples, dropped_nan, dropped_unpaired = build_samples(
+            df, points, feature_columns=["Open", "High", "Low", "Close"]
         )
-        assert dropped == 0
+        assert dropped_nan == 0
+        assert dropped_unpaired == 1  # 첫 고점은 직전 저점 마커가 없음
         [sample] = samples
-        assert sample.end_position == 40
-        assert sample.start_position == 21
-        assert sample.length == 20
-        assert sample.label == 1
+        assert sample.kind == "low"
+        assert sample.start_position == 30
+        assert sample.end_position == 50
+        assert sample.length == 21
 
-    def test_short_head_window_is_variable_length(self):
-        df = self.make_spike_df(30, spike_at=5)
+    def test_alternating_swings_pair_with_latest_opposite(self):
+        # 고점@20 → 저점@35 → 고점@55: 저점은 20부터, 마지막 고점은 35부터.
+        df = self.make_swing_df(90, highs_at=(20, 55), lows_at=(35,))
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
-        samples, _ = build_samples(df, points, max_len=20, feature_columns=["Close"])
-        [sample] = samples
-        assert sample.start_position == 0
-        assert sample.length == 6
+        samples, _, dropped_unpaired = build_samples(
+            df, points, feature_columns=["Close"]
+        )
+        assert dropped_unpaired == 1
+        windows = {(s.kind, s.start_position, s.end_position) for s in samples}
+        assert windows == {("low", 20, 35), ("high", 35, 55)}
 
-    def test_nan_feature_window_is_dropped(self):
-        # MA20 확보 전 구간의 프랙탈은 피처 NaN → 샘플 제외.
-        df = self.make_spike_df(60, spike_at=10)
-        df["20"] = df["Close"].rolling(20).mean()
+    def test_first_point_without_opposite_marker_is_dropped(self):
+        df = self.make_swing_df(40, highs_at=(20,))
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
         assert len(points) == 1
-        samples, dropped = build_samples(
-            df, points, max_len=20, feature_columns=["Close", "20"]
+        samples, _, dropped_unpaired = build_samples(
+            df, points, feature_columns=["Close"]
         )
         assert samples == []
-        assert dropped == 1
+        assert dropped_unpaired == 1
+
+    def test_nan_feature_window_is_dropped(self):
+        # MA20 확보 전 구간을 포함한 윈도우는 피처 NaN → 샘플 제외.
+        df = self.make_swing_df(60, highs_at=(10,), lows_at=(25,))
+        df["20"] = df["Close"].rolling(20).mean()
+        points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
+        assert len(points) == 2
+        samples, dropped_nan, dropped_unpaired = build_samples(
+            df, points, feature_columns=["Close", "20"]
+        )
+        assert samples == []
+        assert dropped_unpaired == 1  # 고점@10
+        assert dropped_nan == 1  # 저점@25 윈도우 [10, 25]에 MA20 NaN 포함
 
 
 class TestRunPreprocess:
@@ -192,7 +213,10 @@ class TestRunPreprocess:
         stats = result.stats
         assert stats["bars"] == 400
         assert stats["samples"] == sum(stats["class_counts"].values())
-        assert stats["points"] == stats["samples"] + stats["dropped_nan"]
+        assert (
+            stats["points"]
+            == stats["samples"] + stats["dropped_nan"] + stats["dropped_unpaired"]
+        )
         assert stats["confirmation_lag"] == confirmation_lag(20)
         assert result.feature_columns == ["Open", "High", "Low", "Close", "20", "120"]
         # 마지막 lag봉에는 라벨 지점이 없어야 한다 (미확정 구간).

@@ -84,6 +84,7 @@ export interface PreviewStats {
   samples: number
   class_counts: Record<string, number>
   dropped_nan: number
+  dropped_unpaired: number
   dropped_filters: number
   dropped_ignore: number
   confirmation_lag: number
@@ -106,7 +107,6 @@ export interface PreviewParams {
   fractal: { n: number }
   ma_windows: number[]
   features: string[]
-  sample: { max_len: number }
   labeling: { mode: 'cls3' | 'cls2_drop'; ignore_rule: 'ma20<ma120' | 'none' }
   filters: { ma_alignment: '20>120' | '5>20>120' | null; min_amount: number | null }
 }

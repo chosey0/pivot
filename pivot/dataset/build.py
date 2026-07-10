@@ -1,6 +1,8 @@
-"""시퀀스 샘플 생성 (구 create_dataset 재구현, docs/01 §4).
+"""시퀀스 샘플 생성 (구 create_dataset의 max_len 고정 윈도우를 대체).
 
-라벨 지점마다 그 봉을 끝으로 하는 최대 `max_len`봉 윈도우가 모델 입력 시퀀스다.
+입력 윈도우는 **직전 반대 종류 프랙탈 마커부터 현재 마커까지**의 스윙 구간이다:
+고점 샘플은 직전 저점 마커 ~ 해당 고점, 저점 샘플은 직전 고점 마커 ~ 해당 저점
+(양 끝 봉 포함, 가변 길이). 직전 반대 마커가 없는 첫 지점은 샘플에서 제외한다.
 구 방식과 달리 (백로그 A그룹):
 - low/high 루프를 label_points로 통합 (A7)
 - 피처는 float로 유지, int64 캐스팅 없음 (A1)
@@ -49,20 +51,30 @@ class PreprocessResult:
 def build_samples(
     df: pd.DataFrame,
     points: pd.DataFrame,
-    max_len: int,
     feature_columns: list[str],
-) -> tuple[list[Sample], int]:
-    """라벨 지점별 시퀀스 샘플 목록과 NaN 제외 수를 반환한다.
+) -> tuple[list[Sample], int, int]:
+    """라벨 지점별 시퀀스 샘플 목록과 (NaN 제외, 짝 없음 제외) 수를 반환한다.
 
-    윈도우는 라벨 봉을 포함해 뒤에서 max_len봉 (시작부가 짧으면 가변 길이).
+    윈도우 = 직전 반대 종류 마커 위치 ~ 현재 마커 위치 (양 끝 포함).
+    직전 반대 마커가 없는 지점(시리즈 첫 스윙)은 제외한다.
     선택한 피처에 NaN이 있는 윈도우(예: MA 초기 구간)는 학습 불가로 제외한다.
+    points는 position 오름차순이어야 한다 (label_points 반환 순서).
     """
     features = df[feature_columns]
     samples: list[Sample] = []
     dropped_nan = 0
+    dropped_unpaired = 0
+    last_position: dict[str, int | None] = {"low": None, "high": None}
     for row in points.itertuples():
+        kind = str(row.kind)
         end = int(row.position)
-        start = max(0, end - max_len + 1)
+        opposite = "high" if kind == "low" else "low"
+        start = last_position[opposite]
+        last_position[kind] = end
+        if start is None or start >= end:
+            # 직전 반대 마커가 없거나 같은 봉(고/저 동시 확정)이면 윈도우 불성립
+            dropped_unpaired += 1
+            continue
         window = features.iloc[start : end + 1]
         if window.isna().any().any():
             dropped_nan += 1
@@ -72,12 +84,12 @@ def build_samples(
                 end_position=end,
                 start_position=start,
                 label=int(row.label),
-                kind=str(row.kind),
+                kind=kind,
                 price=float(row.price),
                 length=end - start + 1,
             )
         )
-    return samples, dropped_nan
+    return samples, dropped_nan, dropped_unpaired
 
 
 def run_preprocess(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult:
@@ -93,8 +105,8 @@ def run_preprocess(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResu
         labeling=preset.labeling,
         filters=preset.filters,
     )
-    samples, dropped_nan = build_samples(
-        enriched, points, preset.sample.max_len, preset.features
+    samples, dropped_nan, dropped_unpaired = build_samples(
+        enriched, points, preset.features
     )
 
     class_counts = {0: 0, 1: 0, 2: 0}
@@ -106,6 +118,7 @@ def run_preprocess(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResu
         "samples": len(samples),
         "class_counts": class_counts,
         "dropped_nan": dropped_nan,
+        "dropped_unpaired": dropped_unpaired,
         **label_stats,
         "confirmation_lag": confirmation_lag(preset.fractal.n),
     }

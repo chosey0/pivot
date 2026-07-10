@@ -46,7 +46,6 @@ export function Lab() {
   const [timeframeKind, setTimeframeKind] = useState<'day' | 'minute' | 'tick'>('day')
   const [timeframeUnit, setTimeframeUnit] = useState(1)
   const [fractalN, setFractalN] = useState(20)
-  const [maxLen, setMaxLen] = useState(20)
   const [labelMode, setLabelMode] = useState<'cls3' | 'cls2_drop'>('cls3')
   const [ignoreRuleOn, setIgnoreRuleOn] = useState(true)
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
@@ -84,7 +83,6 @@ export function Lab() {
       fractal: { n: fractalN },
       ma_windows: LAB_MA_LINES.map((line) => line.window),
       features: featureColumns,
-      sample: { max_len: maxLen },
       labeling: {
         mode: labelMode,
         ignore_rule: ignoreRuleOn ? 'ma20<ma120' : 'none',
@@ -100,7 +98,6 @@ export function Lab() {
       ignoreRuleOn,
       labelMode,
       maAlignment,
-      maxLen,
       minAmountInput,
       timeframeKind,
       timeframeUnit,
@@ -247,7 +244,7 @@ export function Lab() {
           <div>
             <h2>{selectedSymbolLabel ? `${selectedSymbolLabel} 전처리 미리보기` : '종목을 선택하세요'}</h2>
             <span>
-              {timeframe} · 프랙탈 n={fractalN} · max_len={maxLen}
+              {timeframe} · 프랙탈 n={fractalN}
               {loading ? ' · 계산 중...' : ''}
             </span>
           </div>
@@ -302,6 +299,7 @@ export function Lab() {
             <div className="lab-stat muted">
               <span>
                 라벨 지점 {stats.points.toLocaleString()} · NaN 제외 {stats.dropped_nan.toLocaleString()}
+                {stats.dropped_unpaired > 0 ? ` · 짝 없음 제외 ${stats.dropped_unpaired.toLocaleString()}` : ''}
                 {stats.dropped_filters > 0 ? ` · 필터 제외 ${stats.dropped_filters.toLocaleString()}` : ''}
                 {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
               </span>
@@ -326,7 +324,8 @@ export function Lab() {
               </span>
             ) : (
               <span className="muted-text">
-                마커가 있는 봉을 클릭하면 해당 샘플의 입력 윈도우가 하이라이트됩니다.
+                마커가 있는 봉을 클릭하면 직전 반대 마커부터 해당 마커까지의 입력 윈도우가
+                하이라이트됩니다.
               </span>
             )}
           </div>
@@ -400,15 +399,10 @@ export function Lab() {
             확정에 미래 {Math.floor((fractalN - 1) / 2)}봉이 필요합니다. 마지막{' '}
             {Math.floor((fractalN - 1) / 2)}봉은 라벨되지 않습니다.
           </p>
-          <label className="field">
-            max_len (입력 윈도우 봉 수)
-            <input
-              min={1}
-              onChange={(event) => setMaxLen(Math.max(1, Number(event.target.value) || 1))}
-              type="number"
-              value={maxLen}
-            />
-          </label>
+          <p className="hint">
+            입력 윈도우는 직전 반대 마커부터 선택한 마커까지의 스윙 구간입니다
+            (고점은 직전 저점부터, 저점은 직전 고점부터).
+          </p>
         </section>
 
         <section className="control-section">
