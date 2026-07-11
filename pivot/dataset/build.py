@@ -16,6 +16,12 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from pivot.cleaning.kronos import (
+    PAPER_URL,
+    POLICY_VERSION,
+    CleanSegment,
+    analyze_kline_quality,
+)
 from pivot.config import PreprocessPreset
 from pivot.ingestion.indicators import add_moving_averages
 from pivot.labeling.fractal import confirmation_lag, label_points
@@ -98,6 +104,44 @@ def run_preprocess(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResu
     df는 ingestion 캐시 로드 결과 (Time 인덱스 + OHLCV/Amount). 이평선은
     ignore 규칙·필터·피처에 필요한 기간을 여기서 일괄 계산한다.
     """
+    required_bars = max([preset.fractal.n, *preset.required_ma_windows], default=1)
+    cleaning = preset.cleaning
+    if cleaning.mode == "off":
+        result = _run_segment(df, preset)
+        result.stats["cleaning"] = {
+            "mode": "off",
+            "policy": POLICY_VERSION,
+            "reference": PAPER_URL,
+            "original_bars": len(df),
+            "retained_bars": len(df),
+            "removed_bars": 0,
+            "removed_ratio": 0.0,
+            "segments": 1 if len(df) else 0,
+            "segment_lengths": [len(df)] if len(df) else [],
+            "structural_breaks": 0,
+            "reason_counts": {},
+            "thresholds": {},
+        }
+        return result
+
+    analysis = analyze_kline_quality(
+        df,
+        timeframe=preset.timeframe,
+        config=cleaning,
+        required_bars=required_bars,
+    )
+    if cleaning.mode == "report_only":
+        result = _run_segment(df, preset)
+        result.stats["cleaning"] = {"mode": "report_only", **analysis.to_stats()}
+        return result
+
+    result = _run_clean_segments(df, preset, analysis.segments)
+    result.stats["cleaning"] = {"mode": "filter", **analysis.to_stats()}
+    return result
+
+
+def _run_segment(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult:
+    """연속된 단일 구간을 전처리한다."""
     enriched = add_moving_averages(df, windows=preset.required_ma_windows)
     points, label_stats = label_points(
         enriched,
@@ -128,4 +172,75 @@ def run_preprocess(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResu
         samples=samples,
         feature_columns=list(preset.features),
         stats=stats,
+    )
+
+
+def _run_clean_segments(
+    df: pd.DataFrame,
+    preset: PreprocessPreset,
+    segments: tuple[CleanSegment, ...],
+) -> PreprocessResult:
+    """정상 세그먼트별로 지표·라벨·샘플을 독립 계산해 결합한다."""
+    frames: list[pd.DataFrame] = []
+    point_frames: list[pd.DataFrame] = []
+    samples: list[Sample] = []
+    totals = {
+        "points": 0,
+        "samples": 0,
+        "dropped_nan": 0,
+        "dropped_unpaired": 0,
+        "dropped_filters": 0,
+        "dropped_ignore": 0,
+    }
+    class_counts = {0: 0, 1: 0, 2: 0}
+    offset = 0
+    for segment in segments:
+        part = _run_segment(df.iloc[segment.start : segment.end + 1].copy(), preset)
+        frames.append(part.frame)
+        adjusted_points = part.points.copy()
+        adjusted_points["position"] = adjusted_points["position"] + offset
+        point_frames.append(adjusted_points)
+        samples.extend(
+            Sample(
+                end_position=sample.end_position + offset,
+                start_position=sample.start_position + offset,
+                label=sample.label,
+                kind=sample.kind,
+                price=sample.price,
+                length=sample.length,
+            )
+            for sample in part.samples
+        )
+        for key in totals:
+            totals[key] += int(part.stats[key])
+        for label, count in part.stats["class_counts"].items():
+            class_counts[int(label)] += int(count)
+        offset += len(part.frame)
+
+    if frames:
+        frame = pd.concat(frames)
+    else:
+        frame = add_moving_averages(
+            df.iloc[0:0].copy(), windows=preset.required_ma_windows
+        )
+    if point_frames:
+        points = pd.concat(point_frames)
+    else:
+        points = label_points(
+            frame,
+            n=preset.fractal.n,
+            labeling=preset.labeling,
+            filters=preset.filters,
+        )[0]
+    return PreprocessResult(
+        frame=frame,
+        points=points,
+        samples=samples,
+        feature_columns=list(preset.features),
+        stats={
+            "bars": len(frame),
+            **totals,
+            "class_counts": class_counts,
+            "confirmation_lag": confirmation_lag(preset.fractal.n),
+        },
     )

@@ -12,6 +12,7 @@ import hashlib
 import logging
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -27,6 +28,10 @@ SPLIT_RATIOS = {"train": 0.7, "validation": 0.15, "test": 0.15}
 DEFAULT_SPLIT_SEED = 42
 
 logger = logging.getLogger(__name__)
+
+
+class BatchCancelledError(Exception):
+    """취소 요청을 감지한 협조적 중단 신호 (종목/shard 경계에서만 확인)."""
 
 
 class DatasetStore(Protocol):
@@ -85,14 +90,20 @@ def split_config(seed: int = DEFAULT_SPLIT_SEED) -> dict:
     return {"method": SPLIT_METHOD, "seed": seed, "ratios": SPLIT_RATIOS}
 
 
-def build_snapshot(preset_row: dict, split_conf: dict) -> dict:
+def build_snapshot(
+    preset_row: dict,
+    split_conf: dict,
+    *,
+    preset: PreprocessPreset | None = None,
+) -> dict:
     """datasets.preset_snapshot 봉투 — 프리셋 전체 + split 규칙 (docs/06 §2)."""
     return {
         "schema_version": preset_row["schema_version"],
         "preset_id": preset_row["id"],
         "preset_name": preset_row["name"],
         "preset_version": preset_row["version"],
-        "preset": preset_row["preset"],
+        # 이전 버전 JSON에 없는 호환 기본값도 명시해 재현 가능한 스냅샷을 만든다.
+        "preset": preset.model_dump(mode="json") if preset else preset_row["preset"],
         "split": split_conf,
     }
 
@@ -127,8 +138,24 @@ def run_batch(
     total_samples = 0
     total_class_counts: dict[str, int] = {}
 
+    def cancelled() -> bool:
+        return _is_cancelled(jobs, job_id)
+
+    def handle_cancelled() -> None:
+        # job 행은 취소 API가 이미 terminal(cancelled)로 만들었다. 여기서는
+        # building 데이터셋을 durable하게 마감하고 조용히 물러난다.
+        message = "cancelled by user"
+        try:
+            datasets.mark_failed(dataset_id, message)
+        except Exception:
+            logger.exception("failed to persist cancellation for dataset %s", dataset_id)
+        emit("job_cancelled", {"dataset_id": dataset_id, "message": message})
+
     try:
         for completed, symbol in enumerate(symbols, start=1):
+            if cancelled():
+                handle_cancelled()
+                return
             datasets.set_symbol_running(dataset_id, symbol)
             emit("symbol_started", {"symbol": symbol})
             try:
@@ -140,7 +167,13 @@ def run_batch(
                     preset=preset,
                     data_root=data_root,
                     broker=broker,
+                    is_cancelled=cancelled,
                 )
+            except BatchCancelledError:
+                datasets.set_symbol_failed(dataset_id, symbol, "cancelled by user")
+                emit("symbol_failed", {"symbol": symbol, "error": "cancelled by user"})
+                handle_cancelled()
+                return
             except Exception as exc:  # 종목 실패는 기록하고 계속 진행
                 failed[symbol] = str(exc)
                 datasets.set_symbol_failed(dataset_id, symbol, str(exc))
@@ -151,7 +184,10 @@ def run_batch(
                     symbol,
                     sample_count=summary["sample_count"],
                     class_counts=summary["class_counts"],
-                    length_stats=summary["length_stats"],
+                    length_stats={
+                        **summary["length_stats"],
+                        "cleaning": summary["cleaning"],
+                    },
                 )
                 total_samples += summary["sample_count"]
                 for label, count in summary["class_counts"].items():
@@ -168,6 +204,10 @@ def run_batch(
             "class_counts": total_class_counts,
             "failed_symbols": failed,
         }
+        if not failed and cancelled():
+            # 마지막 종목 처리 중 취소가 도착했으면 ready로 확정하지 않는다
+            handle_cancelled()
+            return
         if failed:
             message = f"{len(failed)}/{len(symbols)} symbols failed: " + ", ".join(
                 sorted(failed)
@@ -209,6 +249,14 @@ def run_batch(
         _finish_job(jobs, job_id, "failed", error=message)
 
 
+def _is_cancelled(jobs: JobRepository, job_id: int) -> bool:
+    try:
+        job = jobs.get(job_id)
+    except Exception:
+        return False  # 상태 조회 실패로 파이프라인을 멈추지 않는다
+    return job is not None and job["status"] == "cancelled"
+
+
 def _process_symbol(
     *,
     datasets: DatasetStore,
@@ -218,6 +266,7 @@ def _process_symbol(
     preset: PreprocessPreset,
     data_root: Path,
     broker: str,
+    is_cancelled: Callable[[], bool] = lambda: False,
 ) -> dict:
     timeframe = preset.timeframe.code
     df = load_cache(cache_path(data_root, broker, timeframe, symbol))
@@ -233,6 +282,9 @@ def _process_symbol(
     shards = build_shards(result.frame, result.samples, result.feature_columns)
     schema = feature_schema(result.feature_columns)
     for shard in shards:
+        if is_cancelled():
+            # shard 업로드 사이의 협조적 취소 — 검증 전 업로드 잔여물은 정리 작업이 지운다
+            raise BatchCancelledError(symbol)
         path = object_path(dataset_id, symbol, shard.index, shard.sha256)
         storage.upload(DATASET_BUCKET, path, shard.data, content_type=PARQUET_CONTENT_TYPE)
         echoed = hashlib.sha256(storage.download(DATASET_BUCKET, path)).hexdigest()
@@ -261,6 +313,7 @@ def _process_symbol(
         "bars": result.stats["bars"],
         "dropped_nan": result.stats["dropped_nan"],
         "dropped_unpaired": result.stats["dropped_unpaired"],
+        "cleaning": result.stats["cleaning"],
     }
 
 

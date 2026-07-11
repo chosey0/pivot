@@ -391,6 +391,10 @@ export function CandleChart({
     const replacingContent = fitContentKeyRef.current !== fitContentKey
 
     if (previousLength > 0 && (addedBefore > 0 || replacingContent)) {
+      // setData 사이에는 series별 시간축이 잠시 어긋난다. 기존 crosshair/marker가
+      // 그 중간 상태를 hit-test하지 않도록 먼저 해제한다.
+      chart.clearCrosshairPosition()
+      markersApiRef.current?.setMarkers([])
       for (const series of Object.values(maSeriesRef.current)) {
         series.setData([])
       }

@@ -65,8 +65,16 @@ class FakeDb:
             "length_stats": {},
             "error": None,
         },
+        "diagnostic_reports": {"preset_id": None, "dataset_id": None},
     }
-    ID_TABLES = ("jobs", "job_events", "training_presets", "datasets", "dataset_shards")
+    ID_TABLES = (
+        "jobs",
+        "job_events",
+        "training_presets",
+        "datasets",
+        "dataset_shards",
+        "diagnostic_reports",
+    )
 
     def __init__(self) -> None:
         self.tables: dict[str, list[dict]] = defaultdict(list)
@@ -144,6 +152,8 @@ class FakeStorage:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
         self.corrupt_paths: set[str] = set()  # 검증 실패 시나리오용
+        self.created_at: dict[tuple[str, str], str] = {}  # orphan age 시나리오용
+        self.removed: list[list[str]] = []  # 삭제 순서 검증용 호출 기록
 
     def upload(self, bucket: str, path: str, data: bytes, *, content_type: str) -> None:
         key = (bucket, path)
@@ -154,6 +164,32 @@ class FakeStorage:
     def download(self, bucket: str, path: str) -> bytes:
         data = self.objects[(bucket, path)]
         return data + b"corrupted" if path in self.corrupt_paths else data
+
+    def remove(self, bucket: str, paths: list[str]) -> None:
+        # Supabase처럼 존재하지 않는 경로는 조용히 건너뛴다 (재시도 멱등)
+        self.removed.append(list(paths))
+        for path in paths:
+            self.objects.pop((bucket, path), None)
+
+    def list_objects(self, bucket: str, prefix: str, *, limit: int = 1000) -> list[dict]:
+        """Supabase list API 흉내 — 폴더 한 단계씩, 폴더는 id 없는 항목."""
+        entries: dict[str, dict] = {}
+        for (object_bucket, path) in self.objects:
+            if object_bucket != bucket or not path.startswith(f"{prefix}/"):
+                continue
+            rest = path[len(prefix) + 1 :]
+            head, separator, _ = rest.partition("/")
+            if separator:
+                entries[head] = {"name": head, "id": None}
+            else:
+                entries[head] = {
+                    "name": head,
+                    "id": head,
+                    "created_at": self.created_at.get(
+                        (bucket, path), "2020-01-01T00:00:00+00:00"
+                    ),
+                }
+        return list(entries.values())[:limit]
 
 
 def make_candles(length: int = 240, seed: int = 3) -> pd.DataFrame:

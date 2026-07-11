@@ -136,7 +136,11 @@ def start_batch(request: BatchRequest) -> dict:
         dataset = datasets.create(
             name=name,
             preset_id=preset_row["id"],
-            preset_snapshot=build_snapshot(preset_row, split_config(request.split_seed)),
+            preset_snapshot=build_snapshot(
+                preset_row,
+                split_config(request.split_seed),
+                preset=preset,
+            ),
             timeframe=preset.timeframe.code,
             feature_columns=list(preset.features),
             symbols=symbols,

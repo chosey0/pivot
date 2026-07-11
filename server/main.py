@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from server.routers import (
     chart,
     datasets,
+    diagnostics,
     ingest,
     jobs,
     preprocess,
@@ -23,6 +24,7 @@ app.include_router(symbols.router)
 app.include_router(presets.router)
 app.include_router(jobs.router)
 app.include_router(datasets.router)
+app.include_router(diagnostics.router)
 
 
 @app.get("/api/health")

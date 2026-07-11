@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
+from pivot.config import CleaningConfig, FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.dataset.batch import (
     assign_splits,
     build_snapshot,
@@ -85,6 +85,21 @@ class Harness:
 
 
 class TestRunBatch:
+    def test_snapshot_materializes_compatible_cleaning_defaults(self):
+        preset = PreprocessPreset(cleaning=CleaningConfig())
+        row = {
+            "id": 1,
+            "name": "legacy",
+            "version": 1,
+            "schema_version": 1,
+            "preset": {"name": "legacy"},
+        }
+
+        snapshot = build_snapshot(row, split_config(), preset=preset)
+
+        assert snapshot["preset"]["cleaning"]["mode"] == "report_only"
+        assert snapshot["preset"]["cleaning"]["policy"] == "kronos_adapted_v1"
+
     def test_success_marks_everything_ready(self, tmp_path):
         h = Harness(tmp_path, ["AAA", "BBB"], cached=["AAA", "BBB"])
         h.run()
@@ -112,6 +127,11 @@ class TestRunBatch:
         assert [e["sequence"] for e in events] == list(range(len(events)))
         assert events[0]["event_type"] == "job_started"
         assert events[-1]["event_type"] == "dataset_ready"
+
+        assert all(
+            row["length_stats"]["cleaning"]["policy"] == "kronos_adapted_v1"
+            for row in symbol_rows
+        )
 
     def test_batch_shards_match_preview_samples(self, tmp_path):
         """preview(run_preprocess 직접 호출)와 batch 산출물이 동일해야 한다."""

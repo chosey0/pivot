@@ -24,25 +24,30 @@ pivot/                        # 저장소 루트
 │   │   ├── supabase.py       #   PostgREST(메타데이터)·Storage(객체) 클라이언트 분리
 │   │   ├── presets.py        #   training_presets repository (버전 증가·archive·검증)
 │   │   ├── jobs.py           #   jobs/job_events repository (상태 전이 강제)
-│   │   └── datasets.py       #   datasets/dataset_symbols/dataset_shards repository
-│   ├── labeling/             # ② 프랙탈 라벨링
+│   │   ├── datasets.py       #   datasets/dataset_symbols/dataset_shards repository
+│   │   ├── diagnostics.py    #   diagnostic_reports repository (불변 리포트)
+│   │   └── lifecycle.py      #   데이터셋 삭제(객체→메타 순서) + orphan/stale 정리
+│   ├── cleaning/             # ② 원천 불변 품질 경계 분석
+│   │   └── kronos.py         #   Kronos Appendix B 적응형 세그먼트 분석 (off/report_only/filter)
+│   ├── labeling/             # ③ 프랙탈 라벨링
 │   │   └── fractal.py        #   calc_fractal + 옵션 필터(정배열/유동성, B5) + 라벨 모드(B2)
-│   ├── dataset/              # ③ 시퀀스 샘플 생성/로딩
+│   ├── dataset/              # ④ 시퀀스 샘플 생성/로딩
 │   │   ├── build.py          #   샘플 생성 (low/high 루프 통합 A7, float 직렬화 A1, Time 제외 A2)
 │   │   ├── shards.py         #   샘플 → parquet shard 직렬화 (SHA-256, 50MiB 미만 분할)
-│   │   ├── batch.py          #   일괄 전처리 파이프라인 (run_preprocess 재사용, split 배정, 업로드 검증)
+│   │   ├── batch.py          #   일괄 전처리 파이프라인 (run_preprocess 재사용, split 배정, 업로드 검증, 협조적 취소)
+│   │   ├── samples.py        #   샘플 브라우저 접근 (전역 순번 인덱스, 해시 검증 다운로드 + tmp 캐시)
 │   │   ├── transforms.py     #   스케일링 공용 모듈 — 학습·실시간 추론 공유 (A4), torch 비의존
 │   │   └── loader.py         #   Storage shard 로딩 + torch Dataset/collate (마스킹/패딩 A3)
 │   ├── diagnostics/          #   데이터 품질 진단 — raw cache / preset preview / dataset 리포트
 │   │   └── quality.py        #   timestamp, OHLC, MA NaN, 라벨 분포, split 누수 검사
-│   ├── models/               # ④ 모델
+│   ├── models/               # ⑤ 모델
 │   │   └── cnn1d.py          #   재현 베이스라인 (B1 비교 실험의 기준점)
-│   ├── training/             # ⑤ 학습/평가
+│   ├── training/             # ⑥ 학습/평가
 │   │   ├── train.py          #   학습 루프 (종목 단위 split A5, 안정화 B6)
 │   │   ├── metrics.py        #   클래스별 P/R/F1, confusion matrix (A6)
 │   │   ├── runs.py           #   Supabase run/epoch/평가 메타데이터 + checkpoint 관리
 │   │   └── evaluate.py       #   종목 히스토리에 모델 적용 → 실제 라벨 vs 예측 (웹 차트 검증용)
-│   └── realtime/             # ⑥ 실시간 추론 (M5)
+│   └── realtime/             # ⑦ 실시간 추론 (M5)
 │       ├── aggregate.py      #   체결 틱 → 봉 집계 (현재 봉 갱신/마감)
 │       └── infer.py          #   체크포인트 로드 + transforms 재사용 시퀀스 구성/판정
 ├── server/                   # FastAPI 앱 — pivot 패키지 호출만, 도메인 로직 없음
@@ -51,7 +56,8 @@ pivot/                        # 저장소 루트
 │   ├── jobs.py               #   장기 작업(수집/일괄 전처리/학습) 상태 + SSE, 학습은 별도 프로세스
 │   └── live.py               #   증권사 WS 구독 관리 + 브라우저 WS 브로드캐스트
 ├── web/                      # Vite + React + TS — docs/04 §5·§6
-│   └── src/                  #   api/, components/chart/, pages/{Watchlist,Lab,Datasets,Diagnostics,Training,Live}
+│   └── src/                  #   App.tsx는 탭 셸만. api/, lib/(format·timeframe 공용 유틸),
+│                             #   components/{chart,indicators}/, pages/{Watchlist,Lab,Datasets,Diagnostics,...}
 ├── data/                     # git 미추적 — 로컬 운영 데이터/임시 캐시, docs/04 §4
 │   ├── raw/                  #   수집 캐시: {broker}/{timeframe}/{symbol}.parquet
 │   ├── meta/                 #   watchlist.json

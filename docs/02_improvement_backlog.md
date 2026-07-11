@@ -78,6 +78,15 @@ n이 커질수록 신호는 강해지지만 학습 가능한 샘플과 실시간
 ### B6. 학습 안정화
 lr=0.01(Adam 기준 높음) 튜닝, 스케줄러, early stopping, 시드 고정.
 
+### B7. Kronos 적응형 K-line 클리닝 효과 검증
+[Kronos (Shi et al., arXiv:2508.02739) Appendix B](https://arxiv.org/abs/2508.02739)는
+가격 필드 결측을 경계로 분할하고, 주기별 가격 점프·비유동·가격 정체 구간을 제거하는 전용
+K-line 정제 절차를 제시한다. Pivot은 원천을 수정하지 않는 `kronos_adapted_v1` 정책으로
+이를 적용한다. 기본 `report_only`와 `filter` 데이터셋을 동일 종목 split/seed로 비교해
+클래스 분포, 유효 샘플 수, 클래스별 P/R/F1 변화를 측정한다. 국내 가격제한·분할·거래정지와
+논문에 없는 틱봉 때문에 효과를 가정하지 않고 실험으로 판정한다. 논문의 Volume/Amount 5%
+무작위 마스킹은 클리닝과 분리해 M4 train-only 증강 실험으로 둔다.
+
 ## C. 엔지니어링/구조
 
 - 데이터 수집: HTS 수동 CSV → broker-modules SDK 조회로 대체, 수집(fetch)과 전처리를 분리하고

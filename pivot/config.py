@@ -14,6 +14,31 @@ BASE_FEATURES = ("Open", "High", "Low", "Close")
 OPTIONAL_RAW_FEATURES = ("Volume", "Amount")
 
 
+class CleaningConfig(BaseModel):
+    """Kronos Appendix B를 국내 주식에 맞게 보수적으로 적용한 품질 정책.
+
+    report_only는 경계와 제외 후보를 계산하되 기존 전처리 결과를 바꾸지 않는다.
+    filter에서만 정상 세그먼트별로 지표·라벨·샘플을 다시 계산한다.
+    """
+
+    mode: Literal["off", "report_only", "filter"] = "report_only"
+    policy: Literal["kronos_adapted_v1"] = "kronos_adapted_v1"
+    price_jump_threshold: float | None = None
+    max_illiquid_bars: int | None = None
+    max_stagnant_bars: int | None = None
+    min_segment_bars: int | None = None
+
+    @model_validator(mode="after")
+    def _check_values(self) -> Self:
+        if self.price_jump_threshold is not None and not 0 < self.price_jump_threshold < 10:
+            raise ValueError("price_jump_threshold must be between 0 and 10")
+        for name in ("max_illiquid_bars", "max_stagnant_bars", "min_segment_bars"):
+            value = getattr(self, name)
+            if value is not None and value < 1:
+                raise ValueError(f"{name} must be positive")
+        return self
+
+
 class Timeframe(BaseModel):
     """봉 종류. 코드 표기는 day | min{N} | tick{N} (docs/03 §2)."""
 
@@ -182,6 +207,7 @@ class PreprocessPreset(BaseModel):
     )
     labeling: LabelingConfig = Field(default_factory=LabelingConfig)
     filters: FilterConfig = Field(default_factory=FilterConfig)
+    cleaning: CleaningConfig = Field(default_factory=CleaningConfig)
 
     @property
     def required_ma_windows(self) -> list[int]:

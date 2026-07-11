@@ -152,6 +152,11 @@ class DatasetRepository:
             order="symbol.asc,shard_index.asc",
         )
 
+    def all_shard_paths(self) -> set[str]:
+        """전체 데이터셋이 참조하는 object path 집합 (orphan 판정용)."""
+        rows = self.db.select(SHARDS_TABLE, columns="object_path")
+        return {row["object_path"] for row in rows}
+
     def finalize_ready(
         self, dataset_id: int, *, sample_count: int, class_counts: dict
     ) -> dict:

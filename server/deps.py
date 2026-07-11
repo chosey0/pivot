@@ -9,12 +9,14 @@ from functools import lru_cache
 from pathlib import Path
 
 from pivot.storage.datasets import DatasetRepository
+from pivot.storage.diagnostics import DiagnosticReportRepository
 from pivot.storage.jobs import JobRepository
 from pivot.storage.presets import PresetRepository
 from pivot.storage.supabase import PostgrestClient, StorageObjectClient
 
 DATA_ROOT = Path(os.getenv("PIVOT_DATA_DIR", "data"))
 META_DIR = DATA_ROOT / "meta"
+SHARD_CACHE_ROOT = DATA_ROOT / "tmp" / "shards"  # 재생성 가능한 shard 다운로드 캐시
 
 
 @lru_cache(maxsize=1)
@@ -40,3 +42,8 @@ def job_repo() -> JobRepository:
 @lru_cache(maxsize=1)
 def dataset_repo() -> DatasetRepository:
     return DatasetRepository(_postgrest())
+
+
+@lru_cache(maxsize=1)
+def diagnostic_repo() -> DiagnosticReportRepository:
+    return DiagnosticReportRepository(_postgrest())

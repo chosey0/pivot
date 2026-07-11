@@ -33,9 +33,24 @@ are implemented and browser-verified.
 deterministic symbol-level splits), preset CRUD is version-bump/archive only,
 `POST /api/preprocess/batch` runs a durable job (jobs/job_events) streamed via
 `GET /api/jobs/{id}/events` SSE, and the Datasets tab + Lab preset save are browser-verified.
-Remaining for **M3-B**: sample browser (shard download/페이지 조회), diagnostics tab +
-`diagnostic_reports`, dataset/run 삭제·orphan 정리 job, batch cancel API.
-Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7.
+
+**M3-B (sample browser + diagnostics + lifecycle) done**: `pivot/dataset/samples.py`
+serves paged/label-filtered samples with stable global indices (metadata-only parquet
+reads for the index, SHA-256 verified downloads, disposable `data/tmp/shards` cache),
+`pivot/diagnostics/quality.py` + `pivot/storage/diagnostics.py` produce read-only
+passed/warning/failed reports (cache/preview/dataset incl. split-leakage recheck) stored
+in `diagnostic_reports`, and `pivot/storage/lifecycle.py` implements batch cancel
+(cooperative checks between symbols/shards; `POST /api/jobs/{id}/cancel`), dataset
+deletion (freeze object list → delete objects → delete metadata; attempt recorded as a
+`dataset_delete` job) and idempotent cleanup (`POST /api/datasets/cleanup`) for orphan
+objects / stale building datasets / stale jobs. The remote database includes
+`supabase/migrations/20260711064111_dataset_delete_job_kind.sql` for durable deletion jobs.
+The Lab and Diagnostics also expose `kronos_adapted_v1` K-line quality analysis: raw
+parquet stays immutable, `report_only` is the default, and `filter` recomputes indicators,
+labels, and samples independently per retained segment so samples never cross a quality
+boundary. Cleaning policy and outcomes are preserved in preset snapshots and dataset
+symbol metadata.
+Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7. Next: **M4** (training).
 
 Run dev servers: `uv run uvicorn server.main:app --reload` (port 8000) and
 `cd web && npm run dev` (port 5173, proxies `/api` and `/ws` to 8000).

@@ -1,0 +1,719 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  api,
+  type CacheStatus,
+  type ChartResponse,
+  type SymbolSuggestion,
+  type TimeframeCode,
+  type WatchItem,
+} from '../api/client'
+import type { OhlcPoint } from '../components/chart/CandleChart'
+import { CandleChart } from '../components/chart/CandleChart'
+import { ChartPanel } from '../components/chart/ChartPanel'
+import { IndicatorSettingsPanel } from '../components/indicators/IndicatorSettingsPanel'
+import { useIndicatorSettings } from '../components/indicators/useIndicatorSettings'
+import { changeTone, formatDateTime, formatPercent, formatPrice, percentChange } from '../lib/format'
+import { chartLimitFor, MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
+
+function isMissingCacheError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('404 Not Found') && message.includes('no cached data')
+}
+
+function mergeOlderChart(current: ChartResponse, older: ChartResponse): ChartResponse {
+  const candleByTime = new Map<string | number, ChartResponse['candles'][number]>()
+  for (const candle of [...older.candles, ...current.candles]) {
+    candleByTime.set(candle.time, candle)
+  }
+  const candles = [...candleByTime.values()].sort((a, b) =>
+    typeof a.time === 'number' && typeof b.time === 'number'
+      ? a.time - b.time
+      : String(a.time).localeCompare(String(b.time)),
+  )
+  const times = new Set(candles.map((candle) => candle.time))
+  const volumeByTime = new Map<string | number, ChartResponse['volumes'][number]>()
+  for (const point of [...older.volumes, ...current.volumes]) {
+    if (times.has(point.time)) volumeByTime.set(point.time, point)
+  }
+  const volumes = [...volumeByTime.values()].sort((a, b) =>
+    typeof a.time === 'number' && typeof b.time === 'number'
+      ? a.time - b.time
+      : String(a.time).localeCompare(String(b.time)),
+  )
+  const ma: Record<string, ChartResponse['ma'][string]> = {}
+  for (const window of new Set([...Object.keys(older.ma), ...Object.keys(current.ma)])) {
+    const lineByTime = new Map<string | number, ChartResponse['ma'][string][number]>()
+    for (const point of [...(older.ma[window] ?? []), ...(current.ma[window] ?? [])]) {
+      if (times.has(point.time)) lineByTime.set(point.time, point)
+    }
+    ma[window] = [...lineByTime.values()].sort((a, b) =>
+      typeof a.time === 'number' && typeof b.time === 'number'
+        ? a.time - b.time
+        : String(a.time).localeCompare(String(b.time)),
+    )
+  }
+  return {
+    ...current,
+    candles,
+    volumes,
+    ma,
+    has_more: older.has_more,
+    next_before: older.next_before,
+  }
+}
+
+interface WatchlistProps {
+  // 탭 전환 시에도 차트/선택 상태를 유지하기 위해 항상 마운트하고 표시만 제어한다
+  active: boolean
+  // App 헤더 부제에 현재 차트 정보를 표시하기 위한 최소한의 콜백
+  onSubtitleChange: (subtitle: string | null) => void
+}
+
+export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [watchlist, setWatchlist] = useState<WatchItem[]>([])
+  const [statuses, setStatuses] = useState<Record<string, CacheStatus | null>>({})
+  const [chart, setChart] = useState<ChartResponse | null>(null)
+  const [selectedSymbol, setSelectedSymbol] = useState<string>('')
+  const [timeframeKind, setTimeframeKind] = useState<'day' | 'minute' | 'tick'>('day')
+  const [timeframeUnit, setTimeframeUnit] = useState(1)
+  const [symbolInput, setSymbolInput] = useState('005930')
+  const [nameInput, setNameInput] = useState('삼성전자')
+  const [symbolSuggestions, setSymbolSuggestions] = useState<SymbolSuggestion[]>([])
+  const [symbolSuggestionOpen, setSymbolSuggestionOpen] = useState(false)
+  const [symbolSuggestionIndex, setSymbolSuggestionIndex] = useState(0)
+  const [symbolSearchField, setSymbolSearchField] = useState<'symbol' | 'name'>('symbol')
+  const [symbolSearchTouched, setSymbolSearchTouched] = useState(false)
+  const [symbolSearchLoading, setSymbolSearchLoading] = useState(false)
+  const [rangeEnabled, setRangeEnabled] = useState(false)
+  const [startDate, setStartDate] = useState(today)
+  const [endDate, setEndDate] = useState(today)
+  const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [chartFitKey, setChartFitKey] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const indicators = useIndicatorSettings({ onMessage: setMessage })
+  const {
+    maSettings,
+    setMaSettings,
+    volumeChart,
+    setVolumeChart,
+    visibleIndicators,
+    maWindows,
+    legendText,
+  } = indicators
+
+  const timeframe = useMemo(
+    () => toTimeframeCode(timeframeKind, timeframeUnit),
+    [timeframeKind, timeframeUnit],
+  )
+  const maWindowsKey = maWindows.join(',')
+  const selectedSymbolLabel = useMemo(() => {
+    if (!selectedSymbol) return ''
+    const name = watchlist.find((item) => item.symbol === selectedSymbol)?.name
+    return name ? `${name} • ${selectedSymbol}` : selectedSymbol
+  }, [selectedSymbol, watchlist])
+  const displayedOhlc = selectedOhlc ?? chart?.candles[chart.candles.length - 1] ?? null
+  const displayedOhlcPreviousClose = useMemo(() => {
+    if (!chart || !displayedOhlc) return null
+    const index = chart.candles.findIndex((candle) => candle.time === displayedOhlc.time)
+    return index > 0 ? chart.candles[index - 1].close : null
+  }, [chart, displayedOhlc])
+  const ohlcItems = useMemo(() => {
+    if (!displayedOhlc) return []
+    return [
+      { label: '시작', value: displayedOhlc.open },
+      { label: '고가', value: displayedOhlc.high },
+      { label: '저가', value: displayedOhlc.low },
+      { label: '종가', value: displayedOhlc.close },
+    ].map((item) => {
+      const change = percentChange(item.value, displayedOhlcPreviousClose)
+      return {
+        ...item,
+        change,
+        tone: changeTone(change),
+      }
+    })
+  }, [displayedOhlc, displayedOhlcPreviousClose])
+  const symbolSearchQuery = useMemo(
+    () => (symbolSearchField === 'symbol' ? symbolInput : nameInput).trim(),
+    [nameInput, symbolInput, symbolSearchField],
+  )
+
+  const refreshWatchlist = useCallback(async () => {
+    const items = await api.watchlist()
+    setWatchlist(items)
+    setSelectedSymbol((current) => current || items[0]?.symbol || '')
+    return items
+  }, [])
+
+  const refreshStatus = useCallback(async (items: WatchItem[], nextTimeframe: TimeframeCode) => {
+    if (items.length === 0) {
+      setStatuses({})
+      return
+    }
+    const next = await api.ingestStatus(
+      items.map((item) => item.symbol),
+      nextTimeframe,
+    )
+    setStatuses(next)
+  }, [])
+
+  const loadChart = useCallback(async (
+    symbol: string,
+    nextTimeframe: TimeframeCode,
+    nextMaWindows: number[],
+  ) => {
+    if (!symbol) return
+    setSelectedSymbol(symbol)
+    setLoading(true)
+    setError(null)
+    try {
+      const next = await api.chart(symbol, nextTimeframe, nextMaWindows, {
+        limit: chartLimitFor(nextTimeframe),
+      })
+      setChart(next)
+      setSelectedOhlc(next.candles.at(-1) ?? null)
+      setChartFitKey(`${symbol}:${nextTimeframe}:${Date.now()}`)
+      setMessage(`${symbol} ${nextTimeframe} 차트를 불러왔습니다.`)
+    } catch (e) {
+      setChart(null)
+      if (isMissingCacheError(e)) {
+        setMessage(`${symbol} ${nextTimeframe} 캐시가 없습니다. 수집 버튼을 눌러 먼저 데이터를 수집하세요.`)
+      } else {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const loadOlderChart = useCallback(async () => {
+    if (!chart || !selectedSymbol || !chart.has_more || loadingOlder) return
+    const first = chart.candles[0]
+    if (!first) return
+    setLoadingOlder(true)
+    setError(null)
+    try {
+      const older = await api.chart(selectedSymbol, timeframe, maWindows, {
+        limit: chartLimitFor(timeframe),
+        before: first.time,
+      })
+      setChart((current) => (current ? mergeOlderChart(current, older) : older))
+    } catch (e) {
+      if (!isMissingCacheError(e)) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [chart, loadingOlder, maWindows, selectedSymbol, timeframe])
+
+  useEffect(() => {
+    refreshWatchlist()
+      .catch((e: Error) => setError(e.message))
+  }, [refreshWatchlist])
+
+  useEffect(() => {
+    refreshStatus(watchlist, timeframe)
+      .catch((e: Error) => setError(e.message))
+    if (selectedSymbol) loadChart(selectedSymbol, timeframe, maWindows)
+  }, [loadChart, maWindows, maWindowsKey, refreshStatus, selectedSymbol, timeframe, watchlist])
+
+  useEffect(() => {
+    setSelectedOhlc((current) => {
+      if (!chart) return null
+      if (current && chart.candles.some((candle) => candle.time === current.time)) {
+        return current
+      }
+      return chart.candles.at(-1) ?? null
+    })
+  }, [chart])
+
+  useEffect(() => {
+    onSubtitleChange(
+      chart
+        ? `${chart.symbol} · ${chart.timeframe} · ${chart.candles.length.toLocaleString()} bars`
+        : null,
+    )
+  }, [chart, onSubtitleChange])
+
+  useEffect(() => {
+    if (!symbolSearchTouched || symbolSearchQuery.length < 2) {
+      setSymbolSuggestions([])
+      setSymbolSuggestionOpen(false)
+      setSymbolSearchLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setSymbolSearchLoading(true)
+      api.symbolSearch(symbolSearchQuery, controller.signal)
+        .then((items) => {
+          setSymbolSuggestions(items)
+          setSymbolSuggestionIndex(0)
+          setSymbolSuggestionOpen(items.length > 0)
+        })
+        .catch((e: Error) => {
+          if (e.name !== 'AbortError') setError(e.message)
+        })
+        .finally(() => setSymbolSearchLoading(false))
+    }, 180)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [symbolSearchQuery, symbolSearchTouched])
+
+  function selectSymbolSuggestion(item: SymbolSuggestion) {
+    setSymbolInput(item.symbol)
+    setNameInput(item.name)
+    setSymbolSuggestionOpen(false)
+    setSymbolSuggestions([])
+  }
+
+  function handleSymbolSuggestKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (!symbolSuggestionOpen || symbolSuggestions.length === 0) return
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setSymbolSuggestionIndex((current) => (current + 1) % symbolSuggestions.length)
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setSymbolSuggestionIndex((current) =>
+        current === 0 ? symbolSuggestions.length - 1 : current - 1,
+      )
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      selectSymbolSuggestion(symbolSuggestions[symbolSuggestionIndex])
+    } else if (event.key === 'Escape') {
+      setSymbolSuggestionOpen(false)
+    }
+  }
+
+  async function addWatchItem(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const symbol = symbolInput.trim()
+    if (!symbol) return
+    setLoading(true)
+    setError(null)
+    try {
+      const items = await api.addWatchItem({ symbol, name: nameInput.trim() })
+      setWatchlist(items)
+      setSelectedSymbol(symbol)
+      setSymbolSuggestionOpen(false)
+      await refreshStatus(items, timeframe)
+      setMessage(`${symbol}을 종목 목록에 추가했습니다.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function removeWatchItem(symbol: string) {
+    setLoading(true)
+    setError(null)
+    try {
+      const items = await api.removeWatchItem(symbol)
+      setWatchlist(items)
+      setStatuses((prev) => {
+        const next = { ...prev }
+        delete next[symbol]
+        return next
+      })
+      if (selectedSymbol === symbol) {
+        setSelectedSymbol(items[0]?.symbol ?? '')
+        setChart(null)
+      }
+      setMessage(`${symbol}을 종목 목록에서 제거했습니다.`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function ingest(symbol: string) {
+    setLoading(true)
+    setError(null)
+    const rangeText = rangeEnabled ? ` (${startDate} ~ ${endDate})` : ''
+    setMessage(`${symbol} ${timeframe}${rangeText} 수집 중...`)
+    try {
+      if (rangeEnabled && startDate > endDate) {
+        throw new Error('수집 시작일은 종료일보다 늦을 수 없습니다.')
+      }
+      const response = await api.ingest(
+        [symbol],
+        timeframe,
+        rangeEnabled ? { start: startDate, end: endDate } : {},
+      )
+      const result = response.results[symbol]
+      if (!result?.ok) throw new Error(result?.error ?? '수집 실패')
+      await refreshStatus(watchlist, timeframe)
+      await loadChart(symbol, timeframe, maWindows)
+      setMessage(`${symbol} ${timeframe}${rangeText} 수집 완료: ${result.bars ?? 0}봉`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (!active) return null
+
+  return (
+    <>
+      <aside className="side-panel">
+        <section className="control-section">
+          <h2>타임프레임</h2>
+          <div className="segmented">
+            <button
+              className={timeframeKind === 'day' ? 'selected' : ''}
+              onClick={() => {
+                setTimeframeKind('day')
+                setTimeframeUnit(1)
+              }}
+              type="button"
+            >
+              일봉
+            </button>
+            <button
+              className={timeframeKind === 'minute' ? 'selected' : ''}
+              onClick={() => {
+                setTimeframeKind('minute')
+                setTimeframeUnit(1)
+              }}
+              type="button"
+            >
+              분봉
+            </button>
+            <button
+              className={timeframeKind === 'tick' ? 'selected' : ''}
+              onClick={() => {
+                setTimeframeKind('tick')
+                setTimeframeUnit(30)
+              }}
+              type="button"
+            >
+              틱봉
+            </button>
+          </div>
+          {timeframeKind !== 'day' && (
+            <label className="field">
+              단위
+              <select
+                value={timeframeUnit}
+                onChange={(event) => setTimeframeUnit(Number(event.target.value))}
+              >
+                {(timeframeKind === 'minute' ? MINUTE_UNITS : TICK_UNITS).map((unit) => (
+                  <option key={unit} value={unit}>
+                    {unit}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </section>
+
+        <section className="control-section">
+          <div className="section-title-row">
+            <h2>수집 기간</h2>
+            <label className="inline-check">
+              <input
+                checked={rangeEnabled}
+                onChange={(event) => setRangeEnabled(event.target.checked)}
+                type="checkbox"
+              />
+              직접 지정
+            </label>
+          </div>
+          <div className="range-grid">
+            <label className="field">
+              시작일
+              <input
+                disabled={!rangeEnabled}
+                max={endDate}
+                onChange={(event) => setStartDate(event.target.value)}
+                type="date"
+                value={startDate}
+              />
+            </label>
+            <label className="field">
+              종료일
+              <input
+                disabled={!rangeEnabled}
+                min={startDate}
+                onChange={(event) => setEndDate(event.target.value)}
+                type="date"
+                value={endDate}
+              />
+            </label>
+          </div>
+          <p className="hint">
+            미지정 시 기존 캐시의 마지막 봉 이후를 증분 수집합니다. 지정 시 해당 기간을 조회해
+            캐시에 병합합니다.
+          </p>
+        </section>
+
+        <section className="control-section">
+          <h2>종목 추가</h2>
+          <div className="symbol-search-box">
+            <form className="add-form" onSubmit={addWatchItem}>
+              <label className="field">
+                종목코드
+                <input
+                  autoComplete="off"
+                  maxLength={12}
+                  onChange={(event) => {
+                    setSymbolSearchField('symbol')
+                    setSymbolSearchTouched(true)
+                    setSymbolInput(event.target.value)
+                  }}
+                  onFocus={() => {
+                    setSymbolSearchField('symbol')
+                    setSymbolSearchTouched(true)
+                    setSymbolSuggestionOpen(symbolSuggestions.length > 0)
+                  }}
+                  onKeyDown={handleSymbolSuggestKeyDown}
+                  placeholder="005930"
+                  value={symbolInput}
+                />
+              </label>
+              <label className="field">
+                종목명
+                <input
+                  autoComplete="off"
+                  onChange={(event) => {
+                    setSymbolSearchField('name')
+                    setSymbolSearchTouched(true)
+                    setNameInput(event.target.value)
+                  }}
+                  onFocus={() => {
+                    setSymbolSearchField('name')
+                    setSymbolSearchTouched(true)
+                    setSymbolSuggestionOpen(symbolSuggestions.length > 0)
+                  }}
+                  onKeyDown={handleSymbolSuggestKeyDown}
+                  placeholder="삼성전자"
+                  value={nameInput}
+                />
+              </label>
+              <button className="primary" disabled={loading} type="submit">
+                추가
+              </button>
+            </form>
+            {(symbolSuggestionOpen || symbolSearchLoading) && (
+              <div className="symbol-suggestions" role="listbox">
+                {symbolSearchLoading && symbolSuggestions.length === 0 ? (
+                  <div className="symbol-suggestion muted">검색 중...</div>
+                ) : (
+                  symbolSuggestions.map((item, index) => (
+                    <button
+                      className={
+                        index === symbolSuggestionIndex
+                          ? 'symbol-suggestion active'
+                          : 'symbol-suggestion'
+                      }
+                      key={item.symbol}
+                      onMouseDown={(event) => {
+                        event.preventDefault()
+                        selectSymbolSuggestion(item)
+                      }}
+                      onMouseEnter={() => setSymbolSuggestionIndex(index)}
+                      role="option"
+                      type="button"
+                    >
+                      <strong>{item.name}</strong>
+                      <span>{item.symbol}</span>
+                      <em>{item.market}</em>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="control-section grow">
+          <div className="section-title-row">
+            <h2>종목</h2>
+            <button
+              className="ghost"
+              disabled={loading || watchlist.length === 0}
+              onClick={() => refreshStatus(watchlist, timeframe).catch((e: Error) => setError(e.message))}
+              type="button"
+            >
+              상태 갱신
+            </button>
+          </div>
+          <div className="watch-table">
+            {watchlist.length === 0 ? (
+              <p className="empty">종목코드와 이름을 직접 입력해 종목을 추가하세요.</p>
+            ) : (
+              watchlist.map((item) => {
+                const status = statuses[item.symbol]
+                return (
+                  <div
+                    className={item.symbol === selectedSymbol ? 'watch-row selected' : 'watch-row'}
+                    key={item.symbol}
+                  >
+                    <button
+                      className="watch-main"
+                      onClick={() => loadChart(item.symbol, timeframe, maWindows)}
+                      type="button"
+                    >
+                      <strong>{item.name || item.symbol}</strong>
+                      <span>{item.symbol}</span>
+                      <small>
+                        {status
+                          ? `${status.bars.toLocaleString()}봉 · ${formatDateTime(status.last)}`
+                          : `${timeframe} 미수집`}
+                      </small>
+                    </button>
+                    <div className="row-actions">
+                      <button disabled={loading} onClick={() => ingest(item.symbol)} type="button">
+                        수집
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={loading}
+                        onClick={() => removeWatchItem(item.symbol)}
+                        type="button"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </section>
+      </aside>
+
+      <ChartPanel
+        actions={
+          <>
+            <button
+              className="indicator-button"
+              onClick={indicators.openIndicatorPanel}
+              type="button"
+            >
+              + 보조지표
+            </button>
+            {selectedSymbol && (
+              <button
+                className="ghost"
+                disabled={loading}
+                onClick={() => loadChart(selectedSymbol, timeframe, maWindows)}
+                type="button"
+              >
+                차트 새로고침
+              </button>
+            )}
+          </>
+        }
+        emptyText="수집된 종목을 선택하면 실데이터 차트가 표시됩니다."
+        error={error}
+        hasContent={Boolean(chart)}
+        legend={
+          chart ? (
+            <div className="chart-legend">
+              <div className="ohlc-row">
+                {ohlcItems.map((item) => (
+                  <span className="ohlc-item" key={item.label}>
+                    <strong>{item.label}</strong>
+                    <span>{formatPrice(item.value)}</span>
+                    {item.change === null ? null : (
+                      <span className={`ohlc-change ${item.tone}`}>
+                        ({formatPercent(item.change)})
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+              {maSettings.some((setting) => setting.chart) && (
+                <div className="legend-row">
+                  <span>이동평균선</span>
+                  {maSettings
+                    .filter((setting) => setting.chart)
+                    .map((setting) => (
+                      <span className="legend-chip" key={setting.id}>
+                        <strong style={{ color: setting.color }}>{setting.window}</strong>
+                        <button
+                          aria-label={`MA${setting.window} 삭제`}
+                          onClick={() =>
+                            setMaSettings((current) =>
+                              current.length <= 1
+                                ? current
+                                : current.filter((item) => item.id !== setting.id),
+                            )
+                          }
+                          type="button"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                </div>
+              )}
+              {volumeChart && (
+                <div className="legend-row">
+                  <span>거래량</span>
+                  <button
+                    aria-label="거래량 숨기기"
+                    className="legend-mini-button"
+                    onClick={() => setVolumeChart(false)}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null
+        }
+        loading={loading}
+        message={message}
+        overlay={
+          <>
+            {loadingOlder && chart ? <p className="chart-loading-more">과거 데이터 불러오는 중...</p> : null}
+            {indicators.indicatorPanelOpen && (
+              <IndicatorSettingsPanel
+                barCount={chart?.candles.length ?? 0}
+                settings={indicators}
+              />
+            )}
+          </>
+        }
+        subtitle={
+          <>
+            {timeframe} · 캔들
+            {visibleIndicators.movingAverages.length > 0
+              ? ` + 이동평균선 ${legendText}`
+              : ''}
+            {visibleIndicators.volume ? ' + 거래량' : ''}
+          </>
+        }
+        title={selectedSymbolLabel || '종목을 선택하세요'}
+      >
+        {chart ? (
+          <CandleChart
+            canLoadMoreOlder={Boolean(chart.has_more)}
+            candles={chart.candles}
+            fitContentKey={chartFitKey}
+            isLoadingOlder={loadingOlder}
+            ma={chart.ma}
+            onLoadMoreOlder={loadOlderChart}
+            onOhlcChange={setSelectedOhlc}
+            visibleIndicators={visibleIndicators}
+            volumes={chart.volumes}
+          />
+        ) : null}
+      </ChartPanel>
+    </>
+  )
+}

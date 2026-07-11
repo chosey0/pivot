@@ -40,6 +40,14 @@ class JobRepository:
         rows = self.db.select(JOBS_TABLE, filters={"id": f"eq.{job_id}"})
         return rows[0] if rows else None
 
+    def list_active(self) -> list[dict]:
+        """terminal이 아닌 job 전체 (정리 작업의 stale 판정용)."""
+        return self.db.select(
+            JOBS_TABLE,
+            filters={"status": "in.(queued,running)"},
+            order="created_at.asc",
+        )
+
     def mark_running(self, job_id: int) -> dict:
         return self._transition(
             job_id, from_status="queued", values={"status": "running", "started_at": _now()}

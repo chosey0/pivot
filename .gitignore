@@ -17,8 +17,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# 파이썬 패키징 산출물만 — web/src/lib/ 같은 소스 디렉터리는 제외하지 않도록 루트 앵커
+.venv/
+/lib/
+/lib64/
 parts/
 sdist/
 var/

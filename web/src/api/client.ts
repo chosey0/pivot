@@ -95,6 +95,24 @@ export interface PreviewStats {
   dropped_filters: number
   dropped_ignore: number
   confirmation_lag: number
+  cleaning: CleaningStats
+}
+
+export type CleaningMode = 'off' | 'report_only' | 'filter'
+
+export interface CleaningStats {
+  mode: CleaningMode
+  policy: 'kronos_adapted_v1'
+  reference: string
+  original_bars: number
+  retained_bars: number
+  removed_bars: number
+  removed_ratio: number
+  segments: number
+  segment_lengths: number[]
+  structural_breaks: number
+  reason_counts: Record<string, number>
+  thresholds: Record<string, unknown>
 }
 
 export interface PreviewFeatures {
@@ -116,6 +134,14 @@ export interface PreviewParams {
   features: string[]
   labeling: { mode: 'cls3' | 'cls2_drop'; ignore_rule: 'ma20<ma120' | 'none' }
   filters: { ma_alignment: '20>120' | '5>20>120' | null; min_amount: number | null }
+  cleaning: {
+    mode: CleaningMode
+    policy: 'kronos_adapted_v1'
+    price_jump_threshold: number | null
+    max_illiquid_bars: number | null
+    max_stagnant_bars: number | null
+    min_segment_bars: number | null
+  }
 }
 
 export interface ChartIndicatorsConfig {
@@ -203,6 +229,62 @@ export interface DatasetDetail extends DatasetRow {
 export interface BatchStartResponse {
   job_id: number
   dataset_id: number
+}
+
+export interface SampleListItem {
+  index: number
+  symbol: string
+  split: 'train' | 'validation' | 'test' | null
+  label: 0 | 1 | 2
+  kind: 'low' | 'high'
+  start_time: string
+  end_time: string
+  length: number
+}
+
+export interface SampleListResponse {
+  dataset_id: number
+  total: number
+  offset: number
+  limit: number
+  label: number | null
+  items: SampleListItem[]
+}
+
+export interface SampleDetail extends SampleListItem {
+  feature_columns: string[]
+  features: number[][]
+}
+
+export type DiagnosticTarget = 'raw_cache' | 'preset' | 'dataset'
+export type DiagnosticStatus = 'passed' | 'warning' | 'failed'
+
+export interface DiagnosticCheck {
+  id: string
+  symbol?: string
+  status: DiagnosticStatus
+  message: string
+  data?: Record<string, unknown>
+}
+
+export interface DiagnosticReportRow {
+  id: number
+  target_type: DiagnosticTarget
+  preset_id: number | null
+  dataset_id: number | null
+  status: DiagnosticStatus
+  summary: { passed: number; warning: number; failed: number; checks: number }
+  created_at: string
+}
+
+export interface DiagnosticReportDetail extends DiagnosticReportRow {
+  report: { checks: DiagnosticCheck[]; input: Record<string, unknown> }
+}
+
+export interface CleanupReport {
+  stale_jobs_cancelled: number[]
+  stale_datasets_failed: number[]
+  orphan_objects_removed: string[]
 }
 
 export type TimeframeCode =
@@ -308,6 +390,46 @@ export const api = {
       }),
     }),
   job: (jobId: number) => fetchJson<JobRow>(`/api/jobs/${jobId}`),
+  cancelJob: (jobId: number) =>
+    fetchJson<JobRow>(`/api/jobs/${jobId}/cancel`, { method: 'POST' }),
   datasets: () => fetchJson<DatasetRow[]>('/api/datasets'),
   dataset: (datasetId: number) => fetchJson<DatasetDetail>(`/api/datasets/${datasetId}`),
+  deleteDataset: (datasetId: number) =>
+    fetchJson<{ job_id: number; deleted_objects: number }>(`/api/datasets/${datasetId}`, {
+      method: 'DELETE',
+    }),
+  datasetSamples: (
+    datasetId: number,
+    options: { label?: number | null; offset?: number; limit?: number } = {},
+  ) => {
+    const params = new URLSearchParams()
+    if (options.label !== undefined && options.label !== null)
+      params.set('label', String(options.label))
+    if (options.offset !== undefined) params.set('offset', String(options.offset))
+    if (options.limit !== undefined) params.set('limit', String(options.limit))
+    return fetchJson<SampleListResponse>(`/api/datasets/${datasetId}/samples?${params}`)
+  },
+  datasetSample: (datasetId: number, sampleIndex: number) =>
+    fetchJson<SampleDetail>(`/api/datasets/${datasetId}/samples/${sampleIndex}`),
+  cleanup: () => fetchJson<CleanupReport>('/api/datasets/cleanup', { method: 'POST' }),
+  diagnosticReports: (targetType?: DiagnosticTarget) =>
+    fetchJson<DiagnosticReportRow[]>(
+      `/api/diagnostics${targetType ? `?target_type=${targetType}` : ''}`,
+    ),
+  diagnosticReport: (reportId: number) =>
+    fetchJson<DiagnosticReportDetail>(`/api/diagnostics/${reportId}`),
+  diagnoseCache: (symbols: string[], timeframe: TimeframeCode) =>
+    fetchJson<DiagnosticReportDetail>('/api/diagnostics/cache', {
+      method: 'POST',
+      body: JSON.stringify({ symbols, timeframe }),
+    }),
+  diagnosePreview: (presetId: number, symbols: string[]) =>
+    fetchJson<DiagnosticReportDetail>('/api/diagnostics/preview', {
+      method: 'POST',
+      body: JSON.stringify({ preset_id: presetId, symbols }),
+    }),
+  diagnoseDataset: (datasetId: number) =>
+    fetchJson<DiagnosticReportDetail>(`/api/diagnostics/datasets/${datasetId}`, {
+      method: 'POST',
+    }),
 }

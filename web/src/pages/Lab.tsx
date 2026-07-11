@@ -1,20 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  type CleaningMode,
   type PresetJson,
   type PreviewParams,
   type PreviewResponse,
   type PreviewSample,
   type PreviewStats,
-  type TimeframeCode,
   type WatchItem,
 } from '../api/client'
 import type { TimeRange, VisibleIndicators } from '../components/chart/CandleChart'
 import { CandleChart } from '../components/chart/CandleChart'
 import { ChartPanel } from '../components/chart/ChartPanel'
+import { MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
 
-const MINUTE_UNITS = [1, 3, 5, 10, 15, 30, 45, 60]
-const TICK_UNITS = [1, 3, 5, 10, 30]
 const PREVIEW_DEBOUNCE_MS = 400
 
 // Watchlist 기본 보조지표와 같은 색상 (App.tsx DEFAULT_MA_SETTINGS)
@@ -29,11 +28,6 @@ const LABEL_TEXT: Record<number, string> = {
   0: '저점 (0)',
   1: '고점 (1)',
   2: '무시 (2)',
-}
-
-function toTimeframeCode(kind: 'day' | 'minute' | 'tick', unit: number): TimeframeCode {
-  if (kind === 'day') return 'day'
-  return `${kind === 'minute' ? 'min' : 'tick'}${unit}` as TimeframeCode
 }
 
 function diffText(current: number, previous: number | undefined) {
@@ -57,6 +51,7 @@ export function Lab() {
   const [ignoreRuleOn, setIgnoreRuleOn] = useState(true)
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
   const [minAmountInput, setMinAmountInput] = useState('')
+  const [cleaningMode, setCleaningMode] = useState<CleaningMode>('report_only')
   const [featureWindows, setFeatureWindows] = useState<number[]>([20, 120])
   const [volumeFeature, setVolumeFeature] = useState(false)
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
@@ -101,8 +96,17 @@ export function Lab() {
         ma_alignment: maAlignment === '' ? null : maAlignment,
         min_amount: minAmountInput.trim() === '' ? null : Number(minAmountInput),
       },
+      cleaning: {
+        mode: cleaningMode,
+        policy: 'kronos_adapted_v1',
+        price_jump_threshold: null,
+        max_illiquid_bars: null,
+        max_stagnant_bars: null,
+        min_segment_bars: null,
+      },
     }),
     [
+      cleaningMode,
       featureColumns,
       fractalN,
       ignoreRuleOn,
@@ -356,6 +360,13 @@ export function Lab() {
                     {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
                   </span>
                   <span>미확정: 마지막 {stats.confirmation_lag}봉 (미래 확인 대기)</span>
+                  <span>
+                    클리닝 {stats.cleaning.mode} · 후보 유지{' '}
+                    {stats.cleaning.retained_bars.toLocaleString()}/
+                    {stats.cleaning.original_bars.toLocaleString()}봉 · 구간{' '}
+                    {stats.cleaning.segments.toLocaleString()} · 경계{' '}
+                    {stats.cleaning.structural_breaks.toLocaleString()}
+                  </span>
                 </div>
               </div>
             )}
@@ -388,6 +399,7 @@ export function Lab() {
         {preview ? (
           <CandleChart
             candles={preview.candles}
+            fitContentKey={`${preview.symbol}:${preview.timeframe}:${preview.stats.cleaning.mode}`}
             highlightRange={highlightRange}
             ma={preview.ma}
             markers={preview.markers}
@@ -518,6 +530,38 @@ export function Lab() {
               value={minAmountInput}
             />
           </label>
+        </section>
+
+        <section className="control-section">
+          <h2>데이터 클리닝</h2>
+          <label className="field">
+            Kronos 적응형 정책
+            <select
+              onChange={(event) => setCleaningMode(event.target.value as CleaningMode)}
+              value={cleaningMode}
+            >
+              <option value="report_only">진단만 — 샘플 유지</option>
+              <option value="filter">필터 적용 — 정상 구간별 재계산</option>
+              <option value="off">사용 안 함</option>
+            </select>
+          </label>
+          <p className="hint">
+            가격 이상, 구조적 점프, 장기 비유동·정체를 탐지합니다. 필터 적용 시 이동평균,
+            프랙탈과 샘플을 각 정상 구간에서 독립 계산합니다.
+          </p>
+          {timeframeKind === 'tick' && cleaningMode !== 'off' ? (
+            <p className="warning">
+              틱봉은 논문 주기 기준이 없어 가격 필드 무결성만 자동 검사합니다.
+            </p>
+          ) : null}
+          <a
+            className="hint"
+            href="https://arxiv.org/abs/2508.02739"
+            rel="noreferrer"
+            target="_blank"
+          >
+            Kronos 논문 Appendix B 기준 보기
+          </a>
         </section>
 
         <section className="control-section">

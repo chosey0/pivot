@@ -874,6 +874,12 @@ button:disabled {
   overflow-y: auto;
 }
 
+.datasets-main.reviewing {
+  gap: 0;
+  padding: 12px;
+  overflow: hidden;
+}
+
 .preset-version {
   color: #2563eb;
   font-style: normal;
@@ -962,7 +968,7 @@ button:disabled {
 
 .dataset-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.4fr) 90px minmax(120px, 1fr) 130px minmax(160px, 1.2fr) 150px;
+  grid-template-columns: minmax(150px, 1.4fr) 80px minmax(110px, 1fr) 120px minmax(150px, 1.2fr) 140px 110px;
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
@@ -993,5 +999,352 @@ button:disabled {
 
 .dataset-status.failed {
   color: #b91c1c;
+  font-weight: 700;
+}
+
+/* ── 샘플 브라우저 (M3-B) ─────────────────────────────────────── */
+
+.dataset-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.dataset-actions .ghost.active {
+  border-color: #2563eb;
+  color: #1d4ed8;
+}
+
+.ghost.danger {
+  color: #b91c1c;
+}
+
+.ghost.danger:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.sample-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sample-browser {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sample-browser-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sample-browser-header h2 {
+  margin: 2px 0 0;
+  font-size: 17px;
+}
+
+.sample-browser-eyebrow {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.inline-field {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  color: #374151;
+}
+
+.inline-selects {
+  display: flex;
+  gap: 6px;
+}
+
+.sample-pager {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: #374151;
+}
+
+.sample-navigation {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding-left: 12px;
+  border-left: 1px solid #e5e7eb;
+  font-size: 12px;
+}
+
+.sample-navigation strong {
+  min-width: 86px;
+  color: #374151;
+  text-align: center;
+}
+
+.sample-shortcut {
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.sample-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  padding-top: 12px;
+  overflow: hidden;
+}
+
+.sample-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.sample-item {
+  display: grid;
+  grid-template-columns: 72px 60px 70px 1fr;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sample-item.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.sample-label {
+  padding: 2px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  text-align: center;
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.sample-label.label-0 {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.sample-label.label-1 {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.sample-detail {
+  display: grid;
+  grid-template-rows: auto minmax(240px, 1fr) minmax(170px, 0.8fr);
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sample-meta {
+  display: flex;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.sample-meta-primary,
+.sample-meta-details {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sample-meta-details span + span::before {
+  margin-right: 8px;
+  color: #cbd5e1;
+  content: '·';
+}
+
+.mini-chart-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.mini-chart-legend {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.mini-chart-legend strong {
+  margin-right: 2px;
+  color: #374151;
+}
+
+.mini-chart-legend span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.mini-chart-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.mini-chart-legend .candle-up {
+  background: #e5484d;
+}
+
+.mini-chart-legend .candle-down {
+  background: #3b82f6;
+}
+
+.mini-chart {
+  flex: 1;
+  min-height: 240px;
+}
+
+.sample-features {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.sample-features table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sample-features th,
+.sample-features td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #f1f5f9;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sample-features th {
+  position: sticky;
+  top: 0;
+  background: #f9fafb;
+  color: #6b7280;
+}
+
+.sample-features td:first-child,
+.sample-features th:first-child {
+  position: sticky;
+  left: 0;
+  background: #ffffff;
+  color: #9ca3af;
+  text-align: left;
+}
+
+.sample-features th:first-child {
+  z-index: 2;
+  background: #f9fafb;
+}
+
+@media (max-width: 1200px) {
+  .sample-layout {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .sample-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .sample-shortcut {
+    display: none;
+  }
+}
+
+/* ── 데이터 진단 (M3-B) ──────────────────────────────────────── */
+
+.diag-status {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.diag-status.passed {
+  color: #047857;
+}
+
+.diag-status.warning {
+  color: #b45309;
+}
+
+.diag-status.failed {
+  color: #b91c1c;
+}
+
+.diag-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.diag-row {
+  display: grid;
+  grid-template-columns: 90px 150px 60px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13px;
+}
+
+.diag-row:last-child {
+  border-bottom: none;
+}
+
+.diag-head {
+  background: #f9fafb;
+  color: #6b7280;
+  font-size: 12px;
   font-weight: 700;
 }
