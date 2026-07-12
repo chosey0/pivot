@@ -237,3 +237,17 @@ class PreprocessPreset(BaseModel):
         if unknown:
             raise ValueError(f"unknown feature columns: {unknown}")
         return self
+
+
+class TrainingConfig(BaseModel):
+    """M4 재현 가능 학습 설정."""
+
+    model: Literal["cnn1d_legacy_v1", "cnn1d_temporal_v1"] = "cnn1d_legacy_v1"
+    epochs: int = Field(default=10, ge=1, le=1000)
+    batch_size: int = Field(default=128, ge=1, le=4096)
+    learning_rate: float = Field(default=0.001, gt=0, le=1)
+    sampler: Literal["none", "weighted"] = "weighted"
+    seed: int = Field(default=42, ge=0, le=2**32 - 1)
+    scaling: Literal["sample_standard_v1"] = "sample_standard_v1"
+    padding: Literal["zero_masked_v1"] = "zero_masked_v1"
+    best_metric: Literal["val_macro_f1"] = "val_macro_f1"

@@ -50,10 +50,20 @@ parquet stays immutable, `report_only` is the default, and `filter` recomputes i
 labels, and samples independently per retained segment so samples never cross a quality
 boundary. Cleaning policy and outcomes are preserved in preset snapshots and dataset
 symbol metadata.
-Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7. Next: **M4** (training).
 
-Run dev servers: `uv run uvicorn server.main:app --reload` (port 8000) and
-`cd web && npm run dev` (port 5173, proxies `/api` and `/ws` to 8000).
+**M4 (training + evaluation) done**: `pivot/dataset/loader.py` and shared transforms load
+verified Supabase shards with sample scaling and masking-safe padding; legacy and temporal
+CNN1D models train in a spawned process; run/epoch/evaluation/artifact state is durable in
+Supabase; verified best checkpoints live in private Storage; `/api/runs` exposes start,
+detail, SSE, stop, and prediction evaluation; and the Training tab shows live curves,
+confusion matrices, per-class metrics, artifacts, and prediction markers on real candles.
+The integrated flow was browser-verified with dataset 20 on MPS (1 epoch, validation 137
+predictions) and the smoke run/artifact was removed afterward.
+
+Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7. Next: **M5** (live inference).
+
+Run dev servers: `./scripts/run-api.sh` (port 8000, installs `server` + `train` extras) and
+`./scripts/run-web.sh` (port 5173, proxies `/api` and `/ws` to 8000).
 
 ## Documents are the source of truth
 
@@ -67,6 +77,7 @@ Read these before writing any code, and **update them when a decision changes**:
 | `docs/04_webapp_design.md` | Web workbench design: 6 tabs, preset concept, data diagnostics, API, storage layout, milestones. |
 | `docs/05_package_layout.md` | Repository/package layout: `pivot/` domain library + `server/` + `web/`, dependency extras. Authoritative for folder structure. |
 | `docs/06_supabase_training_storage.md` | Supabase schema, private bucket paths, lifecycle, access, and retention contract for presets through training runs. |
+| `docs/07_m4_implementation_plan.md` | M4 baseline contract, parallel worktree/file ownership, training API/SSE contract, and core/UI integration order. |
 
 Docs are written in Korean; keep them in Korean. The user communicates in Korean.
 

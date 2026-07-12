@@ -1,0 +1,524 @@
+/* Training 탭 전용 스타일 — 공통 App.css는 수정하지 않는다 (docs/07 §4.2) */
+
+.training-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.run-list-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* ── run 목록 ─────────────────────────────────────────────── */
+
+.run-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.run-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid #f3f4f6;
+  border-radius: 0;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.run-item:last-child {
+  border-bottom: 0;
+}
+
+.run-item.selected {
+  background: #eff6ff;
+}
+
+.run-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.run-item-head strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-item-meta {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.run-item-error {
+  overflow: hidden;
+  color: #b91c1c;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-status {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.run-status.queued {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.run-status.running {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.run-status.succeeded {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.run-status.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.run-status.cancelled {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.training-main h2 .run-status,
+.training-main h2 .sse-badge {
+  margin-left: 8px;
+  vertical-align: 1px;
+}
+
+.sse-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sse-badge.live {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.sse-badge.reconnecting {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+/* ── run 상세 메타 ─────────────────────────────────────────── */
+
+.run-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 20px;
+  margin: 0;
+}
+
+.run-meta dt {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.run-meta dd {
+  margin: 1px 0 0;
+  font-size: 12px;
+}
+
+/* ── 새 run 폼 ─────────────────────────────────────────────── */
+
+.run-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 16px;
+}
+
+.run-contract {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px 10px;
+  border: 1px dashed #d1d5db;
+  border-radius: 6px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.run-contract strong {
+  color: #374151;
+}
+
+.run-dataset-snapshot {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f9fafb;
+  font-size: 12px;
+}
+
+.run-dataset-snapshot span {
+  color: #6b7280;
+}
+
+.run-form .primary {
+  align-self: flex-start;
+}
+
+/* ── 학습 곡선 ─────────────────────────────────────────────── */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.metric-cell {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.metric-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.metric-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.metric-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.metric-chart {
+  height: 180px;
+}
+
+/* ── 평가 ─────────────────────────────────────────────────── */
+
+.eval-block h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.eval-block + .eval-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f3f4f6;
+}
+
+.eval-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin-bottom: 8px;
+}
+
+.eval-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.eval-metric em {
+  color: #6b7280;
+  font-style: normal;
+  font-size: 11px;
+}
+
+.eval-tables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+}
+
+.eval-tables h4 {
+  margin: 0 0 6px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cm-table,
+.per-class-table,
+.artifact-table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.cm-table th,
+.cm-table td,
+.per-class-table th,
+.per-class-table td,
+.artifact-table th,
+.artifact-table td {
+  padding: 4px 10px;
+  border: 1px solid #e5e7eb;
+  text-align: right;
+}
+
+.cm-table th,
+.per-class-table th,
+.artifact-table th {
+  background: #f9fafb;
+  color: #4b5563;
+  font-weight: 600;
+  text-align: left;
+}
+
+.cm-table td.cm-diagonal {
+  font-weight: 700;
+}
+
+/* ── artifact ─────────────────────────────────────────────── */
+
+.artifact-table td {
+  text-align: left;
+}
+
+.artifact-table tr.artifact-best td {
+  background: #ecfdf5;
+}
+
+.artifact-best-badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #047857;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.artifact-sha {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ── 예측 검수 ─────────────────────────────────────────────── */
+
+.pred-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pred-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.pred-count {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.pred-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 12px;
+}
+
+@media (max-width: 1360px) {
+  .pred-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pred-chart-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pred-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  color: #4b5563;
+  font-size: 11px;
+}
+
+.pred-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pred-key {
+  display: inline-block;
+  width: 0;
+  height: 0;
+}
+
+.pred-key.arrow-up {
+  border-right: 5px solid transparent;
+  border-bottom: 8px solid #4b5563;
+  border-left: 5px solid transparent;
+}
+
+.pred-key.arrow-down {
+  border-top: 8px solid #4b5563;
+  border-right: 5px solid transparent;
+  border-left: 5px solid transparent;
+}
+
+.pred-key.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4b5563;
+}
+
+.pred-key.correct {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #059669;
+}
+
+.pred-key.incorrect {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: #dc2626;
+}
+
+.pred-chart {
+  height: 420px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.pred-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.pred-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pred-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pred-badge.correct {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.pred-badge.incorrect {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.pred-detail-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+}
+
+.pred-detail-meta div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pred-detail-meta dt {
+  color: #6b7280;
+}
+
+.pred-detail-meta dd {
+  margin: 0;
+}
+
+.pred-probs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pred-prob-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.pred-prob-row em {
+  font-style: normal;
+  font-size: 11px;
+  text-align: right;
+}
+
+.pred-prob-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+}
+
+.pred-prob-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.pred-prob-fill.predicted {
+  background: #2563eb;
+}

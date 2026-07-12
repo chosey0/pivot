@@ -8,6 +8,7 @@ CPU 작업이라 이벤트 루프 밖 스레드에서 돌린다.
 import asyncio
 import json
 import threading
+import multiprocessing
 from collections.abc import AsyncIterator, Callable
 
 from pivot.storage.jobs import TERMINAL_STATUSES, JobRepository
@@ -17,6 +18,24 @@ POLL_INTERVAL_SECONDS = 1.0
 
 def start_background(target: Callable[[], None]) -> None:
     threading.Thread(target=target, daemon=True).start()
+
+
+def start_process(
+    target: Callable[..., None], *args, on_exit: Callable[[int], None] | None = None
+) -> int:
+    """torch 학습을 FastAPI 프로세스와 분리해 spawn한다."""
+    process = multiprocessing.get_context("spawn").Process(
+        target=target, args=args, daemon=False
+    )
+    process.start()
+    if on_exit is not None:
+
+        def monitor() -> None:
+            process.join()
+            on_exit(process.exitcode or 0)
+
+        threading.Thread(target=monitor, daemon=True).start()
+    return process.pid
 
 
 def _sse(event_type: str, payload: dict, *, event_id: int | None = None) -> str:

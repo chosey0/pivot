@@ -66,6 +66,17 @@ class FakeDb:
             "error": None,
         },
         "diagnostic_reports": {"preset_id": None, "dataset_id": None},
+        "training_runs": {
+            "job_id": None,
+            "status": "queued",
+            "device": None,
+            "best_epoch": None,
+            "best_metric_name": None,
+            "best_metric_value": None,
+            "error": None,
+            "started_at": None,
+            "completed_at": None,
+        },
     }
     ID_TABLES = (
         "jobs",
@@ -74,6 +85,9 @@ class FakeDb:
         "datasets",
         "dataset_shards",
         "diagnostic_reports",
+        "training_runs",
+        "evaluations",
+        "training_artifacts",
     )
 
     def __init__(self) -> None:

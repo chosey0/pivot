@@ -11,6 +11,7 @@ from server.routers import (
     jobs,
     preprocess,
     presets,
+    runs,
     symbols,
     watchlist,
 )
@@ -25,6 +26,7 @@ app.include_router(presets.router)
 app.include_router(jobs.router)
 app.include_router(datasets.router)
 app.include_router(diagnostics.router)
+app.include_router(runs.router)
 
 
 @app.get("/api/health")

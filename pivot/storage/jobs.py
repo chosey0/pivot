@@ -83,6 +83,14 @@ class JobRepository:
             },
         )
 
+    def fail_active(self, job_id: int, error: str) -> dict:
+        """프로세스 시작/비정상 종료처럼 queued에서도 가능한 실패를 마감한다."""
+        return self._transition(
+            job_id,
+            from_status="queued,running",
+            values={"status": "failed", "error": error, "completed_at": _now()},
+        )
+
     def append_event(
         self, job_id: int, sequence: int, event_type: str, payload: dict
     ) -> dict:

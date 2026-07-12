@@ -12,6 +12,7 @@ from pivot.storage.datasets import DatasetRepository
 from pivot.storage.diagnostics import DiagnosticReportRepository
 from pivot.storage.jobs import JobRepository
 from pivot.storage.presets import PresetRepository
+from pivot.storage.runs import RunRepository
 from pivot.storage.supabase import PostgrestClient, StorageObjectClient
 
 DATA_ROOT = Path(os.getenv("PIVOT_DATA_DIR", "data"))
@@ -47,3 +48,8 @@ def dataset_repo() -> DatasetRepository:
 @lru_cache(maxsize=1)
 def diagnostic_repo() -> DiagnosticReportRepository:
     return DiagnosticReportRepository(_postgrest())
+
+
+@lru_cache(maxsize=1)
+def run_repo() -> RunRepository:
+    return RunRepository(_postgrest())

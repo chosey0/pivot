@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Datasets } from './pages/Datasets'
 import { Diagnostics } from './pages/Diagnostics'
 import { Lab } from './pages/Lab'
+import { Training } from './pages/Training'
 import { Watchlist } from './pages/Watchlist'
 import './App.css'
 
@@ -56,7 +57,7 @@ function App() {
         {activeTab === 'lab' && <Lab />}
         {activeTab === 'datasets' && <Datasets />}
         {activeTab === 'diagnostics' && <Diagnostics />}
-        {activeTab === 'training' && renderPlaceholder('학습: M4에서 run 관리와 평가 지표를 연결합니다.')}
+        {activeTab === 'training' && <Training />}
         {activeTab === 'live' && renderPlaceholder('실시간: M5에서 WebSocket 추론을 연결합니다.')}
       </main>
     </div>

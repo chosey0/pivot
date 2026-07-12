@@ -59,6 +59,16 @@ class DiagnosticReportRepository:
             raise ReportNotFoundError(f"diagnostic report {report_id} not found")
         return rows[0]
 
+    def latest_for_dataset(self, dataset_id: int) -> dict | None:
+        rows = self.db.select(
+            TABLE,
+            filters={"dataset_id": f"eq.{dataset_id}"},
+            order="created_at.desc,id.desc",
+            limit=1,
+            columns=LIST_COLUMNS,
+        )
+        return rows[0] if rows else None
+
     def delete(self, report_id: int) -> None:
         """smoke test 정리용 hard delete."""
         self.db.delete(TABLE, filters={"id": f"eq.{report_id}"})

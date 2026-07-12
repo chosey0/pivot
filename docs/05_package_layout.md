@@ -21,6 +21,7 @@ pivot/                        # 저장소 루트
 │   ├── env.py                #   저장소 루트 .env 로더 (프로세스 환경변수 우선)
 │   ├── symbols/              #   KIS 종목마스터 정규화 + Supabase domestic_master 업서트/검색
 │   ├── storage/              #   Supabase 학습 데이터 저장소 경계 — docs/06 계약 소유
+│   │   └── runs.py           #   run/epoch/evaluation/artifact 메타데이터 repository
 │   │   ├── supabase.py       #   PostgREST(메타데이터)·Storage(객체) 클라이언트 분리
 │   │   ├── presets.py        #   training_presets repository (버전 증가·archive·검증)
 │   │   ├── jobs.py           #   jobs/job_events repository (상태 전이 강제)
@@ -45,7 +46,7 @@ pivot/                        # 저장소 루트
 │   ├── training/             # ⑥ 학습/평가
 │   │   ├── train.py          #   학습 루프 (종목 단위 split A5, 안정화 B6)
 │   │   ├── metrics.py        #   클래스별 P/R/F1, confusion matrix (A6)
-│   │   ├── runs.py           #   Supabase run/epoch/평가 메타데이터 + checkpoint 관리
+│   │   ├── runs.py           #   학습 run orchestration + 검증 checkpoint 업로드
 │   │   └── evaluate.py       #   종목 히스토리에 모델 적용 → 실제 라벨 vs 예측 (웹 차트 검증용)
 │   └── realtime/             # ⑦ 실시간 추론 (M5)
 │       ├── aggregate.py      #   체결 틱 → 봉 집계 (현재 봉 갱신/마감)
