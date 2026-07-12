@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   type CleaningMode,
+  type FractalTiePolicy,
   type PresetJson,
   type PreviewParams,
   type PreviewResponse,
@@ -47,6 +48,7 @@ export function Lab() {
   const [timeframeKind, setTimeframeKind] = useState<'day' | 'minute' | 'tick'>('day')
   const [timeframeUnit, setTimeframeUnit] = useState(1)
   const [fractalN, setFractalN] = useState(20)
+  const [tiePolicy, setTiePolicy] = useState<FractalTiePolicy>('plateau_last')
   const [labelMode, setLabelMode] = useState<'cls3' | 'cls2_drop'>('cls3')
   const [ignoreRuleOn, setIgnoreRuleOn] = useState(true)
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
@@ -85,7 +87,7 @@ export function Lab() {
   const params = useMemo<PreviewParams>(
     () => ({
       timeframe: { type: timeframeKind, unit: timeframeKind === 'day' ? 1 : timeframeUnit },
-      fractal: { n: fractalN },
+      fractal: { n: fractalN, tie_policy: tiePolicy },
       ma_windows: LAB_MA_LINES.map((line) => line.window),
       features: featureColumns,
       labeling: {
@@ -115,6 +117,7 @@ export function Lab() {
       minAmountInput,
       timeframeKind,
       timeframeUnit,
+      tiePolicy,
     ],
   )
 
@@ -319,7 +322,8 @@ export function Lab() {
         loadingText="계산 중..."
         subtitle={
           <>
-            {timeframe} · 프랙탈 n={fractalN}
+            {timeframe} · 프랙탈 n={fractalN} ·{' '}
+            {tiePolicy === 'plateau_last' ? '동률 마지막 봉' : '동률 전체 봉'}
             {loading ? ' · 계산 중...' : ''}
           </>
         }
@@ -360,6 +364,14 @@ export function Lab() {
                     {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
                   </span>
                   <span>미확정: 마지막 {stats.confirmation_lag}봉 (미래 확인 대기)</span>
+                  <span>
+                    동률 정규화 {stats.overlap_clusters.dropped_plateau_points.toLocaleString()}개 제거
+                    {' · '}잔여 overlap cluster{' '}
+                    {stats.overlap_clusters.sample_clusters.toLocaleString()}개
+                    {stats.overlap_clusters.redundant_samples > 0
+                      ? ` (중복 추정 ${stats.overlap_clusters.redundant_samples.toLocaleString()}개)`
+                      : ''}
+                  </span>
                   <span>
                     클리닝 {stats.cleaning.mode} · 후보 유지{' '}
                     {stats.cleaning.retained_bars.toLocaleString()}/
@@ -473,9 +485,22 @@ export function Lab() {
               value={fractalN}
             />
           </label>
+          <label className="field">
+            동률 극값 처리
+            <select
+              onChange={(event) => setTiePolicy(event.target.value as FractalTiePolicy)}
+              value={tiePolicy}
+            >
+              <option value="plateau_last">plateau_last — 마지막 봉만 라벨</option>
+              <option value="all">all — 모든 봉 라벨 (기존 방식)</option>
+            </select>
+          </label>
           <p className="hint">
             확정에 미래 {Math.floor((fractalN - 1) / 2)}봉이 필요합니다. 마지막{' '}
             {Math.floor((fractalN - 1) / 2)}봉은 라벨되지 않습니다.
+          </p>
+          <p className="hint">
+            같은 가격의 연속 고점·저점은 plateau로 묶고 마지막 봉만 대표 라벨로 사용합니다.
           </p>
           <p className="hint">
             입력 윈도우는 직전 반대 마커부터 선택한 마커까지의 스윙 구간입니다

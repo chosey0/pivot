@@ -25,7 +25,11 @@ def validate_preset(preset_json: dict, *, schema_version: int) -> PreprocessPres
             f"unsupported preset schema_version {schema_version} "
             f"(expected {PRESET_SCHEMA_VERSION})"
         )
-    preset = PreprocessPreset.model_validate(preset_json)
+    compatible = {**preset_json, "fractal": dict(preset_json.get("fractal") or {})}
+    # schema v1 초기에 저장된 프리셋은 tie를 모두 라벨했다. 누락 필드를 새 기본값으로
+    # 해석하면 과거 프리셋의 재실행 결과가 달라지므로 명시적으로 legacy 동작을 보존한다.
+    compatible["fractal"].setdefault("tie_policy", "all")
+    preset = PreprocessPreset.model_validate(compatible)
     if not preset.name.strip():
         raise ValueError("saved presets require a non-empty name")
     return preset

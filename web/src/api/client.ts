@@ -95,7 +95,24 @@ export interface PreviewStats {
   dropped_filters: number
   dropped_ignore: number
   confirmation_lag: number
+  overlap_clusters: OverlapClusterStats
   cleaning: CleaningStats
+}
+
+export type FractalTiePolicy = 'all' | 'plateau_last'
+
+export interface OverlapClusterStats {
+  tie_policy: FractalTiePolicy
+  plateau_clusters: number
+  plateau_clustered_points: number
+  dropped_plateau_points: number
+  max_plateau_cluster_size: number
+  sample_clusters: number
+  clustered_samples: number
+  redundant_samples: number
+  max_sample_cluster_size: number
+  threshold: number
+  max_end_gap: number
 }
 
 export type CleaningMode = 'off' | 'report_only' | 'filter'
@@ -129,7 +146,7 @@ export interface PreviewResponse extends ChartResponse {
 
 export interface PreviewParams {
   timeframe: { type: 'day' | 'minute' | 'tick'; unit: number }
-  fractal: { n: number }
+  fractal: { n: number; tie_policy: FractalTiePolicy }
   ma_windows: number[]
   features: string[]
   labeling: { mode: 'cls3' | 'cls2_drop'; ignore_rule: 'ma20<ma120' | 'none' }

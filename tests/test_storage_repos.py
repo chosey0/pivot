@@ -65,6 +65,13 @@ class TestPresetRepository:
         with pytest.raises(ValueError):
             validate_preset(preset().model_dump(), schema_version=PRESET_SCHEMA_VERSION + 1)
 
+    def test_validate_legacy_preset_without_tie_policy_keeps_all_behavior(self):
+        legacy = preset().model_dump(mode="json")
+        legacy["fractal"].pop("tie_policy")
+        assert validate_preset(
+            legacy, schema_version=PRESET_SCHEMA_VERSION
+        ).fractal.tie_policy == "all"
+
     def test_validate_rejects_unknown_fields_value(self):
         broken = preset().model_dump()
         broken["fractal"]["n"] = 1  # n >= 3 위반

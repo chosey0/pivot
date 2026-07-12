@@ -46,6 +46,14 @@ conv + AdaptiveAvgPool로 평균을 내므로, 패딩이 표현에 그대로 섞
 → 플랫폼 중립 의존성 정의 (pyproject.toml + uv), 시각화/실시간 등은 optional extra로 분리.
 broker-modules가 Python 3.12+ / uv 기준이므로 이에 맞춘다.
 
+### A10. ~~동률 극값이 하루 간격의 중복 샘플을 생성~~ → 해소
+center rolling 창에서 동일한 최고가/최저가가 이어지면 legacy 방식은 각 봉을 모두 라벨해
+시작점이 같고 끝점만 1~2봉 다른 샘플을 반복 생성한다. 신규 프리셋은
+`fractal.tie_policy=plateau_last`를 기본으로 사용해 라벨 단계에서 같은 종류·같은 가격의
+연속 plateau 후보 중 마지막 봉만 남긴다. 기존 schema v1 프리셋의 누락 필드는 과거 결과
+재현을 위해 `all`로 해석한다. 라벨 정규화 후에도 남는 90% 이상 중첩 샘플은 제거하지 않고
+Diagnostics의 overlap cluster/중복 추정 통계로 경고한다.
+
 ## B. 방법 개선 실험 — 재구현 후 하나씩 검증
 
 ### B1. 모델의 시간 축 수용 영역(receptive field) 확보
@@ -98,5 +106,6 @@ K-line 정제 절차를 제시한다. Pivot은 원천을 수정하지 않는 `kr
   마일스톤 M5). 모델 성능 검증 뒤 구현하며, `infer_plot copy*.py` 난립의 원인이었던
   학습-추론 전처리 불일치는 `transforms` 공용 모듈로 차단
 - 데이터 품질 진단: 원천 캐시/라벨/데이터셋이 학습 가능한 상태인지 별도 Diagnostics 탭에서 확인.
-  누락·중복 timestamp, OHLC 이상값, MA NaN 비율, 라벨 분포, split 누수 여부를 학습 전 점검
+  누락·중복 timestamp, OHLC 이상값, MA NaN 비율, 라벨 분포, 90% 이상 overlap cluster,
+  split 누수 여부를 학습 전 점검
 - `.pkl` 직렬화(`tobytes`) 대신 parquet/npz 등 검토 — 가변 길이 시퀀스 저장 방식 결정 필요

@@ -9,6 +9,8 @@ from pydantic import BaseModel, field_validator
 
 from pivot.config import Timeframe
 from pivot.dataset.build import run_preprocess
+from pivot.dataset.samples import SampleAccessError, overlap_stats_by_symbol
+from pivot.labeling.fractal import confirmation_lag
 from pivot.diagnostics import quality
 from pivot.ingestion.cache import cache_path, load_cache
 from pivot.ingestion.fetch import BROKER
@@ -16,7 +18,14 @@ from pivot.storage.datasets import DatasetNotFoundError
 from pivot.storage.diagnostics import ReportNotFoundError
 from pivot.storage.presets import PresetNotFoundError, validate_preset
 from pivot.symbols.master import DOMESTIC_SYMBOL_RE
-from server.deps import DATA_ROOT, dataset_repo, diagnostic_repo, preset_repo
+from server.deps import (
+    DATA_ROOT,
+    SHARD_CACHE_ROOT,
+    dataset_repo,
+    diagnostic_repo,
+    object_storage,
+    preset_repo,
+)
 
 router = APIRouter(prefix="/api/diagnostics", tags=["diagnostics"])
 
@@ -112,8 +121,29 @@ def diagnose_dataset(dataset_id: int) -> dict:
         dataset = repo.get(dataset_id)
     except DatasetNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    overlap = None
+    overlap_error = None
+    if dataset["status"] == "ready":
+        fractal = (
+            ((dataset.get("preset_snapshot") or {}).get("preset") or {}).get("fractal")
+            or {}
+        )
+        try:
+            overlap = overlap_stats_by_symbol(
+                repo,
+                object_storage(),
+                dataset_id,
+                cache_root=SHARD_CACHE_ROOT,
+                max_end_gap=confirmation_lag(int(fractal.get("n", 20))),
+            )
+        except (SampleAccessError, RuntimeError, ValueError) as exc:
+            overlap_error = str(exc)
     report = quality.diagnose_dataset(
-        dataset, repo.list_symbols(dataset_id), repo.list_shards(dataset_id)
+        dataset,
+        repo.list_symbols(dataset_id),
+        repo.list_shards(dataset_id),
+        overlap_by_symbol=overlap,
+        overlap_error=overlap_error,
     )
     return _save(
         report,

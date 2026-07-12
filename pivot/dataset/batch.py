@@ -308,7 +308,10 @@ def _process_symbol(
         "class_counts": {
             str(label): count for label, count in result.stats["class_counts"].items()
         },
-        "length_stats": _length_stats(result.samples),
+        "length_stats": {
+            **_length_stats(result.samples),
+            "overlap_clusters": result.stats["overlap_clusters"],
+        },
         "shard_count": len(shards),
         "bars": result.stats["bars"],
         "dropped_nan": result.stats["dropped_nan"],

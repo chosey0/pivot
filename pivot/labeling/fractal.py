@@ -14,6 +14,8 @@ lag 처리: 프랙탈은 미래 `(n-1)//2`봉이 지나야 확정되는 후행 �
 MA20 < MA120 역배열). 단건 preview와 일괄 batch가 모두 이 모듈을 호출한다.
 """
 
+from typing import Literal
+
 import pandas as pd
 
 from pivot.config import FilterConfig, LabelingConfig
@@ -63,6 +65,7 @@ def _passes_filters(df: pd.DataFrame, filters: FilterConfig) -> pd.Series:
 def label_points(
     df: pd.DataFrame,
     n: int,
+    tie_policy: Literal["all", "plateau_last"] = "all",
     labeling: LabelingConfig | None = None,
     filters: FilterConfig | None = None,
 ) -> tuple[pd.DataFrame, dict]:
@@ -79,39 +82,101 @@ def label_points(
     marked = calc_fractal(df, n)
     passes = _passes_filters(marked, filters)
 
-    rows: list[dict] = []
-    dropped_filters = 0
-    dropped_ignore = 0
+    candidates: list[dict] = []
     for kind, column, base_label in (
         ("low", "fractal_low", LABEL_LOW),
         ("high", "fractal_high", LABEL_HIGH),
     ):
         hits = marked.index[marked[column].notna()]
         for time in hits:
-            if not passes.loc[time]:
-                dropped_filters += 1
-                continue
-            label = base_label
-            if labeling.ignore_rule == "ma20<ma120":
-                ma20, ma120 = marked.at[time, "20"], marked.at[time, "120"]
-                if pd.notna(ma20) and pd.notna(ma120) and ma20 < ma120:
-                    label = LABEL_IGNORE
-            if label == LABEL_IGNORE and labeling.mode == "cls2_drop":
-                dropped_ignore += 1
-                continue
-            rows.append(
+            candidates.append(
                 {
                     "time": time,
                     "position": marked.index.get_loc(time),
                     "kind": kind,
                     "price": marked.at[time, column],
-                    "label": label,
+                    "base_label": base_label,
                 }
             )
+
+    candidates.sort(key=lambda row: (row["position"], row["kind"]))
+    candidates, plateau_stats = _normalize_plateaus(candidates, n, tie_policy)
+
+    rows: list[dict] = []
+    dropped_filters = 0
+    dropped_ignore = 0
+    for candidate in candidates:
+        time = candidate["time"]
+        if not passes.loc[time]:
+            dropped_filters += 1
+            continue
+        label = candidate["base_label"]
+        if labeling.ignore_rule == "ma20<ma120":
+            ma20, ma120 = marked.at[time, "20"], marked.at[time, "120"]
+            if pd.notna(ma20) and pd.notna(ma120) and ma20 < ma120:
+                label = LABEL_IGNORE
+        if label == LABEL_IGNORE and labeling.mode == "cls2_drop":
+            dropped_ignore += 1
+            continue
+        rows.append(
+            {
+                "time": time,
+                "position": candidate["position"],
+                "kind": candidate["kind"],
+                "price": candidate["price"],
+                "label": label,
+            }
+        )
 
     points = pd.DataFrame(
         rows, columns=["time", "position", "kind", "price", "label"]
     ).set_index("time")
     points = points.sort_values(["position", "kind"])
-    stats = {"dropped_filters": dropped_filters, "dropped_ignore": dropped_ignore}
+    stats = {
+        "dropped_filters": dropped_filters,
+        "dropped_ignore": dropped_ignore,
+        "plateau": plateau_stats,
+    }
     return points, stats
+
+
+def _normalize_plateaus(
+    candidates: list[dict],
+    n: int,
+    tie_policy: Literal["all", "plateau_last"],
+) -> tuple[list[dict], dict]:
+    """겹치는 fractal 창의 연속 동일 극값을 하나의 plateau event로 묶는다."""
+    clusters: list[list[dict]] = []
+    current: list[dict] = []
+    for candidate in candidates:
+        previous = current[-1] if current else None
+        if (
+            previous is not None
+            and candidate["kind"] == previous["kind"]
+            and candidate["price"] == previous["price"]
+            and candidate["position"] - previous["position"] < n
+        ):
+            current.append(candidate)
+            continue
+        if current:
+            clusters.append(current)
+        current = [candidate]
+    if current:
+        clusters.append(current)
+
+    plateaus = [cluster for cluster in clusters if len(cluster) > 1]
+    normalized = (
+        [cluster[-1] for cluster in clusters]
+        if tie_policy == "plateau_last"
+        else list(candidates)
+    )
+    clustered_points = sum(len(cluster) for cluster in plateaus)
+    return normalized, {
+        "tie_policy": tie_policy,
+        "candidate_points": len(candidates),
+        "retained_points": len(normalized),
+        "clusters": len(plateaus),
+        "clustered_points": clustered_points,
+        "dropped_points": len(candidates) - len(normalized),
+        "max_cluster_size": max((len(cluster) for cluster in plateaus), default=0),
+    }

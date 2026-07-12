@@ -1,5 +1,9 @@
 """샘플 브라우저 접근 검증 — 안정 순번, 페이지네이션, 라벨 필터, shard 오류."""
 
+import hashlib
+import io
+
+import pyarrow.parquet as pq
 import pytest
 
 from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
@@ -140,6 +144,36 @@ class TestListSamples:
             samples.list_samples(
                 datasets, storage, dataset["id"], cache_root=tmp_path
             )
+
+    def test_overlap_stats_are_grouped_by_symbol(self, tmp_path):
+        db, storage = FakeDb(), FakeStorage()
+        datasets, dataset_id, _ = make_ready_dataset(db, storage)
+        stats = samples.overlap_stats_by_symbol(
+            datasets, storage, dataset_id, cache_root=tmp_path, max_end_gap=2
+        )
+        assert set(stats) == {"AAA", "BBB"}
+        assert all("clusters" in item for item in stats.values())
+        assert all(item["approximate"] is False for item in stats.values())
+
+    def test_legacy_shard_without_positions_uses_approximation(self, tmp_path):
+        db, storage = FakeDb(), FakeStorage()
+        datasets, dataset_id, _ = make_ready_dataset(db, storage, symbols=("AAA",))
+        shard = db.tables["dataset_shards"][0]
+        key = (DATASET_BUCKET, shard["object_path"])
+        table = pq.read_table(io.BytesIO(storage.objects[key])).drop(
+            ["start_position", "end_position"]
+        )
+        buffer = io.BytesIO()
+        pq.write_table(table, buffer)
+        legacy = buffer.getvalue()
+        storage.objects[key] = legacy
+        shard["sha256"] = hashlib.sha256(legacy).hexdigest()
+        shard["size_bytes"] = len(legacy)
+
+        stats = samples.overlap_stats_by_symbol(
+            datasets, storage, dataset_id, cache_root=tmp_path, max_end_gap=2
+        )
+        assert stats["AAA"]["approximate"] is True
 
 
 class TestGetSample:

@@ -25,6 +25,7 @@ from pivot.cleaning.kronos import (
 from pivot.config import PreprocessPreset
 from pivot.ingestion.indicators import add_moving_averages
 from pivot.labeling.fractal import confirmation_lag, label_points
+from pivot.dataset.overlap import analyze_overlap_clusters
 
 
 @dataclass
@@ -146,11 +147,16 @@ def _run_segment(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult
     points, label_stats = label_points(
         enriched,
         n=preset.fractal.n,
+        tie_policy=preset.fractal.tie_policy,
         labeling=preset.labeling,
         filters=preset.filters,
     )
     samples, dropped_nan, dropped_unpaired = build_samples(
         enriched, points, preset.features
+    )
+    plateau = label_stats.pop("plateau")
+    sample_overlap = analyze_overlap_clusters(
+        samples, max_end_gap=confirmation_lag(preset.fractal.n)
     )
 
     class_counts = {0: 0, 1: 0, 2: 0}
@@ -164,6 +170,7 @@ def _run_segment(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult
         "dropped_nan": dropped_nan,
         "dropped_unpaired": dropped_unpaired,
         **label_stats,
+        "overlap_clusters": _combined_overlap_stats(plateau, sample_overlap),
         "confirmation_lag": confirmation_lag(preset.fractal.n),
     }
     return PreprocessResult(
@@ -192,6 +199,7 @@ def _run_clean_segments(
         "dropped_filters": 0,
         "dropped_ignore": 0,
     }
+    overlap_totals = _empty_overlap_stats(preset)
     class_counts = {0: 0, 1: 0, 2: 0}
     offset = 0
     for segment in segments:
@@ -215,6 +223,7 @@ def _run_clean_segments(
             totals[key] += int(part.stats[key])
         for label, count in part.stats["class_counts"].items():
             class_counts[int(label)] += int(count)
+        _merge_overlap_stats(overlap_totals, part.stats["overlap_clusters"])
         offset += len(part.frame)
 
     if frames:
@@ -229,6 +238,7 @@ def _run_clean_segments(
         points = label_points(
             frame,
             n=preset.fractal.n,
+            tie_policy=preset.fractal.tie_policy,
             labeling=preset.labeling,
             filters=preset.filters,
         )[0]
@@ -241,6 +251,57 @@ def _run_clean_segments(
             "bars": len(frame),
             **totals,
             "class_counts": class_counts,
+            "overlap_clusters": overlap_totals,
             "confirmation_lag": confirmation_lag(preset.fractal.n),
         },
+    )
+
+
+def _combined_overlap_stats(plateau: dict, samples: dict) -> dict:
+    return {
+        "tie_policy": plateau["tie_policy"],
+        "plateau_clusters": plateau["clusters"],
+        "plateau_clustered_points": plateau["clustered_points"],
+        "dropped_plateau_points": plateau["dropped_points"],
+        "max_plateau_cluster_size": plateau["max_cluster_size"],
+        "sample_clusters": samples["clusters"],
+        "clustered_samples": samples["clustered_samples"],
+        "redundant_samples": samples["redundant_samples"],
+        "max_sample_cluster_size": samples["max_cluster_size"],
+        "threshold": samples["threshold"],
+        "max_end_gap": samples["max_end_gap"],
+    }
+
+
+def _empty_overlap_stats(preset: PreprocessPreset) -> dict:
+    return {
+        "tie_policy": preset.fractal.tie_policy,
+        "plateau_clusters": 0,
+        "plateau_clustered_points": 0,
+        "dropped_plateau_points": 0,
+        "max_plateau_cluster_size": 0,
+        "sample_clusters": 0,
+        "clustered_samples": 0,
+        "redundant_samples": 0,
+        "max_sample_cluster_size": 0,
+        "threshold": 0.9,
+        "max_end_gap": confirmation_lag(preset.fractal.n),
+    }
+
+
+def _merge_overlap_stats(total: dict, part: dict) -> None:
+    for key in (
+        "plateau_clusters",
+        "plateau_clustered_points",
+        "dropped_plateau_points",
+        "sample_clusters",
+        "clustered_samples",
+        "redundant_samples",
+    ):
+        total[key] += int(part[key])
+    total["max_plateau_cluster_size"] = max(
+        total["max_plateau_cluster_size"], int(part["max_plateau_cluster_size"])
+    )
+    total["max_sample_cluster_size"] = max(
+        total["max_sample_cluster_size"], int(part["max_sample_cluster_size"])
     )

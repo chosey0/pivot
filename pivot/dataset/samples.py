@@ -17,12 +17,14 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from pivot.dataset.overlap import analyze_overlap_clusters
 from pivot.storage.datasets import DatasetRepository
 
 # ponytail: mtime 기준 파일 수 상한 — 부족해지면 바이트 상한 LRU로 교체
 DISK_CACHE_MAX_FILES = 64
 
 _META_COLUMNS = ["sample_index", "label", "kind", "start_time", "end_time", "length"]
+_POSITION_COLUMNS = ["start_position", "end_position"]
 _index_cache: dict[int, dict] = {}
 
 
@@ -91,6 +93,29 @@ def get_sample(
     }
 
 
+def overlap_stats_by_symbol(
+    datasets: DatasetRepository,
+    storage,
+    dataset_id: int,
+    *,
+    cache_root: Path,
+    max_end_gap: int,
+) -> dict[str, dict]:
+    """기존 dataset shard의 메타데이터만 읽어 종목별 overlap cluster를 계산한다."""
+    entries = _load_index(datasets, storage, dataset_id, cache_root)["entries"]
+    by_symbol: dict[str, list[dict]] = {}
+    for entry in entries:
+        by_symbol.setdefault(entry["symbol"], []).append(entry)
+    result = {}
+    for symbol, rows in by_symbol.items():
+        exact = all(row.get("start_position") is not None for row in rows)
+        result[symbol] = {
+            **analyze_overlap_clusters(rows, max_end_gap=max_end_gap),
+            "approximate": not exact,
+        }
+    return result
+
+
 def evict(dataset_id: int, *, cache_root: Path | None = None) -> None:
     """데이터셋 삭제 후 메모리 인덱스와 로컬 shard 캐시를 정리한다."""
     _index_cache.pop(dataset_id, None)
@@ -118,7 +143,10 @@ def _load_index(
     for shard in shards:
         offsets.append(len(entries))
         data = _verified_shard_bytes(storage, shard, cache_dir)
-        table = pq.read_table(io.BytesIO(data), columns=_META_COLUMNS)  # features 제외
+        parquet = pq.ParquetFile(io.BytesIO(data))
+        available = set(parquet.schema_arrow.names)
+        columns = [*_META_COLUMNS, *(name for name in _POSITION_COLUMNS if name in available)]
+        table = parquet.read(columns=columns)  # features 제외
         if table.num_rows != shard["row_count"]:
             raise SampleAccessError(
                 f"shard {shard['symbol']}#{shard['shard_index']} has {table.num_rows} rows, "
@@ -134,6 +162,8 @@ def _load_index(
                     "kind": row["kind"],
                     "start_time": row["start_time"].isoformat(),
                     "end_time": row["end_time"].isoformat(),
+                    "start_position": row.get("start_position"),
+                    "end_position": row.get("end_position"),
                     "length": row["length"],
                 }
             )

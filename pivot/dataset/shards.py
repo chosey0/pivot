@@ -29,6 +29,8 @@ SHARD_SCHEMA = pa.schema(
         ("kind", pa.string()),
         ("start_time", pa.timestamp("us")),
         ("end_time", pa.timestamp("us")),
+        ("start_position", pa.int32()),
+        ("end_position", pa.int32()),
         ("length", pa.int32()),
         ("features", pa.list_(pa.list_(pa.float64()))),
     ]
@@ -123,6 +125,8 @@ def _serialize_chunk(
         rows["kind"].append(sample.kind)
         rows["start_time"].append(times[sample.start_position].to_pydatetime())
         rows["end_time"].append(times[sample.end_position].to_pydatetime())
+        rows["start_position"].append(sample.start_position)
+        rows["end_position"].append(sample.end_position)
         rows["length"].append(sample.length)
         rows["features"].append(window.to_numpy().tolist())
 

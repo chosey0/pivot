@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pivot.config import FilterConfig, LabelingConfig, PreprocessPreset
+from pivot.config import FilterConfig, FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.dataset.build import build_samples, run_preprocess
 from pivot.labeling.fractal import calc_fractal, confirmation_lag, label_points
 
@@ -138,6 +138,41 @@ class TestLabelPoints:
         df = make_df(highs, lows)
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
         assert sorted(points["kind"]) == ["high", "low"]
+
+    def test_plateau_last_keeps_only_last_equal_extreme(self):
+        highs = ramp(30)
+        lows = highs - 1
+        lows[10:13] = 0
+        df = make_df(highs, lows)
+
+        all_points, all_stats = label_points(
+            df,
+            n=5,
+            tie_policy="all",
+            labeling=LabelingConfig(ignore_rule="none"),
+        )
+        normalized, stats = label_points(
+            df,
+            n=5,
+            tie_policy="plateau_last",
+            labeling=LabelingConfig(ignore_rule="none"),
+        )
+
+        assert list(all_points.loc[all_points["kind"] == "low", "position"]) == [10, 11, 12]
+        assert list(normalized.loc[normalized["kind"] == "low", "position"]) == [12]
+        assert all_stats["plateau"]["dropped_points"] == 0
+        assert stats["plateau"] == {
+            "tie_policy": "plateau_last",
+            "candidate_points": 3,
+            "retained_points": 1,
+            "clusters": 1,
+            "clustered_points": 3,
+            "dropped_points": 2,
+            "max_cluster_size": 3,
+        }
+
+    def test_new_preprocess_presets_default_to_plateau_last(self):
+        assert FractalConfig().tie_policy == "plateau_last"
 
 
 class TestBuildSamples:

@@ -153,6 +153,7 @@ class FractalConfig(BaseModel):
     """
 
     n: int = 20
+    tie_policy: Literal["all", "plateau_last"] = "plateau_last"
 
     @model_validator(mode="after")
     def _check_n(self) -> Self:

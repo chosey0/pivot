@@ -87,6 +87,19 @@ class TestPreviewDiagnostics:
             "points": 120,
             "class_counts": {0: 40, 1: 40, 2: 20},
             "dropped_nan": 5,
+            "overlap_clusters": {
+                "tie_policy": "plateau_last",
+                "plateau_clusters": 0,
+                "plateau_clustered_points": 0,
+                "dropped_plateau_points": 0,
+                "max_plateau_cluster_size": 0,
+                "sample_clusters": 0,
+                "clustered_samples": 0,
+                "redundant_samples": 0,
+                "max_sample_cluster_size": 0,
+                "threshold": 0.9,
+                "max_end_gap": 9,
+            },
             "cleaning": {
                 "mode": "report_only",
                 "retained_bars": 240,
@@ -144,6 +157,33 @@ class TestPreviewDiagnostics:
             input_snapshot={},
         )
         assert checks_by_id(report, "kronos_cleaning")[0]["status"] == "warning"
+
+    def test_unresolved_overlap_clusters_warn(self):
+        overlap = self.stats()["overlap_clusters"] | {
+            "tie_policy": "all",
+            "plateau_clusters": 2,
+            "plateau_clustered_points": 5,
+            "sample_clusters": 2,
+            "clustered_samples": 5,
+            "redundant_samples": 3,
+        }
+        report = quality.diagnose_preview(
+            {"AAA": self.stats(overlap_clusters=overlap)}, input_snapshot={}
+        )
+        item = checks_by_id(report, "sample_overlap")[0]
+        assert item["status"] == "warning"
+        assert item["data"]["redundant_samples"] == 3
+
+    def test_plateau_candidates_without_sample_overlap_pass(self):
+        overlap = self.stats()["overlap_clusters"] | {
+            "tie_policy": "all",
+            "plateau_clusters": 2,
+            "plateau_clustered_points": 5,
+        }
+        report = quality.diagnose_preview(
+            {"AAA": self.stats(overlap_clusters=overlap)}, input_snapshot={}
+        )
+        assert checks_by_id(report, "sample_overlap")[0]["status"] == "passed"
 
 
 def make_dataset_rows(symbols: list[str], *, seed: int = 42):
@@ -218,6 +258,35 @@ class TestDatasetDiagnostics:
         dataset, symbol_rows, shard_rows = make_dataset_rows(symbols)
         report = quality.diagnose_dataset(dataset, symbol_rows, shard_rows[1:])
         assert checks_by_id(report, "shard_integrity")[0]["status"] == "failed"
+
+    def test_existing_dataset_overlap_clusters_warn(self):
+        dataset, symbol_rows, shard_rows = make_dataset_rows(["AAA", "BBB"])
+        report = quality.diagnose_dataset(
+            dataset,
+            symbol_rows,
+            shard_rows,
+            overlap_by_symbol={
+                "AAA": {
+                    "threshold": 0.9,
+                    "max_end_gap": 9,
+                    "clusters": 1,
+                    "clustered_samples": 3,
+                    "redundant_samples": 2,
+                    "max_cluster_size": 3,
+                },
+                "BBB": {
+                    "threshold": 0.9,
+                    "max_end_gap": 9,
+                    "clusters": 0,
+                    "clustered_samples": 0,
+                    "redundant_samples": 0,
+                    "max_cluster_size": 0,
+                },
+            },
+        )
+        item = checks_by_id(report, "sample_overlap")[0]
+        assert item["status"] == "warning"
+        assert item["data"]["top_symbol"] == "AAA"
 
     def test_dominant_symbol_warns(self):
         symbols = [f"S{i:03d}" for i in range(20)]

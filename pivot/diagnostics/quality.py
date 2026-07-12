@@ -306,6 +306,26 @@ def diagnose_preview(results: dict[str, dict], *, input_snapshot: dict) -> dict:
             )
         )
 
+        overlap = result.get("overlap_clusters")
+        if overlap:
+            unresolved = int(overlap.get("sample_clusters", 0)) > 0
+            dropped = int(overlap.get("dropped_plateau_points", 0))
+            checks.append(
+                check(
+                    "sample_overlap",
+                    WARNING if unresolved else PASSED,
+                    (
+                        f"유사 샘플 cluster {overlap.get('sample_clusters', 0)}개, "
+                        f"중복 추정 {overlap.get('redundant_samples', 0)}개"
+                        if unresolved
+                        else f"plateau_last 정규화로 중복 라벨 {dropped}개 제거, "
+                        "잔여 overlap cluster 없음"
+                    ),
+                    symbol=symbol,
+                    data=overlap,
+                )
+            )
+
         cleaning = result.get("cleaning")
         if cleaning:
             removed_ratio = float(cleaning.get("removed_ratio", 0))
@@ -332,7 +352,12 @@ def diagnose_preview(results: dict[str, dict], *, input_snapshot: dict) -> dict:
 
 
 def diagnose_dataset(
-    dataset: dict, symbol_rows: list[dict], shard_rows: list[dict]
+    dataset: dict,
+    symbol_rows: list[dict],
+    shard_rows: list[dict],
+    *,
+    overlap_by_symbol: dict[str, dict] | None = None,
+    overlap_error: str | None = None,
 ) -> dict:
     checks: list[dict] = []
 
@@ -426,6 +451,54 @@ def diagnose_dataset(
                 data={
                     "min": min(item["min"] for item in lengths),
                     "max": max(item["max"] for item in lengths),
+                },
+            )
+        )
+
+    if overlap_error:
+        checks.append(
+            check(
+                "sample_overlap",
+                FAILED,
+                f"overlap cluster 계산 실패: {overlap_error}",
+            )
+        )
+    elif overlap_by_symbol is not None:
+        clusters = sum(int(item["clusters"]) for item in overlap_by_symbol.values())
+        clustered = sum(
+            int(item["clustered_samples"]) for item in overlap_by_symbol.values()
+        )
+        redundant = sum(
+            int(item["redundant_samples"]) for item in overlap_by_symbol.values()
+        )
+        approximate = any(bool(item.get("approximate")) for item in overlap_by_symbol.values())
+        top_symbol, top_stats = max(
+            overlap_by_symbol.items(),
+            key=lambda item: int(item[1]["redundant_samples"]),
+            default=(None, {"redundant_samples": 0, "max_cluster_size": 0}),
+        )
+        checks.append(
+            check(
+                "sample_overlap",
+                WARNING if clusters else PASSED,
+                f"overlap cluster {clusters}개, 중복 추정 {redundant}개"
+                + (
+                    f" (최대 {top_symbol}: {top_stats['redundant_samples']}개)"
+                    if clusters and top_symbol
+                    else ""
+                )
+                + (" — 위치 메타가 없는 기존 shard는 같은 시작 시각 기준 근사치" if approximate else ""),
+                data={
+                    "clusters": clusters,
+                    "clustered_samples": clustered,
+                    "redundant_samples": redundant,
+                    "top_symbol": top_symbol,
+                    "max_cluster_size": max(
+                        (int(item["max_cluster_size"]) for item in overlap_by_symbol.values()),
+                        default=0,
+                    ),
+                    "approximate": approximate,
+                    "symbols": overlap_by_symbol,
                 },
             )
         )

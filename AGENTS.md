@@ -49,7 +49,9 @@ The Lab and Diagnostics also expose `kronos_adapted_v1` K-line quality analysis:
 parquet stays immutable, `report_only` is the default, and `filter` recomputes indicators,
 labels, and samples independently per retained segment so samples never cross a quality
 boundary. Cleaning policy and outcomes are preserved in preset snapshots and dataset
-symbol metadata.
+symbol metadata. New presets also default to `fractal.tie_policy=plateau_last`, collapsing
+consecutive equal-price extrema to the last label; Diagnostics reports residual 90% overlap
+clusters without deleting samples. Legacy stored presets without this field remain `all`.
 
 **M4 (training + evaluation) done**: `pivot/dataset/loader.py` and shared transforms load
 verified Supabase shards with sample scaling and masking-safe padding; legacy and temporal

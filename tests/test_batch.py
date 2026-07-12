@@ -159,6 +159,8 @@ class TestRunBatch:
             assert row["features"] == window.tolist()
             assert row["start_time"] == preview.frame.index[sample.start_position]
             assert row["end_time"] == preview.frame.index[sample.end_position]
+            assert row["start_position"] == sample.start_position
+            assert row["end_position"] == sample.end_position
 
     def test_partial_failure_keeps_processing_and_fails_dataset(self, tmp_path):
         # 첫 종목(BBB)은 캐시가 없어 실패 — 나머지 종목은 계속 처리돼야 한다
