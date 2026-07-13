@@ -70,18 +70,19 @@ confusion matrices, per-class metrics, artifacts, and prediction markers on real
 The integrated flow was browser-verified with dataset 20 on MPS (1 epoch, validation 137
 predictions) and the smoke run/artifact was removed afterward.
 
-**M5 (live inference) core + UI integrated; operational verification pending**: broker-neutral
+**M5 (live inference) core + UI integrated; in-market verification pending**: broker-neutral
 day/min/tick aggregation, verified shared checkpoint loading, snapshot-driven candidate
 inference, the FastAPI lifespan Kiwoom `0B` singleton gateway, bounded browser fan-out, local
 subscription restore, REST reconciliation, live HTTP/WebSocket routes, transactional
 single-active Supabase deployment metadata, and the React Live tab are integrated. Recorded
-tick tests cover deterministic aggregation/inference/recovery and the web lint/build pass.
-Before declaring M5 done, apply `20260713100000_live_deployments.sql` to the remote project,
-browser-verify the integrated API/WS flow, then perform the documented in-market 005930
-receive/close/reconnect measurement.
+tick tests cover deterministic aggregation/inference/recovery and the web lint/build pass. The
+`live_deployments` migration is applied remotely; the no-model browser flow, 005930 subscription,
+historical chart, and snapshot-first reconnect are verified. Before declaring M5 done, retain a
+succeeded run/best checkpoint to verify model activation and overlay, then perform the documented
+in-market 005930 receive/close/reconnect measurement.
 
-Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7. Current: **M5 deployment,
-browser verification, and in-market verification**.
+Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7. Current: **M5 model activation
+and in-market verification**.
 
 Run both dev servers on macOS, Linux, or Windows with
 `uv run --extra server --extra train python scripts/dev.py all` (API 8000, web 5173).

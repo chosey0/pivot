@@ -473,7 +473,7 @@ markers.setMarkers(next);   // 파라미터 변경 시 갱신
 | **M2** | 전처리 실험실: `pivot.preprocess` 재구현(백로그 A 반영), preview API, 파라미터 패널 + 마커 + 통계 diff, 원천/라벨 진단 기반 | 파라미터 조작 시 마커/통계가 실시간 갱신, 샘플 윈도우 하이라이트, 기본 데이터 경고 표시 |
 | **M3** | 프리셋 + 일괄 처리 + 데이터 진단: Supabase preset CRUD, durable job + SSE, private Storage 데이터셋 shard, 샘플 브라우저 + Diagnostics 탭, batch 취소·데이터셋 삭제·orphan/stale 정리. **M3-A·M3-B 완료** (`20260711064111` 삭제 job 마이그레이션 적용 완료) | 프리셋으로 전체 종목 일괄 전처리 → Supabase 데이터셋 생성/검수 → 품질 리포트 확인 |
 | **M4** | 학습 & 평가: `pivot.training` (백로그 A5/A6/B1 베이스라인), Postgres run/epoch/평가 관리 + Storage 체크포인트 + 학습 곡선 SSE, 차트 검증. **완료** (2026-07-12) | 웹에서 학습 시작 → 곡선/지표 확인 → 차트에서 예측 vs 실제 비교 |
-| **M5** | 실시간 추론: Kiwoom WebSocket `0B` 중계, timeframe별 봉 집계 + 실시간 추론, Live 화면. **core+UI 통합 및 결정적 테스트 완료, 운영 검증 대기** (2026-07-13) | 장중에 구독 종목의 현재 봉과 실험적 후보 점수가 차트에 표시되고 재접속 후 누락 없이 복구 |
+| **M5** | 실시간 추론: Kiwoom WebSocket `0B` 중계, timeframe별 봉 집계 + 실시간 추론, Live 화면. **core+UI·원격 migration·무모델 구독/재접속 검증 완료, 모델 활성화·장중 검증 대기** (2026-07-13) | 장중에 구독 종목의 현재 봉과 실험적 후보 점수가 차트에 표시되고 재접속 후 누락 없이 복구 |
 
 M2에서 재구현하는 전처리는 [01_legacy_pipeline.md](01_legacy_pipeline.md)를 명세로 하되
 [02_improvement_backlog.md](02_improvement_backlog.md)의 A그룹(정밀도, Time 저장, 검증 분리 등)을 반영한다.

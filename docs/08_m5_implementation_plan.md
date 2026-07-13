@@ -218,8 +218,18 @@ sequence가 증가하는 delta를 보낸다.
 
 로컬 검증은 Python 전체 테스트, Ruff, frontend lint와 production build까지 통과했다. 통합
 브라우저 smoke에서도 Live 탭 렌더, HTTP 오류 0건, 콘솔 오류·경고 0건, `/ws/live` 첫 snapshot과
-1600x1000·1280x800 overflow 0건을 확인했다. M5 완료 표시 전 남은 운영 조건은 다음 세 가지다.
+1600x1000·1280x800 overflow 0건을 확인했다.
 
-1. 원격 Supabase에 `20260713100000_live_deployments.sql`을 적용한다.
-2. migration 적용 후 모델 활성화·구독·차트 overlay 브라우저 흐름을 확인한다.
-3. 장중 005930으로 실제 `0B` 수신, 봉 마감 추론, 강제 재접속 후 REST 보정을 실측한다.
+원격 Supabase에는 `20260713100000_live_deployments.sql`을 `20260713111114` 버전으로 적용했다.
+RLS 활성화, `anon`·`authenticated` 접근 차단, `service_role` 접근을 확인했다. 장 마감 상태에서
+005930 구독은 `pending → subscribed`, 추론은 `no_model`로 전이했고, 로컬 일봉 캐시 차트와 거래량을
+Live 화면에 표시했다. 페이지를 두 번 새로 연결했을 때 각 `/ws/live` 연결의 첫 프레임이 모두
+현재 구독을 포함한 `snapshot`이었으며 콘솔 오류·경고는 없었다. 실패한 run 활성화 요청은 422를
+반환하고 deployment 0건을 유지했다.
+
+현재 저장된 run은 취소 상태이고 `best_checkpoint` artifact가 없어 활성화 성공 경로는 실행할 수
+없다. M5 완료 표시 전 남은 운영 조건은 다음 두 가지다.
+
+1. succeeded run과 검증된 `best_checkpoint`를 보존한 뒤 모델 활성화·REST reconcile·차트 overlay를
+   브라우저에서 확인한다.
+2. 장중 005930으로 실제 `0B` 수신, 봉 마감 추론, 강제 재접속 후 REST 보정을 실측한다.
