@@ -1,0 +1,481 @@
+/* Live 탭 전용 스타일 — 공통 App.css는 수정하지 않는다 (docs/08 §7 UI 레인 소유권) */
+
+.live-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.live-main .chart-panel {
+  flex: 0 0 auto;
+  min-height: 480px;
+}
+
+.live-side .control-section.grow {
+  overflow: hidden;
+}
+
+/* ── 연결 상태 ─────────────────────────────────────────────── */
+
+.live-ws-badge,
+.live-chip {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.live-ws-badge.open {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.live-ws-badge.connecting,
+.live-ws-badge.reconnecting {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.live-ws-badge.closed {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.live-conn-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.live-conn-meta div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.live-conn-meta dt {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.live-conn-meta dd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.live-conn-message {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.live-chip.connected {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.live-chip.connecting,
+.live-chip.reconnecting,
+.live-chip.stale {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.live-chip.closed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.live-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.live-error.recoverable {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.live-error button {
+  margin-left: auto;
+}
+
+/* ── 활성 모델 ─────────────────────────────────────────────── */
+
+.live-model-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.live-model-meta dt {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.live-model-meta dd {
+  margin: 1px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.live-deploy-status {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.live-deploy-status.active {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.live-deploy-status.activating {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.live-deploy-status.failed {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+/* ── 구독 목록 ─────────────────────────────────────────────── */
+
+.live-add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.live-add-row select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.live-sub-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.live-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.live-sub-row:last-child {
+  border-bottom: 0;
+}
+
+.live-sub-row.selected {
+  background: #eff6ff;
+}
+
+.live-sub-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.live-sub-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-sub-head strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-chip.sub-subscribed {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.live-chip.sub-pending {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.live-chip.sub-error {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.live-chip.inf-ready {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.live-chip.inf-warmup {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.live-chip.inf-no_model {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.live-sub-meta {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.live-sub-meta.warmup {
+  color: #b45309;
+}
+
+.live-sub-error {
+  overflow: hidden;
+  color: #b91c1c;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 차트 보조 ─────────────────────────────────────────────── */
+
+.live-provisional-badge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #b45309;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.live-warmup-banner {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #b45309;
+  font-size: 12px;
+}
+
+/* ── 판정 로그 ─────────────────────────────────────────────── */
+
+.live-log-section {
+  flex: none;
+  padding: 0 12px 12px;
+}
+
+.live-log-caption {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.live-pred-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 12px;
+}
+
+@media (max-width: 1360px) {
+  .live-pred-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.live-pred-table {
+  align-self: start;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.live-pred-table th,
+.live-pred-table td {
+  padding: 4px 10px;
+  border: 1px solid #e5e7eb;
+  text-align: right;
+}
+
+.live-pred-table th {
+  background: #f9fafb;
+  color: #4b5563;
+  font-weight: 600;
+  text-align: left;
+}
+
+.live-pred-table td:first-child,
+.live-pred-table td:nth-child(2),
+.live-pred-table td:nth-child(3) {
+  text-align: left;
+}
+
+.live-pred-table tbody tr {
+  cursor: pointer;
+}
+
+.live-pred-table tbody tr:hover {
+  background: #f9fafb;
+}
+
+.live-pred-table tbody tr.selected {
+  background: #eff6ff;
+}
+
+.live-score-selected {
+  font-weight: 700;
+}
+
+.live-pred-class {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.live-pred-class.c0 {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.live-pred-class.c1 {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.live-pred-class.c2 {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.live-pred-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.live-pred-detail h4 {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.live-pred-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.live-score-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.live-score-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.live-score-row em {
+  font-style: normal;
+  font-size: 11px;
+  text-align: right;
+}
+
+.live-score-track {
+  height: 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  overflow: hidden;
+}
+
+.live-score-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.live-score-fill.selected {
+  background: #2563eb;
+}
+
+.live-window-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
+.live-window-meta div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.live-window-meta dt {
+  flex: none;
+  color: #6b7280;
+}
+
+.live-window-meta dd {
+  margin: 0;
+  text-align: right;
+}
+
+.live-disclaimer {
+  margin: 0;
+  color: #b45309;
+  font-size: 11px;
+}
+
+@media (max-width: 1280px) {
+  .live-main .chart-panel {
+    min-height: 400px;
+  }
+}

@@ -21,7 +21,8 @@ def _match(row: dict, filters: dict[str, str]) -> bool:
             if value is not None:
                 return False
         elif expression.startswith("eq."):
-            if str(value) != expression[3:]:
+            actual = str(value).lower() if isinstance(value, bool) else str(value)
+            if actual != expression[3:]:
                 return False
         elif expression.startswith("gt."):
             if value is None or not float(value) > float(expression[3:]):
@@ -77,6 +78,10 @@ class FakeDb:
             "started_at": None,
             "completed_at": None,
         },
+        "live_deployments": {
+            "active": True,
+            "deactivated_at": None,
+        },
     }
     ID_TABLES = (
         "jobs",
@@ -88,6 +93,7 @@ class FakeDb:
         "training_runs",
         "evaluations",
         "training_artifacts",
+        "live_deployments",
     )
 
     def __init__(self) -> None:
@@ -135,6 +141,33 @@ class FakeDb:
                 row.update(deepcopy(values))
                 updated.append(deepcopy(row))
         return updated
+
+    def rpc(self, function: str, params: dict) -> list[dict]:
+        if function != "activate_live_deployment":
+            raise NotImplementedError(function)
+        run_id = params["target_run_id"]
+        artifact_id = params["target_artifact_id"]
+        runs = [
+            row
+            for row in self.tables["training_runs"]
+            if row["id"] == run_id and row["status"] == "succeeded"
+        ]
+        artifacts = [
+            row
+            for row in self.tables["training_artifacts"]
+            if row["id"] == artifact_id
+            and row["run_id"] == run_id
+            and row["kind"] == "best_checkpoint"
+        ]
+        if not runs or not artifacts:
+            raise RuntimeError("run/artifact is not deployable")
+        for row in self.tables["live_deployments"]:
+            if row["active"]:
+                row["active"] = False
+                row["deactivated_at"] = "2026-07-10T00:00:00+00:00"
+        return self.insert(
+            "live_deployments", {"run_id": run_id, "artifact_id": artifact_id}
+        )
 
     def delete(self, table: str, *, filters: dict[str, str]) -> None:
         if not filters:

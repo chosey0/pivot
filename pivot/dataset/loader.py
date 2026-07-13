@@ -175,11 +175,9 @@ def collate_samples(samples: list[TrainingSample]) -> dict[str, object]:
     """zero padding과 유효 위치 mask를 포함한 학습 batch를 만든다."""
     if not samples:
         raise ValueError("cannot collate an empty batch")
-    tensors = [torch.from_numpy(sample.features) for sample in samples]
-    lengths = torch.tensor([len(tensor) for tensor in tensors], dtype=torch.long)
-    features = pad_sequence(tensors, batch_first=True, padding_value=0.0)
-    positions = torch.arange(features.shape[1]).unsqueeze(0)
-    mask = positions < lengths.unsqueeze(1)
+    features, lengths, mask = collate_feature_sequences(
+        [sample.features for sample in samples]
+    )
     return {
         "features": features,
         "labels": torch.tensor([sample.label for sample in samples], dtype=torch.long),
@@ -189,3 +187,16 @@ def collate_samples(samples: list[TrainingSample]) -> dict[str, object]:
         "sample_indices": [sample.sample_index for sample in samples],
         "end_times": [sample.end_time for sample in samples],
     }
+
+
+def collate_feature_sequences(
+    sequences: list[np.ndarray],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """학습과 실시간 추론이 공유하는 zero-mask padding."""
+    if not sequences:
+        raise ValueError("cannot collate empty feature sequences")
+    tensors = [torch.from_numpy(sequence) for sequence in sequences]
+    lengths = torch.tensor([len(tensor) for tensor in tensors], dtype=torch.long)
+    features = pad_sequence(tensors, batch_first=True, padding_value=0.0)
+    positions = torch.arange(features.shape[1]).unsqueeze(0)
+    return features, lengths, positions < lengths.unsqueeze(1)

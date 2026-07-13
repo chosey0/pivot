@@ -95,6 +95,12 @@ class PostgrestClient:
         _raise_for_supabase(response)
         return response.json()
 
+    def rpc(self, function: str, params: dict) -> list[dict]:
+        response = self._client.post(f"/rpc/{function}", json=params)
+        _raise_for_supabase(response)
+        result = response.json()
+        return result if isinstance(result, list) else [result]
+
     def update(
         self, table: str, values: dict, *, filters: dict[str, str]
     ) -> list[dict]:

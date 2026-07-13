@@ -1,0 +1,901 @@
+"""M5 Kiwoom realtime session, candle aggregation, inference, and fan-out."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import datetime as dt
+import json
+import logging
+from collections import deque
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Callable
+
+import pandas as pd
+import torch
+
+from pivot.config import Timeframe
+from pivot.ingestion.cache import cache_path, load_cache_window
+from pivot.ingestion.fetch import BROKER, update_cache
+from pivot.realtime.aggregate import Candle, CandleAggregator, CandleClosed, CandleUpdated
+from pivot.realtime.aggregate import KST, RealtimeTrade
+from pivot.realtime.infer import LiveInferenceEngine, LivePrediction, LiveWarmupError
+from pivot.storage.deployments import DeploymentRepository
+from pivot.storage.runs import RunRepository
+from pivot.storage.supabase import StorageObjectClient
+from pivot.training.checkpoint import load_verified_checkpoint
+
+LIVE_HISTORY_LIMIT = 5_000
+RECENT_PREDICTIONS = 200
+CLIENT_QUEUE_SIZE = 256
+logger = logging.getLogger(__name__)
+
+
+class LiveServiceError(RuntimeError):
+    pass
+
+
+class ListenerClosed(RuntimeError):
+    pass
+
+
+class SubscriptionStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def load(self) -> set[str]:
+        if not self.path.exists():
+            return set()
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError("live subscriptions must be a JSON list")
+        return {_symbol(value) for value in payload}
+
+    def save(self, symbols: set[str]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(sorted(symbols), ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(self.path)
+
+
+@dataclass(eq=False)
+class LiveListener:
+    maxsize: int = CLIENT_QUEUE_SIZE
+    events: deque[dict] = field(default_factory=deque)
+    condition: asyncio.Condition = field(default_factory=asyncio.Condition)
+    closed: bool = False
+
+    async def get(self) -> dict:
+        async with self.condition:
+            await self.condition.wait_for(lambda: self.events or self.closed)
+            if not self.events:
+                raise ListenerClosed("live listener was closed")
+            return self.events.popleft()
+
+    async def put(self, event: dict) -> bool:
+        async with self.condition:
+            if self.closed:
+                return False
+            event_type = event["type"]
+            if event_type == "candle_update":
+                symbol = event["data"]["symbol"]
+                for index in range(len(self.events) - 1, -1, -1):
+                    current = self.events[index]
+                    if (
+                        current["type"] == "candle_closed"
+                        and current["data"]["symbol"] == symbol
+                    ):
+                        break
+                    if (
+                        current["type"] == "candle_update"
+                        and current["data"]["symbol"] == symbol
+                    ):
+                        self.events[index] = event
+                        self.condition.notify()
+                        return True
+            if len(self.events) >= self.maxsize:
+                removable = next(
+                    (
+                        index
+                        for index, current in enumerate(self.events)
+                        if current["type"] in {"candle_update", "heartbeat"}
+                    ),
+                    None,
+                )
+                if removable is not None:
+                    del self.events[removable]
+                elif event_type in {"candle_update", "heartbeat"}:
+                    return False
+                else:
+                    self.closed = True
+                    self.condition.notify_all()
+                    return False
+            self.events.append(event)
+            self.condition.notify()
+            return True
+
+    async def close(self) -> None:
+        async with self.condition:
+            self.closed = True
+            self.condition.notify_all()
+
+
+class LiveService:
+    def __init__(
+        self,
+        data_root: Path,
+        *,
+        deployments: DeploymentRepository | None = None,
+        runs: RunRepository | None = None,
+        storage: StorageObjectClient | None = None,
+        client_factory: Callable[[], Any] | None = None,
+        subscription_path: Path | None = None,
+        reconcile_interval: float = 300.0,
+        stale_after: float = 60.0,
+        heartbeat_interval: float = 15.0,
+    ) -> None:
+        self.data_root = data_root
+        self.subscription_store = SubscriptionStore(
+            subscription_path or data_root / "meta" / "live_subscriptions.json"
+        )
+        self.deployments = deployments
+        self.runs = runs
+        self.storage = storage
+        self.client_factory = client_factory
+        self.reconcile_interval = reconcile_interval
+        self.stale_after = stale_after
+        self.heartbeat_interval = heartbeat_interval
+
+        self._desired: set[str] = set()
+        self._subscription_state: dict[str, dict] = {}
+        self._aggregators: dict[str, CandleAggregator] = {}
+        self._closed_overlay: dict[str, deque[Candle]] = {}
+        self._latest_candles: dict[str, dict] = {}
+        self._predictions: deque[dict] = deque(maxlen=RECENT_PREDICTIONS)
+        self._listeners: set[LiveListener] = set()
+        self._engine: LiveInferenceEngine | None = None
+        self._deployment: dict | None = None
+        self._client: Any = None
+        self._session: Any = None
+        self._gateway_task: asyncio.Task | None = None
+        self._bootstrap_task: asyncio.Task | None = None
+        self._maintenance_task: asyncio.Task | None = None
+        self._started = False
+        self._closed = False
+        self._sequence = 0
+        self._connection = "closed"
+        self._connection_message = ""
+        self._last_tick_at: dt.datetime | None = None
+        self._last_tick_by_symbol: dict[str, dt.datetime] = {}
+        self._last_heartbeat_at: dt.datetime | None = None
+        self._market_state = "closed"
+        self._last_reconcile_at: dt.datetime | None = None
+        self._lock = asyncio.Lock()
+        self._activation_lock = asyncio.Lock()
+        self._inference_lock = asyncio.Lock()
+        self.stats = {
+            "invalid_events": 0,
+            "reconciliations": 0,
+            "reconcile_errors": 0,
+            "inference_errors": 0,
+        }
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        try:
+            self._desired = self.subscription_store.load()
+        except Exception as exc:
+            logger.error(
+                "cannot load live subscriptions (%s)", type(exc).__name__
+            )
+            self._connection_message = "cannot load saved subscriptions"
+        self._sync_subscription_state()
+        self._bootstrap_task = asyncio.create_task(self._bootstrap())
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
+        await self._ensure_gateway()
+
+    async def close(self) -> None:
+        self._closed = True
+        tasks = [
+            task
+            for task in (
+                self._gateway_task,
+                self._bootstrap_task,
+                self._maintenance_task,
+            )
+            if task is not None
+        ]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        for listener in list(self._listeners):
+            await listener.close()
+        self._connection = "closed"
+
+    async def activate_model(
+        self, run_id: int, artifact_id: int | None = None
+    ) -> dict:
+        async with self._activation_lock:
+            deployments, runs, storage = self._repositories()
+            run = await asyncio.to_thread(runs.get, run_id)
+            if run["status"] != "succeeded":
+                raise LiveServiceError(f"run {run_id} is not succeeded")
+            artifact = await asyncio.to_thread(
+                runs.best_artifact if artifact_id is None else runs.artifact,
+                run_id,
+                *(() if artifact_id is None else (artifact_id,)),
+            )
+            checkpoint = await self._load_checkpoint(storage, run, artifact)
+            candidate = LiveInferenceEngine(
+                checkpoint, deployment_id=0, device=torch.device("cpu")
+            )
+            await asyncio.to_thread(candidate.warmup)
+            deployment = await asyncio.to_thread(
+                deployments.activate,
+                run_id=run_id,
+                artifact_id=artifact["id"],
+            )
+            engine = LiveInferenceEngine(
+                checkpoint,
+                deployment_id=deployment["id"],
+                device=torch.device("cpu"),
+            )
+            await self._install_engine(engine, self._public_deployment(deployment, run))
+            await self._reconcile_all()
+            await self._broadcast_snapshot()
+            return self.state()
+
+    async def subscribe(self, symbol: str) -> dict:
+        symbol = _symbol(symbol)
+        async with self._lock:
+            if symbol in self._desired:
+                return self._subscription_state[symbol].copy()
+            self._desired.add(symbol)
+            self.subscription_store.save(self._desired)
+            self._subscription_state[symbol] = self._new_subscription_state(symbol)
+            session = self._session
+        if session is not None:
+            try:
+                await session.subscribe_trades(symbol)
+                self._set_subscription_status(symbol, "subscribed")
+            except Exception as exc:
+                logger.error(
+                    "cannot subscribe live symbol %s (%s)",
+                    symbol,
+                    type(exc).__name__,
+                )
+                self._set_subscription_status(symbol, "error", "subscription failed")
+                raise LiveServiceError(f"cannot subscribe {symbol}") from exc
+        await self._ensure_gateway()
+        await self._broadcast("subscription", self._subscription_event(symbol))
+        if self._client is not None and self._engine is not None:
+            await self._reconcile_all()
+        return self._subscription_state[symbol].copy()
+
+    async def unsubscribe(self, symbol: str) -> None:
+        symbol = _symbol(symbol)
+        async with self._lock:
+            if symbol not in self._desired:
+                raise KeyError(symbol)
+            session = self._session
+        if session is not None:
+            try:
+                await session.unsubscribe(symbol)
+            except Exception as exc:
+                logger.error(
+                    "cannot unsubscribe live symbol %s (%s)",
+                    symbol,
+                    type(exc).__name__,
+                )
+                self._set_subscription_status(symbol, "error", "unsubscribe failed")
+                raise LiveServiceError(f"cannot unsubscribe {symbol}") from exc
+        async with self._lock:
+            self._desired.remove(symbol)
+            self.subscription_store.save(self._desired)
+            self._subscription_state.pop(symbol, None)
+            self._aggregators.pop(symbol, None)
+            self._closed_overlay.pop(symbol, None)
+            self._latest_candles.pop(symbol, None)
+        await self._broadcast_snapshot()
+        if not self._desired and self._gateway_task is not None:
+            self._gateway_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._gateway_task
+            await self._set_connection("closed", "")
+
+    def state(self) -> dict:
+        aggregator_stats = {
+            symbol: {
+                "accepted": aggregator.stats.accepted,
+                "duplicates": aggregator.stats.duplicates,
+                "late": aggregator.stats.late,
+            }
+            for symbol, aggregator in self._aggregators.items()
+        }
+        counters = {
+            **self.stats,
+            "accepted": sum(item["accepted"] for item in aggregator_stats.values()),
+            "duplicates": sum(item["duplicates"] for item in aggregator_stats.values()),
+            "late": sum(item["late"] for item in aggregator_stats.values()),
+        }
+        return {
+            "connection": {
+                "status": self._connection,
+                "message": self._connection_message or None,
+                "last_tick_at": _iso(self._last_tick_at),
+                "last_heartbeat_at": _iso(self._last_heartbeat_at),
+                "market_state": self._market_state,
+            },
+            "deployment": self._deployment.copy() if self._deployment else None,
+            "subscriptions": self.subscriptions(),
+            "counters": counters,
+        }
+
+    def snapshot(self) -> dict:
+        candles = []
+        for symbol in sorted(self._desired):
+            candles.extend(
+                self._candle_payload(candle, provisional=False)
+                for candle in self._closed_overlay.get(symbol, ())
+            )
+            latest = self._latest_candles.get(symbol)
+            if latest is not None and (
+                not candles
+                or candles[-1]["symbol"] != symbol
+                or candles[-1]["candle"]["time"] != latest["candle"]["time"]
+                or candles[-1]["provisional"] != latest["provisional"]
+            ):
+                candles.append(latest)
+        return {
+            **self.state(),
+            "latest_candles": candles,
+            "recent_predictions": list(self._predictions),
+        }
+
+    def subscriptions(self) -> list[dict]:
+        return [self._subscription_state[symbol].copy() for symbol in sorted(self._desired)]
+
+    async def add_listener(self, *, maxsize: int = CLIENT_QUEUE_SIZE) -> LiveListener:
+        listener = LiveListener(maxsize=maxsize)
+        listener.events.append(self._envelope("snapshot", self.snapshot()))
+        self._listeners.add(listener)
+        return listener
+
+    async def remove_listener(self, listener: LiveListener) -> None:
+        self._listeners.discard(listener)
+        await listener.close()
+
+    async def handle_sdk_event(self, event: Any) -> None:
+        if getattr(event, "tr_id", None) != "0B":
+            return
+        try:
+            trade = trade_from_tick(event)
+        except (TypeError, ValueError):
+            self.stats["invalid_events"] += 1
+            return
+        self._last_tick_at = dt.datetime.now(dt.UTC)
+        self._last_tick_by_symbol[trade.symbol] = self._last_tick_at
+        if trade.symbol not in self._desired:
+            return
+        if self._connection == "stale":
+            await self._reconcile_all()
+            await self._set_connection("connected", "")
+        self._set_subscription_status(trade.symbol, "subscribed")
+        self._subscription_state[trade.symbol]["last_tick_at"] = _iso(
+            self._last_tick_at
+        )
+        engine = self._engine
+        if engine is None:
+            self._set_inference_status(trade.symbol, "no_model")
+            return
+        aggregator = self._aggregators.setdefault(
+            trade.symbol, CandleAggregator(trade.symbol, self._timeframe())
+        )
+        for result in aggregator.ingest(trade):
+            if engine is not self._engine:
+                return
+            if isinstance(result, CandleUpdated):
+                payload = self._candle_payload(result.candle, provisional=True)
+                self._latest_candles[trade.symbol] = payload
+                await self._broadcast("candle_update", payload)
+            elif isinstance(result, CandleClosed):
+                await self._handle_closed(result.candle, engine=engine)
+
+    async def _bootstrap(self) -> None:
+        try:
+            deployments, runs, storage = self._repositories()
+            deployment = await asyncio.to_thread(deployments.active)
+            if deployment is None:
+                return
+            run = await asyncio.to_thread(runs.get, deployment["run_id"])
+            artifact = await asyncio.to_thread(
+                runs.artifact, run["id"], deployment["artifact_id"]
+            )
+            checkpoint = await self._load_checkpoint(storage, run, artifact)
+            engine = LiveInferenceEngine(
+                checkpoint,
+                deployment_id=deployment["id"],
+                device=torch.device("cpu"),
+            )
+            await self._install_engine(engine, self._public_deployment(deployment, run))
+            await self._reconcile_all()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "cannot restore active live model (%s)", type(exc).__name__
+            )
+            self._connection_message = "active model could not be restored"
+
+    def _repositories(
+        self,
+    ) -> tuple[DeploymentRepository, RunRepository, StorageObjectClient]:
+        if self.deployments is None or self.runs is None or self.storage is None:
+            from server.deps import deployment_repo, object_storage, run_repo
+
+            self.deployments = self.deployments or deployment_repo()
+            self.runs = self.runs or run_repo()
+            self.storage = self.storage or object_storage()
+        return self.deployments, self.runs, self.storage
+
+    async def _load_checkpoint(self, storage, run: dict, artifact: dict):
+        data = await asyncio.to_thread(
+            storage.download, artifact["bucket"], artifact["object_path"]
+        )
+        return await asyncio.to_thread(
+            load_verified_checkpoint,
+            data,
+            artifact["sha256"],
+            expected_config=run["config"],
+        )
+
+    async def _install_engine(
+        self, engine: LiveInferenceEngine, deployment: dict
+    ) -> None:
+        async with self._lock:
+            self._engine = engine
+            self._deployment = deployment
+            self._aggregators = {
+                symbol: CandleAggregator(symbol, engine.preset.timeframe)
+                for symbol in self._desired
+            }
+            self._closed_overlay.clear()
+            self._latest_candles.clear()
+            self._sync_subscription_state()
+
+    async def _ensure_gateway(self) -> None:
+        if not self._desired or self._closed:
+            return
+        if self._gateway_task is None or self._gateway_task.done():
+            self._gateway_task = asyncio.create_task(self._gateway_loop())
+
+    async def _gateway_loop(self) -> None:
+        while self._desired and not self._closed:
+            await self._set_connection("connecting", "Kiwoom WebSocket connecting")
+            try:
+                factory = self.client_factory or _kiwoom_client
+                async with factory() as client:
+                    self._client = client
+                    async with client.realtime.session() as session:
+                        self._session = session
+                        for symbol in sorted(self._desired):
+                            await session.subscribe_trades(symbol)
+                            self._set_subscription_status(symbol, "subscribed")
+                            await self._broadcast(
+                                "subscription",
+                                self._subscription_event(symbol),
+                            )
+                        await self._set_connection("connected", "")
+                        await self._reconcile_all()
+                        async for event in session.stream():
+                            await self.handle_sdk_event(event)
+                            if not self._desired or self._closed:
+                                break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Kiwoom realtime gateway failed (%s)", type(exc).__name__
+                )
+                await self._set_connection(
+                    "reconnecting", "Kiwoom realtime connection failed"
+                )
+                await asyncio.sleep(1)
+            finally:
+                self._session = None
+                self._client = None
+        await self._set_connection("closed", "")
+
+    async def _maintenance_loop(self) -> None:
+        last_heartbeat = 0.0
+        while not self._closed:
+            await asyncio.sleep(min(self.heartbeat_interval, 5.0))
+            now = dt.datetime.now(dt.UTC)
+            monotonic = asyncio.get_running_loop().time()
+            if monotonic - last_heartbeat >= self.heartbeat_interval:
+                self._last_heartbeat_at = now
+                self._market_state = _market_state(now.astimezone(KST))
+                await self._broadcast(
+                    "heartbeat",
+                    {
+                        "server_time": now.isoformat(),
+                        "market_state": self._market_state,
+                        "last_tick_at": _iso(self._last_tick_at),
+                    },
+                )
+                last_heartbeat = monotonic
+            if self._last_tick_at is not None:
+                idle = (now - self._last_tick_at).total_seconds()
+                if idle >= self.stale_after and self._connection == "connected":
+                    await self._set_connection("stale", "no recent trade events")
+            due = (
+                self._last_reconcile_at is None
+                or (now - self._last_reconcile_at).total_seconds()
+                >= self.reconcile_interval
+            )
+            if due and self._client is not None and self._engine is not None:
+                await self._reconcile_all()
+            await self._close_day_if_due(now.astimezone(KST))
+
+    async def _close_day_if_due(self, now: dt.datetime) -> None:
+        if self._engine is None or self._timeframe().type != "day":
+            return
+        if now.time() < dt.time(15, 30):
+            return
+        for aggregator in list(self._aggregators.values()):
+            current = aggregator.current
+            if current is None or current.start_at.date() != now.date():
+                continue
+            closed = aggregator.close_day()
+            if closed is not None:
+                await self._handle_closed(closed.candle, engine=self._engine)
+
+    async def _handle_closed(
+        self, candle: Candle, *, engine: LiveInferenceEngine
+    ) -> None:
+        payload = self._candle_payload(candle, provisional=False)
+        self._latest_candles[candle.symbol] = payload
+        self._closed_overlay.setdefault(
+            candle.symbol, deque(maxlen=LIVE_HISTORY_LIMIT)
+        ).append(candle)
+        await self._broadcast("candle_closed", payload)
+        await self._infer(candle.symbol, engine=engine)
+
+    async def _infer(
+        self,
+        symbol: str,
+        frame: pd.DataFrame | None = None,
+        *,
+        engine: LiveInferenceEngine | None = None,
+    ) -> None:
+        active_engine = engine or self._engine
+        if active_engine is None or symbol not in self._desired:
+            return
+        try:
+            history = frame if frame is not None else await asyncio.to_thread(
+                self._history, symbol, active_engine.preset.timeframe
+            )
+            async with self._inference_lock:
+                prediction = await asyncio.to_thread(
+                    active_engine.infer, symbol, history
+                )
+            if (
+                prediction is None
+                or active_engine is not self._engine
+                or symbol not in self._desired
+            ):
+                return
+            payload = self._prediction_payload(prediction)
+            self._predictions.append(payload)
+            self._set_inference_status(symbol, "ready")
+            await self._broadcast("prediction", payload)
+        except LiveWarmupError as exc:
+            if active_engine is not self._engine or symbol not in self._desired:
+                return
+            available = len(history) if "history" in locals() else 0
+            self._set_inference_status(symbol, "warmup")
+            await self._broadcast(
+                "warmup",
+                {
+                    "symbol": symbol,
+                    "required_bars": self._required_bars(active_engine),
+                    "available_bars": available,
+                    "reason": str(exc),
+                },
+            )
+        except Exception as exc:
+            if active_engine is not self._engine or symbol not in self._desired:
+                return
+            logger.error(
+                "live inference failed for %s (%s)", symbol, type(exc).__name__
+            )
+            self.stats["inference_errors"] += 1
+            await self._broadcast(
+                "error",
+                {
+                    "scope": "inference",
+                    "symbol": symbol,
+                    "recoverable": True,
+                    "message": "live inference failed",
+                },
+            )
+
+    def _history(self, symbol: str, timeframe: Timeframe) -> pd.DataFrame:
+        frame, _ = load_cache_window(
+            cache_path(self.data_root, BROKER, timeframe.code, symbol),
+            limit=LIVE_HISTORY_LIMIT,
+            columns=["Open", "High", "Low", "Close", "Volume", "Amount"],
+        )
+        frames = [] if frame is None else [frame]
+        overlays = self._closed_overlay.get(symbol)
+        if overlays:
+            frames.append(_candles_frame(list(overlays)))
+        if not frames:
+            return pd.DataFrame(
+                columns=["Open", "High", "Low", "Close", "Volume", "Amount"]
+            ).rename_axis("Time")
+        combined = pd.concat(frames)
+        return combined[~combined.index.duplicated(keep="last")].sort_index().tail(
+            LIVE_HISTORY_LIMIT
+        )
+
+    async def _reconcile_all(self) -> None:
+        engine = self._engine
+        if self._client is None or engine is None:
+            return
+        timeframe = engine.preset.timeframe
+        for symbol in sorted(self._desired):
+            try:
+                frame = await update_cache(
+                    self._client, symbol, timeframe, self.data_root
+                )
+                if symbol not in self._desired or engine is not self._engine:
+                    continue
+                self.stats["reconciliations"] += 1
+                await self._infer(
+                    symbol,
+                    frame.tail(LIVE_HISTORY_LIMIT),
+                    engine=engine,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if symbol not in self._desired or engine is not self._engine:
+                    continue
+                logger.error(
+                    "candle reconciliation failed for %s (%s)",
+                    symbol,
+                    type(exc).__name__,
+                )
+                self.stats["reconcile_errors"] += 1
+                await self._broadcast(
+                    "error",
+                    {
+                        "scope": "reconcile",
+                        "symbol": symbol,
+                        "recoverable": True,
+                        "message": "candle reconciliation failed",
+                    },
+                )
+        self._last_reconcile_at = dt.datetime.now(dt.UTC)
+
+    async def _set_connection(self, status: str, message: str) -> None:
+        self._connection = status
+        self._connection_message = message
+        await self._broadcast("connection", {"status": status, "message": message})
+
+    def _set_subscription_status(
+        self, symbol: str, status: str, error: str | None = None
+    ) -> None:
+        state = self._subscription_state.setdefault(
+            symbol, self._new_subscription_state(symbol)
+        )
+        state.update({"status": status, "error": error})
+
+    def _sync_subscription_state(self) -> None:
+        for symbol in self._desired:
+            current = self._subscription_state.get(symbol, {})
+            self._subscription_state[symbol] = {
+                **self._new_subscription_state(symbol),
+                **current,
+                "inference_status": "warmup" if self._engine else "no_model",
+            }
+
+    def _new_subscription_state(self, symbol: str) -> dict:
+        return {
+            "symbol": symbol,
+            "name": None,
+            "status": "pending",
+            "inference_status": "warmup" if self._engine else "no_model",
+            "error": None,
+            "last_tick_at": _iso(self._last_tick_by_symbol.get(symbol)),
+        }
+
+    def _set_inference_status(self, symbol: str, status: str) -> None:
+        state = self._subscription_state.setdefault(
+            symbol, self._new_subscription_state(symbol)
+        )
+        state["inference_status"] = status
+        state["last_tick_at"] = _iso(self._last_tick_by_symbol.get(symbol))
+
+    def _subscription_event(self, symbol: str) -> dict:
+        state = self._subscription_state[symbol]
+        return {key: state[key] for key in ("symbol", "status", "error")}
+
+    def _timeframe(self) -> Timeframe:
+        if self._engine is None:
+            raise LiveServiceError("no active live model")
+        return self._engine.preset.timeframe
+
+    @staticmethod
+    def _required_bars(engine: LiveInferenceEngine) -> int:
+        preset = engine.preset
+        return max([preset.fractal.n, *preset.required_ma_windows], default=1)
+
+    async def _broadcast(self, event_type: str, data: dict) -> None:
+        event = self._envelope(event_type, data)
+        failed = []
+        for listener in tuple(self._listeners):
+            if not await listener.put(event):
+                if listener.closed:
+                    failed.append(listener)
+        for listener in failed:
+            self._listeners.discard(listener)
+
+    async def _broadcast_snapshot(self) -> None:
+        await self._broadcast("snapshot", self.snapshot())
+
+    def _envelope(self, event_type: str, data: dict) -> dict:
+        self._sequence += 1
+        return {
+            "type": event_type,
+            "sequence": self._sequence,
+            "emitted_at": dt.datetime.now(dt.UTC).isoformat(),
+            "data": data,
+        }
+
+    def _candle_payload(self, candle: Candle, *, provisional: bool) -> dict:
+        timeframe = Timeframe.from_code(candle.timeframe)
+        time: str | int = (
+            candle.start_at.date().isoformat()
+            if timeframe.type == "day"
+            else int(candle.start_at.timestamp())
+        )
+        return {
+            "symbol": candle.symbol,
+            "timeframe": candle.timeframe,
+            "candle": {
+                "time": time,
+                "open": float(candle.open),
+                "high": float(candle.high),
+                "low": float(candle.low),
+                "close": float(candle.close),
+                "volume": candle.volume,
+            },
+            "provisional": provisional,
+        }
+
+    def _prediction_payload(self, prediction: LivePrediction) -> dict:
+        timeframe = Timeframe.from_code(prediction.timeframe)
+        time: str | int = (
+            prediction.closed_time.date().isoformat()
+            if timeframe.type == "day"
+            else int(prediction.closed_time.timestamp())
+        )
+        return {
+            "symbol": prediction.symbol,
+            "timeframe": prediction.timeframe,
+            "time": time,
+            "scores": prediction.scores,
+            "selected_class": prediction.selected_class,
+            "candidate_windows": [
+                {
+                    "pairing_rule": item.candidate.pairing_rule,
+                    "anchor_position": item.candidate.anchor_position,
+                    "anchor_time": item.candidate.anchor_time.isoformat(),
+                    "anchor_kind": item.candidate.anchor_kind,
+                    "start": item.candidate.anchor_time.isoformat(),
+                    "end": item.candidate.end_time.isoformat(),
+                    "shared_window": item.candidate.shared_window,
+                }
+                for item in prediction.candidates
+            ],
+            "deployment_id": prediction.deployment_id,
+        }
+
+    @staticmethod
+    def _public_deployment(deployment: dict, run: dict) -> dict:
+        dataset = run.get("dataset_snapshot", {}).get("dataset", {})
+        return {
+            "id": deployment["id"],
+            "run_id": run["id"],
+            "artifact_id": deployment["artifact_id"],
+            "run_name": run["name"],
+            "dataset_id": run["dataset_id"],
+            "dataset_name": run.get("dataset_name", ""),
+            "timeframe": dataset.get("timeframe"),
+            "feature_columns": dataset.get("feature_columns", []),
+            "model": run.get("config", {}).get("model"),
+            "pairing_rule": (
+                dataset.get("preset_snapshot", {})
+                .get("preset", {})
+                .get("labeling", {})
+                .get("sample_pairing", "latest_opposite_v1")
+            ),
+            "status": "active",
+            "activated_at": deployment.get("activated_at"),
+        }
+
+
+def trade_from_tick(tick: Any) -> RealtimeTrade:
+    if tick.price is None or tick.volume is None:
+        raise ValueError("trade has no price or volume")
+    received = dt.datetime.fromisoformat(str(tick.received_at).replace("Z", "+00:00"))
+    if received.tzinfo is None:
+        raise ValueError("received_at must include a timezone")
+    try:
+        exchange_time = dt.time.fromisoformat(str(tick.exchange_ts))
+    except ValueError as exc:
+        raise ValueError("invalid exchange timestamp") from exc
+    exchange = dt.datetime.combine(
+        received.astimezone(KST).date(), exchange_time, tzinfo=KST
+    )
+    return RealtimeTrade(
+        symbol=_symbol(tick.symbol),
+        exchange_ts=exchange,
+        received_at=received,
+        received_seq=int(tick.received_seq),
+        price=Decimal(tick.price),
+        volume=int(tick.volume),
+    )
+
+
+def _symbol(value: Any) -> str:
+    symbol = str(value).strip()
+    if len(symbol) != 6 or not symbol.isdigit():
+        raise ValueError("domestic symbol must contain six digits")
+    return symbol
+
+
+def _candles_frame(candles: list[Candle]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Time": candle.start_at.replace(tzinfo=None),
+                "Open": float(candle.open),
+                "High": float(candle.high),
+                "Low": float(candle.low),
+                "Close": float(candle.close),
+                "Volume": candle.volume,
+                "Amount": float(candle.amount),
+            }
+            for candle in candles
+        ]
+    ).set_index("Time")
+
+
+def _market_state(now: dt.datetime) -> str:
+    if now.weekday() >= 5:
+        return "closed"
+    if dt.time(9, 0) <= now.time() < dt.time(15, 30):
+        return "open"
+    return "closed"
+
+
+def _iso(value: dt.datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _kiwoom_client():
+    from brokers.kiwoom import KiwoomClient
+
+    return KiwoomClient.from_env()

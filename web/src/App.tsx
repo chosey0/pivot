@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Datasets } from './pages/Datasets'
 import { Diagnostics } from './pages/Diagnostics'
 import { Lab } from './pages/Lab'
+import { Live } from './pages/Live'
 import { Training } from './pages/Training'
 import { Watchlist } from './pages/Watchlist'
 import './App.css'
@@ -16,15 +17,6 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'training', label: '학습' },
   { id: 'live', label: '실시간' },
 ]
-
-function renderPlaceholder(title: string) {
-  return (
-    <section className="placeholder">
-      <h2>{title}</h2>
-      <p>M1 범위에서는 화면 자리만 잡아 둡니다. 이후 마일스톤에서 실제 기능을 연결합니다.</p>
-    </section>
-  )
-}
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('watchlist')
@@ -58,7 +50,7 @@ function App() {
         {activeTab === 'datasets' && <Datasets />}
         {activeTab === 'diagnostics' && <Diagnostics />}
         {activeTab === 'training' && <Training />}
-        {activeTab === 'live' && renderPlaceholder('실시간: M5에서 WebSocket 추론을 연결합니다.')}
+        {activeTab === 'live' && <Live />}
       </main>
     </div>
   )

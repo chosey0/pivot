@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import io
 from typing import Annotated, Literal
 
 import pandas as pd
@@ -15,10 +13,10 @@ from torch.utils.data import DataLoader, Subset
 
 from pivot.config import Timeframe, TrainingConfig
 from pivot.dataset.loader import TrainingDatasetError, collate_samples
-from pivot.models import build_model
 from pivot.storage.jobs import TERMINAL_STATUSES, JobTransitionError
 from pivot.storage.runs import RunNotFoundError
 from pivot.training.evaluate import evaluate_model
+from pivot.training.checkpoint import CheckpointError, load_verified_checkpoint
 from pivot.training.runs import (
     build_split_datasets,
     dataset_snapshot,
@@ -223,24 +221,19 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
         raise HTTPException(409, f"symbol {request.symbol} has no samples")
 
     data = object_storage().download(artifact["bucket"], artifact["object_path"])
-    if hashlib.sha256(data).hexdigest() != artifact["sha256"]:
-        raise HTTPException(502, "best checkpoint checksum mismatch")
-    checkpoint = torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
-    if not isinstance(checkpoint, dict) or not {
-        "state_dict",
-        "config",
-        "feature_columns",
-    }.issubset(checkpoint):
-        raise HTTPException(502, "best checkpoint has an invalid schema")
-    config = TrainingConfig.model_validate(run["config"])
-    model = build_model(config.model, len(checkpoint["feature_columns"]))
-    model.load_state_dict(checkpoint["state_dict"])
+    try:
+        checkpoint = load_verified_checkpoint(
+            data, artifact["sha256"], expected_config=run["config"]
+        )
+    except CheckpointError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    config = checkpoint.config
     loader = DataLoader(
         Subset(split_dataset, indices),
         batch_size=config.batch_size,
         collate_fn=collate_samples,
     )
-    result = evaluate_model(model, loader, torch.device("cpu"))
+    result = evaluate_model(checkpoint.model, loader, torch.device("cpu"))
     timeframe = datasets.get(run["dataset_id"])["timeframe"]
     return {
         "run_id": run_id,

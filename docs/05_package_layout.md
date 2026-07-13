@@ -21,12 +21,13 @@ pivot/                        # 저장소 루트
 │   ├── env.py                #   저장소 루트 .env 로더 (프로세스 환경변수 우선)
 │   ├── symbols/              #   KIS 종목마스터 정규화 + Supabase domestic_master 업서트/검색
 │   ├── storage/              #   Supabase 학습 데이터 저장소 경계 — docs/06 계약 소유
-│   │   └── runs.py           #   run/epoch/evaluation/artifact 메타데이터 repository
 │   │   ├── supabase.py       #   PostgREST(메타데이터)·Storage(객체) 클라이언트 분리
 │   │   ├── presets.py        #   training_presets repository (버전 증가·archive·검증)
 │   │   ├── jobs.py           #   jobs/job_events repository (상태 전이 강제)
 │   │   ├── datasets.py       #   datasets/dataset_symbols/dataset_shards repository
 │   │   ├── diagnostics.py    #   diagnostic_reports repository (불변 리포트)
+│   │   ├── runs.py           #   run/epoch/evaluation/artifact 메타데이터 repository
+│   │   ├── deployments.py    #   M5 단일 활성 live deployment repository
 │   │   └── lifecycle.py      #   데이터셋 삭제(객체→메타 순서) + orphan/stale 정리
 │   ├── cleaning/             # ② 원천 불변 품질 경계 분석
 │   │   └── kronos.py         #   Kronos Appendix B 적응형 세그먼트 분석 (off/report_only/filter)
@@ -47,10 +48,11 @@ pivot/                        # 저장소 루트
 │   │   ├── train.py          #   학습 루프 (종목 단위 split A5, 안정화 B6)
 │   │   ├── metrics.py        #   클래스별 P/R/F1, confusion matrix (A6)
 │   │   ├── runs.py           #   학습 run orchestration + 검증 checkpoint 업로드
+│   │   ├── checkpoint.py     #   평가·실시간 공용 SHA-256/checkpoint 계약 검증 로더
 │   │   └── evaluate.py       #   종목 히스토리에 모델 적용 → 실제 라벨 vs 예측 (웹 차트 검증용)
 │   └── realtime/             # ⑦ 실시간 추론 (M5)
 │       ├── aggregate.py      #   broker-neutral 체결 → day/min/tick 봉 집계 (현재 봉 갱신/마감)
-│       └── infer.py          #   체크포인트 로드 + transforms 재사용 시퀀스 구성/판정
+│       └── infer.py          #   snapshot pairing + transforms 재사용 시퀀스 구성/판정
 ├── server/                   # FastAPI 앱 — pivot 패키지 호출만, 도메인 로직 없음
 │   ├── main.py               #   앱 조립, web 빌드 정적 서빙
 │   ├── routers/              #   symbols, watchlist, ingest, preprocess, presets, datasets, diagnostics, runs, live
@@ -61,7 +63,7 @@ pivot/                        # 저장소 루트
 │                             #   components/{chart,indicators}/, pages/{Watchlist,Lab,Datasets,Diagnostics,...}
 ├── data/                     # git 미추적 — 로컬 운영 데이터/임시 캐시, docs/04 §4
 │   ├── raw/                  #   수집 캐시: {broker}/{timeframe}/{symbol}.parquet
-│   ├── meta/                 #   watchlist.json
+│   ├── meta/                 #   watchlist.json, live_subscriptions.json
 │   └── tmp/                  #   Storage 업로드/다운로드 중 재생성 가능한 작업 캐시
 ├── supabase/
 │   └── migrations/          #   종목마스터 + 학습 메타데이터/Storage bucket DDL

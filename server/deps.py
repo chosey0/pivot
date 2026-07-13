@@ -9,6 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from pivot.storage.datasets import DatasetRepository
+from pivot.storage.deployments import DeploymentRepository
 from pivot.storage.diagnostics import DiagnosticReportRepository
 from pivot.storage.jobs import JobRepository
 from pivot.storage.presets import PresetRepository
@@ -53,3 +54,8 @@ def diagnostic_repo() -> DiagnosticReportRepository:
 @lru_cache(maxsize=1)
 def run_repo() -> RunRepository:
     return RunRepository(_postgrest())
+
+
+@lru_cache(maxsize=1)
+def deployment_repo() -> DeploymentRepository:
+    return DeploymentRepository(_postgrest())

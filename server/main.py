@@ -1,5 +1,6 @@
 import datetime
 import random
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -9,14 +10,29 @@ from server.routers import (
     diagnostics,
     ingest,
     jobs,
+    live,
     preprocess,
     presets,
     runs,
     symbols,
     watchlist,
 )
+from server.deps import DATA_ROOT
+from server.live import LiveService
 
-app = FastAPI(title="pivot workbench")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    service = LiveService(DATA_ROOT)
+    app.state.live = service
+    await service.start()
+    try:
+        yield
+    finally:
+        await service.close()
+
+
+app = FastAPI(title="pivot workbench", lifespan=lifespan)
 app.include_router(watchlist.router)
 app.include_router(ingest.router)
 app.include_router(chart.router)
@@ -27,6 +43,7 @@ app.include_router(jobs.router)
 app.include_router(datasets.router)
 app.include_router(diagnostics.router)
 app.include_router(runs.router)
+app.include_router(live.router)
 
 
 @app.get("/api/health")

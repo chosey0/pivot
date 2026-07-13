@@ -162,6 +162,22 @@ class RunRepository:
             raise RunNotFoundError(f"run {run_id} has no best checkpoint")
         return rows[0]
 
+    def artifact(self, run_id: int, artifact_id: int) -> dict:
+        rows = self.db.select(
+            "training_artifacts",
+            filters={
+                "id": f"eq.{artifact_id}",
+                "run_id": f"eq.{run_id}",
+                "kind": "eq.best_checkpoint",
+            },
+            limit=1,
+        )
+        if not rows:
+            raise RunNotFoundError(
+                f"run {run_id} has no best checkpoint artifact {artifact_id}"
+            )
+        return rows[0]
+
     def delete_artifact(self, artifact_id: int) -> None:
         self.db.delete("training_artifacts", filters={"id": f"eq.{artifact_id}"})
 
