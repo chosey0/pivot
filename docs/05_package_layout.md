@@ -49,13 +49,13 @@ pivot/                        # 저장소 루트
 │   │   ├── runs.py           #   학습 run orchestration + 검증 checkpoint 업로드
 │   │   └── evaluate.py       #   종목 히스토리에 모델 적용 → 실제 라벨 vs 예측 (웹 차트 검증용)
 │   └── realtime/             # ⑦ 실시간 추론 (M5)
-│       ├── aggregate.py      #   체결 틱 → 봉 집계 (현재 봉 갱신/마감)
+│       ├── aggregate.py      #   broker-neutral 체결 → day/min/tick 봉 집계 (현재 봉 갱신/마감)
 │       └── infer.py          #   체크포인트 로드 + transforms 재사용 시퀀스 구성/판정
 ├── server/                   # FastAPI 앱 — pivot 패키지 호출만, 도메인 로직 없음
 │   ├── main.py               #   앱 조립, web 빌드 정적 서빙
 │   ├── routers/              #   symbols, watchlist, ingest, preprocess, presets, datasets, diagnostics, runs, live
 │   ├── jobs.py               #   장기 작업(수집/일괄 전처리/학습) 상태 + SSE, 학습은 별도 프로세스
-│   └── live.py               #   증권사 WS 구독 관리 + 브라우저 WS 브로드캐스트
+│   └── live.py               #   Kiwoom 단일 WS session/0B 구독 + gap 보정 + 브라우저 WS 브로드캐스트
 ├── web/                      # Vite + React + TS — docs/04 §5·§6
 │   └── src/                  #   App.tsx는 탭 셸만. api/, lib/(format·timeframe 공용 유틸),
 │                             #   components/{chart,indicators}/, pages/{Watchlist,Lab,Datasets,Diagnostics,...}
@@ -84,7 +84,8 @@ pivot/                        # 저장소 루트
   데이터셋 재생성으로 명시적으로 수행한다.
 - **단계 간 결합은 데이터 계약(표준 DataFrame 스키마)으로만.** ingestion의 출력
   (`Time` 인덱스 + `Open/High/Low/Close/Volume/Amount` + 이평선 컬럼)이 labeling 이후의 입력.
-  브로커 의존성은 ingestion과 `server/live.py` 안에 가둔다.
+  브로커 의존성은 ingestion과 `server/live.py` 안에 가둔다. M5의 실시간 브로커는
+  `brokers.kiwoom`으로 고정하고 `pivot/realtime/`에는 정규화된 체결 값만 전달한다.
 - **`transforms.py`는 torch 비의존.** 실시간 추론에서도 같은 스케일링을 재현해야 하므로(A4)
   numpy/pandas 수준으로 유지하고, torch 의존은 `loader.py`·`models/`·`training/`·
   `realtime/infer.py`에만 둔다.

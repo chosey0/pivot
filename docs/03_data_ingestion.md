@@ -43,7 +43,17 @@
 | 용도 | 사용 모듈 | 근거 |
 |---|---|---|
 | **국내 캔들 (일/분/틱)** — 학습 데이터 | `brokers.kiwoom` | 위 표. KIS 모듈은 국내는 1분봉만 지원 |
-| 실시간 체결 (추론 단계) | `brokers.kis` 또는 `brokers.kiwoom` | 둘 다 실시간 체결 WebSocket 지원. 구 프로젝트가 KIS 웹소켓 기반이었으므로 KIS 우선 검토 |
+| 실시간 체결 (추론 단계) | `brokers.kiwoom` | M5 기반으로 확정. REST 캔들과 같은 브로커·인증을 사용하고 `주식체결(0B)`을 `RealtimeTick`으로 수신 |
+
+### 2.1 M5 실시간 계약
+
+- `async with client.realtime.session() as ws`로 서버당 세션 하나를 유지한다.
+- 종목은 `await ws.subscribe_trades(symbol)`로 등록하고 `ws.stream()`의 `RealtimeTick`을 소비한다.
+- SDK가 LOGIN, PING echo, 재접속과 활성 구독 복원을 담당한다. Pivot은 봉 집계와 REST gap
+  보정, 모델 추론, 브라우저 전달을 담당한다.
+- `received_at`이 같으면 `received_seq`로 수신 순서를 고정한다. 이 순번은 재접속 전후의
+  전역 순번이 아니다.
+- 상세 구현 계약과 검증 순서는 [08_m5_implementation_plan.md](08_m5_implementation_plan.md)를 따른다.
 
 **주의 (분봉/틱봉)**:
 
@@ -74,7 +84,7 @@ broker-modules = { git = "https://github.com/chosey0/broker-modules.git" }
 ```bash
 export KIWOOM_APP_KEY="..."
 export KIWOOM_SECRET_KEY="..."
-export KIS_APP_KEY="..."        # KIS 사용 시
+export KIS_APP_KEY="..."        # KIS 종목마스터 갱신용 (M5 WebSocket에는 사용하지 않음)
 export KIS_APP_SECRET="..."
 ```
 

@@ -80,6 +80,7 @@ Read these before writing any code, and **update them when a decision changes**:
 | `docs/05_package_layout.md` | Repository/package layout: `pivot/` domain library + `server/` + `web/`, dependency extras. Authoritative for folder structure. |
 | `docs/06_supabase_training_storage.md` | Supabase schema, private bucket paths, lifecycle, access, and retention contract for presets through training runs. |
 | `docs/07_m4_implementation_plan.md` | M4 baseline contract, parallel worktree/file ownership, training API/SSE contract, and core/UI integration order. |
+| `docs/08_m5_implementation_plan.md` | M5 Kiwoom WebSocket contract, candle aggregation, live inference/API events, implementation and verification order. |
 
 Docs are written in Korean; keep them in Korean. The user communicates in Korean.
 
@@ -87,7 +88,7 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
 
 - **Backend**: FastAPI, Python **3.12+**, managed with **uv**. Data fetched through
   [broker-modules](https://github.com/chosey0/broker-modules) (async SDK; Kiwoom for
-  domestic candles, KIS websocket for live ticks). Credentials via env vars only —
+  domestic candles and Kiwoom WebSocket `0B` for live trades). Credentials via env vars only —
   never commit keys.
 - **Frontend**: React + TypeScript + Vite. Charts use **lightweight-charts v5**
   (`chart.addSeries(CandlestickSeries)`, markers via `createSeriesMarkers`) — do not use
