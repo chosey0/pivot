@@ -256,3 +256,83 @@ class TestRunPreprocess:
         assert result.feature_columns == ["Open", "High", "Low", "Close", "20", "120"]
         # 마지막 lag봉에는 라벨 지점이 없어야 한다 (미확정 구간).
         assert (result.points["position"] < 400 - confirmation_lag(20)).all()
+
+
+class TestSwingIgnoreRule:
+    """스윙 진폭 무시 규칙 (labeling.ignore_swing_pct)."""
+
+    def make_zigzag(self):
+        """저점@5 → 고점@10(작은 스윙) → 저점@15 → 고점@20(큰 스윙)."""
+        highs = ramp(30)
+        lows = highs - 1.0
+        lows[5] -= 1.0
+        highs[10] += 1.0
+        lows[15] = 80.0
+        highs[20] = 120.0
+        small_swing_pct = (highs[10] / lows[5] - 1.0) * 100.0
+        return make_df(highs, lows), small_swing_pct
+
+    def test_small_swing_relabeled_to_ignore_in_cls3(self):
+        df, small = self.make_zigzag()
+        points, stats = label_points(
+            df,
+            n=5,
+            labeling=LabelingConfig(
+                mode="cls3", ignore_rule="none", ignore_swing_pct=small + 1.0
+            ),
+        )
+        assert list(points["position"]) == [5, 10, 15, 20]
+        # 첫 저점은 직전 반대 프랙탈이 없어 규칙 미적용, 작은 스윙 고점만 무시(2)
+        assert list(points["label"]) == [0, 2, 0, 1]
+        assert stats["swing_ignored"] == 1
+
+    def test_threshold_below_swing_keeps_labels(self):
+        df, small = self.make_zigzag()
+        points, stats = label_points(
+            df,
+            n=5,
+            labeling=LabelingConfig(
+                mode="cls3", ignore_rule="none", ignore_swing_pct=small - 1.0
+            ),
+        )
+        assert list(points["label"]) == [0, 1, 0, 1]
+        assert stats["swing_ignored"] == 0
+
+    def test_cls2_drop_removes_small_swing_and_anchor(self):
+        df, small = self.make_zigzag()
+        points, stats = label_points(
+            df,
+            n=5,
+            labeling=LabelingConfig(
+                mode="cls2_drop", ignore_rule="none", ignore_swing_pct=small + 1.0
+            ),
+        )
+        # 작은 스윙 고점@10은 제거되고, 제거된 지점은 다음 스윙의 anchor가 아니다
+        assert list(points["position"]) == [5, 15, 20]
+        assert list(points["label"]) == [0, 0, 1]
+        assert stats["dropped_ignore"] == 1
+
+    def test_disabled_by_default(self):
+        df, _ = self.make_zigzag()
+        points, stats = label_points(
+            df, n=5, labeling=LabelingConfig(ignore_rule="none")
+        )
+        assert list(points["label"]) == [0, 1, 0, 1]
+        assert stats["swing_ignored"] == 0
+
+    def test_run_preprocess_carries_swing_stat_and_sample_labels(self):
+        df, small = self.make_zigzag()
+        preset = PreprocessPreset(
+            name="swing",
+            fractal=FractalConfig(n=5),
+            features=["Open", "High", "Low", "Close"],
+            labeling=LabelingConfig(ignore_rule="none", ignore_swing_pct=small + 1.0),
+        )
+        result = run_preprocess(df, preset)
+        assert result.stats["swing_ignored"] == 1
+        # 무시로 재라벨된 지점도 샘플로는 유지된다 (cls3)
+        assert [sample.label for sample in result.samples] == [2, 0, 1]
+
+    def test_ignore_swing_pct_must_be_positive(self):
+        with pytest.raises(ValueError):
+            LabelingConfig(ignore_swing_pct=0)

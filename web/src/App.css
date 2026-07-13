@@ -1190,6 +1190,19 @@ button:disabled {
   content: '·';
 }
 
+/* 스윙 변화율 — 국내 관례: 상승 빨강 / 하락 파랑 (차트 캔들 색과 동일) */
+.swing-rate {
+  font-weight: 700;
+}
+
+.swing-rate.up {
+  color: #e5484d;
+}
+
+.swing-rate.down {
+  color: #3b82f6;
+}
+
 .mini-chart-panel {
   display: flex;
   flex-direction: column;

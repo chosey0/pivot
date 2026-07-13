@@ -75,7 +75,8 @@ def label_points(
     - points: 라벨 지점별 한 행 — `position`(원본 iloc 위치), `kind`(low|high),
       `price`(프랙탈 가격), `label`(0/1/2). Time 인덱스 유지, 시간 오름차순.
       같은 봉이 고점·저점 동시 확정이면 두 행이 된다 (구 방식의 low/high 루프 계승).
-    - stats: dropped_filters / dropped_ignore(cls2_drop일 때) 카운트.
+    - stats: dropped_filters / dropped_ignore(cls2_drop일 때) /
+      swing_ignored(스윙 진폭 무시 규칙 발동 수) 카운트.
     """
     labeling = labeling or LabelingConfig()
     filters = filters or FilterConfig()
@@ -105,24 +106,41 @@ def label_points(
     rows: list[dict] = []
     dropped_filters = 0
     dropped_ignore = 0
+    swing_ignored = 0
+    # 스윙 진폭 평가용 — 살아남은 지점만 anchor로 쓴다 (build_samples 페어링과 동일)
+    last_price: dict[str, float] = {}
     for candidate in candidates:
         time = candidate["time"]
         if not passes.loc[time]:
             dropped_filters += 1
             continue
+        kind = str(candidate["kind"])
+        price = float(candidate["price"])
         label = candidate["base_label"]
         if labeling.ignore_rule == "ma20<ma120":
             ma20, ma120 = marked.at[time, "20"], marked.at[time, "120"]
             if pd.notna(ma20) and pd.notna(ma120) and ma20 < ma120:
                 label = LABEL_IGNORE
+        if labeling.ignore_swing_pct is not None:
+            # 스윙 진폭 무시 규칙: 직전 반대 프랙탈 대비 변화율이 임계 미만이면 잔진동
+            start_price = last_price.get("high" if kind == "low" else "low")
+            if (
+                start_price is not None
+                and start_price > 0
+                and abs(price / start_price - 1.0) * 100.0 < labeling.ignore_swing_pct
+            ):
+                if label != LABEL_IGNORE:
+                    swing_ignored += 1
+                label = LABEL_IGNORE
         if label == LABEL_IGNORE and labeling.mode == "cls2_drop":
             dropped_ignore += 1
             continue
+        last_price[kind] = price
         rows.append(
             {
                 "time": time,
                 "position": candidate["position"],
-                "kind": candidate["kind"],
+                "kind": kind,
                 "price": candidate["price"],
                 "label": label,
             }
@@ -135,6 +153,7 @@ def label_points(
     stats = {
         "dropped_filters": dropped_filters,
         "dropped_ignore": dropped_ignore,
+        "swing_ignored": swing_ignored,
         "plateau": plateau_stats,
     }
     return points, stats

@@ -41,6 +41,19 @@ function formatFeatureValue(value: number) {
   return value.toLocaleString('ko-KR', { maximumFractionDigits: 3 })
 }
 
+/** 스윙 시작(직전 반대 프랙탈 봉)~끝(현재 프랙탈 봉)의 가격 변화율(%). */
+function sampleChangeRate(sample: SampleDetail): number | null {
+  const columns = sample.feature_columns
+  // 저점 샘플은 직전 고점(High)→현재 저점(Low), 고점 샘플은 그 반대
+  const startIndex = columns.indexOf(sample.kind === 'low' ? 'High' : 'Low')
+  const endIndex = columns.indexOf(sample.kind === 'low' ? 'Low' : 'High')
+  if (startIndex < 0 || endIndex < 0 || sample.features.length < 2) return null
+  const start = sample.features[0][startIndex]
+  const end = sample.features[sample.features.length - 1][endIndex]
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0) return null
+  return (end / start - 1) * 100
+}
+
 export function Datasets() {
   const [presets, setPresets] = useState<PresetRow[]>([])
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
@@ -55,6 +68,7 @@ export function Datasets() {
   const [job, setJob] = useState<JobRow | null>(null)
   const [symbolProgress, setSymbolProgress] = useState<Record<string, SymbolProgress>>({})
   const eventSourceRef = useRef<EventSource | null>(null)
+  const sampleListRef = useRef<HTMLDivElement | null>(null)
 
   // 샘플 브라우저 상태 — position은 라벨 필터 적용 후 목록에서의 순번
   const [browse, setBrowse] = useState<{ datasetId: number; name: string } | null>(null)
@@ -315,40 +329,63 @@ export function Datasets() {
     (nextPosition: number) => {
       const total = page?.total ?? 0
       if (total === 0 || nextPosition < 0 || nextPosition >= total) return
+      // 같은 위치 재클릭 시 상세를 비우면 재조회 effect가 돌지 않아 빈 화면이 된다
+      if (nextPosition === position) return
       setSelectedSample(null)
       setPosition(nextPosition)
       const nextOffset = Math.floor(nextPosition / PAGE_SIZE) * PAGE_SIZE
       setPageOffset((current) => (current === nextOffset ? current : nextOffset))
     },
-    [page],
+    [page, position],
   )
+
+  const showPage = useCallback((nextOffset: number) => {
+    setSelectedSample(null)
+    setPosition(nextOffset)
+    setPageOffset(nextOffset)
+  }, [])
 
   useEffect(() => {
     if (!browse) return
     const handler = (event: KeyboardEvent) => {
-      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      const { key } = event
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) return
       const target = event.target as HTMLElement
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return
       event.preventDefault()
-      const delta = event.key === 'ArrowLeft' ? -1 : 1
-      moveSelection(position === null ? 0 : position + delta)
+      if (key === 'ArrowUp' || key === 'ArrowDown') {
+        // 상하: 샘플 선택 이동
+        const delta = key === 'ArrowUp' ? -1 : 1
+        moveSelection(position === null ? 0 : position + delta)
+        return
+      }
+      // 좌우: 페이지 이동 (pager 버튼과 동일 조건)
+      if (samplesLoading) return
+      if (key === 'ArrowLeft' && pageOffset > 0) {
+        showPage(Math.max(pageOffset - PAGE_SIZE, 0))
+      } else if (key === 'ArrowRight' && page && pageOffset + PAGE_SIZE < page.total) {
+        showPage(pageOffset + PAGE_SIZE)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [browse, position, moveSelection])
+  }, [browse, position, moveSelection, page, pageOffset, samplesLoading, showPage])
+
+  // 선택 샘플이 리스트 뷰포트를 벗어나면 자동 스크롤 (block: nearest — 필요할 때만)
+  useEffect(() => {
+    if (position === null) return
+    sampleListRef.current
+      ?.querySelector('.sample-item.selected')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [position, page])
 
   function pickRandomSample() {
     const total = page?.total ?? 0
     if (total > 0) moveSelection(Math.floor(Math.random() * total))
   }
 
-  function showPage(nextOffset: number) {
-    setSelectedSample(null)
-    setPosition(nextOffset)
-    setPageOffset(nextOffset)
-  }
-
   const jobRunning = job !== null && (job.status === 'queued' || job.status === 'running')
+  const sampleRate = selectedSample ? sampleChangeRate(selectedSample) : null
   const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? null
   const totalPages = page ? Math.max(Math.ceil(page.total / PAGE_SIZE), 1) : 1
   const currentPage = Math.floor(pageOffset / PAGE_SIZE) + 1
@@ -668,7 +705,7 @@ export function Datasets() {
                   →
                 </button>
               </div>
-              <span className="sample-shortcut">키보드 ← →</span>
+              <span className="sample-shortcut">키보드 ↑↓ 샘플 · ←→ 페이지</span>
             </div>
 
             {sampleError ? <p className="error">오류: {sampleError}</p> : null}
@@ -679,7 +716,7 @@ export function Datasets() {
 
             {page && page.total > 0 && (
               <div className="sample-layout">
-                <div className="sample-list">
+                <div className="sample-list" ref={sampleListRef}>
                   {page.items.map((item, order) => {
                     const itemPosition = page.offset + order
                     return (
@@ -720,6 +757,15 @@ export function Datasets() {
                             {selectedSample.kind === 'low' ? '프랙탈 저점' : '프랙탈 고점'}
                           </span>
                           <span>{selectedSample.length}봉</span>
+                          {sampleRate !== null && (
+                            <span
+                              className={sampleRate >= 0 ? 'swing-rate up' : 'swing-rate down'}
+                              title="스윙 시작(직전 반대 프랙탈)~끝(현재 프랙탈) 가격 변화율"
+                            >
+                              {sampleRate >= 0 ? '+' : ''}
+                              {sampleRate.toFixed(2)}%
+                            </span>
+                          )}
                           <span>split {selectedSample.split ?? '-'}</span>
                           <span className="muted-text">
                             {formatDate(selectedSample.start_time)} ~{' '}

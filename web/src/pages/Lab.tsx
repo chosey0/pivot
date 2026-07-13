@@ -51,6 +51,7 @@ export function Lab() {
   const [tiePolicy, setTiePolicy] = useState<FractalTiePolicy>('plateau_last')
   const [labelMode, setLabelMode] = useState<'cls3' | 'cls2_drop'>('cls3')
   const [ignoreRuleOn, setIgnoreRuleOn] = useState(true)
+  const [ignoreSwingPctInput, setIgnoreSwingPctInput] = useState('')
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
   const [minAmountInput, setMinAmountInput] = useState('')
   const [cleaningMode, setCleaningMode] = useState<CleaningMode>('report_only')
@@ -93,6 +94,8 @@ export function Lab() {
       labeling: {
         mode: labelMode,
         ignore_rule: ignoreRuleOn ? 'ma20<ma120' : 'none',
+        ignore_swing_pct:
+          ignoreSwingPctInput.trim() === '' ? null : Number(ignoreSwingPctInput),
       },
       filters: {
         ma_alignment: maAlignment === '' ? null : maAlignment,
@@ -112,6 +115,7 @@ export function Lab() {
       featureColumns,
       fractalN,
       ignoreRuleOn,
+      ignoreSwingPctInput,
       labelMode,
       maAlignment,
       minAmountInput,
@@ -362,6 +366,7 @@ export function Lab() {
                     {stats.dropped_unpaired > 0 ? ` · 짝 없음 제외 ${stats.dropped_unpaired.toLocaleString()}` : ''}
                     {stats.dropped_filters > 0 ? ` · 필터 제외 ${stats.dropped_filters.toLocaleString()}` : ''}
                     {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
+                    {stats.swing_ignored > 0 ? ` · 스윙 무시 ${stats.swing_ignored.toLocaleString()}` : ''}
                   </span>
                   <span>미확정: 마지막 {stats.confirmation_lag}봉 (미래 확인 대기)</span>
                   <span>
@@ -516,10 +521,14 @@ export function Lab() {
               onChange={(event) => setLabelMode(event.target.value as 'cls3' | 'cls2_drop')}
               value={labelMode}
             >
-              <option value="cls3">cls3 — 역배열을 무시(2)로 라벨</option>
-              <option value="cls2_drop">cls2_drop — 역배열 샘플 제외</option>
+              <option value="cls3">cls3 — 무시 규칙 해당 지점을 2로 라벨</option>
+              <option value="cls2_drop">cls2_drop — 무시 규칙 해당 샘플 제외</option>
             </select>
           </label>
+          <p className="hint">
+            아래 무시 규칙(역배열, 최소 스윙)은 독립적으로 조합됩니다. 예: 역배열을
+            끄고 최소 스윙만 설정하면 무시(2)는 잔진동 스윙에서만 생성됩니다.
+          </p>
           <label className="inline-check">
             <input
               checked={ignoreRuleOn}
@@ -528,6 +537,21 @@ export function Lab() {
             />
             역배열(MA20&lt;MA120) 무시 규칙 적용
           </label>
+          <label className="field">
+            최소 스윙 변화율 (%)
+            <input
+              min={0}
+              onChange={(event) => setIgnoreSwingPctInput(event.target.value)}
+              placeholder="미입력 시 미적용"
+              step={0.1}
+              type="number"
+              value={ignoreSwingPctInput}
+            />
+          </label>
+          <p className="hint">
+            스윙 시작(직전 반대 프랙탈)과 끝의 가격 변화율이 이 값 미만이면
+            잔진동으로 보고 무시(2)로 라벨합니다.
+          </p>
         </section>
 
         <section className="control-section">

@@ -94,6 +94,7 @@ export interface PreviewStats {
   dropped_unpaired: number
   dropped_filters: number
   dropped_ignore: number
+  swing_ignored: number
   confirmation_lag: number
   overlap_clusters: OverlapClusterStats
   cleaning: CleaningStats
@@ -149,7 +150,11 @@ export interface PreviewParams {
   fractal: { n: number; tie_policy: FractalTiePolicy }
   ma_windows: number[]
   features: string[]
-  labeling: { mode: 'cls3' | 'cls2_drop'; ignore_rule: 'ma20<ma120' | 'none' }
+  labeling: {
+    mode: 'cls3' | 'cls2_drop'
+    ignore_rule: 'ma20<ma120' | 'none'
+    ignore_swing_pct: number | null
+  }
   filters: { ma_alignment: '20>120' | '5>20>120' | null; min_amount: number | null }
   cleaning: {
     mode: CleaningMode

@@ -198,6 +198,7 @@ def _run_clean_segments(
         "dropped_unpaired": 0,
         "dropped_filters": 0,
         "dropped_ignore": 0,
+        "swing_ignored": 0,
     }
     overlap_totals = _empty_overlap_stats(preset)
     class_counts = {0: 0, 1: 0, 2: 0}
