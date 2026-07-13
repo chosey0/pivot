@@ -289,6 +289,14 @@ export function Lab() {
   }
 
   const stats = preview?.stats ?? null
+  const chartMarkers = useMemo(
+    () =>
+      preview?.markers.map((marker) => ({
+        ...marker,
+        label: marker.incoming_sample_label ?? marker.label,
+      })) ?? [],
+    [preview],
+  )
   const classCount = (label: number) => stats?.class_counts?.[String(label)] ?? 0
   const prevClassCount = (label: number) => prevStats?.class_counts?.[String(label)]
   const previewError = error
@@ -430,7 +438,7 @@ export function Lab() {
             fitContentKey={`${preview.symbol}:${preview.timeframe}:${preview.stats.cleaning.mode}`}
             highlightRange={highlightRange}
             ma={preview.ma}
-            markers={preview.markers}
+            markers={chartMarkers}
             onTimeClick={selectSampleByTime}
             visibleIndicators={visibleIndicators}
             volumes={preview.volumes}
