@@ -57,6 +57,49 @@ class TestPresetRepository:
         with pytest.raises(PresetConflictError):
             repo.archive(row["id"])  # 이중 archive 금지
 
+    def test_delete_unreferenced_preset(self):
+        db = FakeDb()
+        repo = PresetRepository(db)
+        row = repo.create(preset())
+        report = db.insert(
+            "diagnostic_reports",
+            {
+                "target_type": "preset",
+                "preset_id": row["id"],
+                "status": "passed",
+                "summary": {},
+                "report": {},
+            },
+        )[0]
+
+        repo.delete(row["id"])
+
+        with pytest.raises(PresetNotFoundError):
+            repo.get(row["id"])
+        stored_report = db.select(
+            "diagnostic_reports", filters={"id": f"eq.{report['id']}"}
+        )[0]
+        assert stored_report["preset_id"] is None
+
+    def test_delete_referenced_preset_is_blocked(self):
+        db = FakeDb()
+        repo = PresetRepository(db)
+        row = repo.create(preset())
+        db.insert(
+            "datasets",
+            {
+                "name": "referencing",
+                "preset_id": row["id"],
+                "preset_snapshot": {},
+                "timeframe": "day",
+                "feature_columns": ["Close"],
+            },
+        )
+
+        with pytest.raises(PresetConflictError, match="referenced by dataset"):
+            repo.delete(row["id"])
+        assert repo.get(row["id"])["id"] == row["id"]
+
     def test_get_missing_raises(self):
         repo = PresetRepository(FakeDb())
         with pytest.raises(PresetNotFoundError):

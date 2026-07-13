@@ -205,11 +205,15 @@ interface ArtifactSummary {
 | GET | `/api/runs/{id}` | - | `{run, epochs, evaluations, artifacts}` |
 | GET | `/api/runs/{id}/events` | `Last-Event-ID` 지원 | SSE |
 | POST | `/api/runs/{id}/stop` | - | `{run_id, status: 'cancelled'}` |
+| DELETE | `/api/runs/{id}` | - | `{job_id, deleted_objects}` |
 | POST | `/api/runs/{id}/evaluate` | `{symbol, split}` | `PredictionEvaluation` |
 
 Run 생성 시 허용 범위 밖 숫자, `ready`가 아닌 데이터셋, 진단 실패, shard 무결성 실패는
 4xx로 거부한다. 시작 이후 실패는 run/job을 `failed`로 마감하고 `error`에 사용자 표시 가능한
 원인을 기록한다. 이미 terminal인 run의 stop은 멱등 응답을 반환한다.
+run 삭제는 terminal 상태이면서 실시간 배포 이력에서 참조하지 않을 때만 허용하고, checkpoint
+객체 삭제가 성공한 뒤 run 하위 메타데이터를 cascade 삭제한다. 부분 실패는 `run_delete` job에
+남겨 같은 DELETE 호출로 재시도한다.
 
 ### 5.3 예측 차트 계약
 

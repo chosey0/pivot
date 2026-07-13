@@ -128,6 +128,10 @@ export const trainingApi = {
     fetchJson<{ run_id: number; status: 'cancelled' }>(`/api/runs/${runId}/stop`, {
       method: 'POST',
     }),
+  deleteRun: (runId: number) =>
+    fetchJson<{ job_id: number; deleted_objects: number }>(`/api/runs/${runId}`, {
+      method: 'DELETE',
+    }),
   evaluate: (runId: number, symbol: string, split: EvaluationSplit) =>
     fetchJson<PredictionEvaluation>(`/api/runs/${runId}/evaluate`, {
       method: 'POST',

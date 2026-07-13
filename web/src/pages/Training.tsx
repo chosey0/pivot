@@ -42,6 +42,7 @@ export function Training() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
+  const [deletingRunId, setDeletingRunId] = useState<number | null>(null)
 
   const { detail, loading: detailLoading, error: detailError, connection, refetch, reload } =
     useRunDetail(selectedRunId)
@@ -96,6 +97,28 @@ export function Training() {
     }
   }
 
+  async function removeRun(run: RunSummary) {
+    if (
+      !window.confirm(
+        `run '${run.name}'의 체크포인트와 학습 이력을 모두 삭제할까요? 이 작업은 되돌릴 수 없습니다.`,
+      )
+    )
+      return
+    setDeletingRunId(run.id)
+    setError(null)
+    try {
+      await trainingApi.deleteRun(run.id)
+      if (selectedRunId === run.id) setSelectedRunId(null)
+      setMessage(`run #${run.id}을 삭제했습니다.`)
+      refreshRuns()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      refreshRuns()
+    } finally {
+      setDeletingRunId(null)
+    }
+  }
+
   const run = detail?.run ?? null
   const runActive = run !== null && !isTerminal(run.status)
   const readyDatasets = datasets.filter((row) => row.status === 'ready')
@@ -124,37 +147,56 @@ export function Training() {
           ) : (
             <div className="run-list">
               {runs.map((row) => (
-                <button
+                <div
                   className={row.id === selectedRunId ? 'run-item selected' : 'run-item'}
                   key={row.id}
-                  onClick={() => {
-                    if (row.id === selectedRunId) reload()
-                    else setSelectedRunId(row.id)
-                    setShowForm(false)
-                  }}
-                  type="button"
                 >
-                  <div className="run-item-head">
-                    <strong>{row.name}</strong>
-                    <span className={`run-status ${row.status}`}>
-                      {STATUS_TEXT[row.status]}
+                  <button
+                    className="run-item-main"
+                    onClick={() => {
+                      if (row.id === selectedRunId) reload()
+                      else setSelectedRunId(row.id)
+                      setShowForm(false)
+                    }}
+                    type="button"
+                  >
+                    <span className="run-item-title-row">
+                      <strong className="run-item-title">{row.name}</strong>
+                      <span className={`run-status ${row.status}`}>
+                        {STATUS_TEXT[row.status]}
+                      </span>
                     </span>
+                    <span className="run-item-meta">
+                      {row.dataset_name} · {modelShort(row.config.model)} ·{' '}
+                      {row.device ?? '디바이스 미정'}
+                    </span>
+                    <span className="run-item-meta">
+                      best F1 {formatMetricValue(row.best_metric_value)}
+                      {row.best_epoch !== null ? ` @ep${row.best_epoch}` : ''} ·{' '}
+                      {formatDate(row.created_at)}
+                    </span>
+                    {row.error ? (
+                      <span className="run-item-error" title={row.error}>
+                        ✗ {row.error}
+                      </span>
+                    ) : null}
+                  </button>
+                  <div className="run-item-actions">
+                    <button
+                      className="run-item-delete danger"
+                      disabled={!isTerminal(row.status) || deletingRunId === row.id}
+                      onClick={() => removeRun(row)}
+                      title={
+                        isTerminal(row.status)
+                          ? '체크포인트와 학습 이력을 삭제합니다'
+                          : '진행 중인 run은 중단 후 삭제할 수 있습니다'
+                      }
+                      type="button"
+                    >
+                      {deletingRunId === row.id ? '삭제 중' : '삭제'}
+                    </button>
                   </div>
-                  <span className="run-item-meta">
-                    {row.dataset_name} · {modelShort(row.config.model)} ·{' '}
-                    {row.device ?? '디바이스 미정'}
-                  </span>
-                  <span className="run-item-meta">
-                    best F1 {formatMetricValue(row.best_metric_value)}
-                    {row.best_epoch !== null ? ` @ep${row.best_epoch}` : ''} ·{' '}
-                    {formatDate(row.created_at)}
-                  </span>
-                  {row.error ? (
-                    <span className="run-item-error" title={row.error}>
-                      ✗ {row.error}
-                    </span>
-                  ) : null}
-                </button>
+                </div>
               ))}
             </div>
           )}

@@ -14,6 +14,11 @@ from torch.utils.data import DataLoader, Subset
 from pivot.config import Timeframe, TrainingConfig
 from pivot.dataset.loader import TrainingDatasetError, collate_samples
 from pivot.storage.jobs import TERMINAL_STATUSES, JobTransitionError
+from pivot.storage.lifecycle import (
+    RunDeletionBlockedError,
+    RunDeletionFailedError,
+    delete_run,
+)
 from pivot.storage.runs import RunNotFoundError
 from pivot.training.evaluate import evaluate_model
 from pivot.training.checkpoint import CheckpointError, load_verified_checkpoint
@@ -142,6 +147,23 @@ def get_run(run_id: int) -> dict:
         "evaluations": [public_evaluation(row) for row in detail["evaluations"]],
         "artifacts": [public_artifact(row) for row in detail["artifacts"]],
     }
+
+
+@router.delete("/{run_id}")
+def remove_run(run_id: int) -> dict:
+    try:
+        return delete_run(
+            runs=run_repo(),
+            jobs=job_repo(),
+            storage=object_storage(),
+            run_id=run_id,
+        )
+    except RunNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RunDeletionBlockedError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except RunDeletionFailedError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.get("/{run_id}/events")

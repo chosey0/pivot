@@ -1,4 +1,4 @@
-"""데이터셋 삭제와 orphan/stale 정리 (docs/06 §7).
+"""데이터셋/run 삭제와 orphan/stale 정리 (docs/06 §7).
 
 삭제 순서: ① 객체 목록 확정 → ② Storage 객체 삭제 → ③ 성공 후에만 메타데이터
 삭제. 시도 전체는 `dataset_delete` job으로 durable하게 남으므로 부분 실패는
@@ -15,6 +15,7 @@ from collections.abc import Iterator
 
 from pivot.storage.datasets import DatasetRepository
 from pivot.storage.jobs import JobRepository, JobTransitionError
+from pivot.storage.runs import RunRepository
 from pivot.storage.supabase import DATASET_BUCKET
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,14 @@ class DatasetDeletionBlockedError(RuntimeError):
 
 class DatasetDeletionFailedError(RuntimeError):
     """부분 실패 — 실패 원인과 확정 객체 목록이 job에 남아 재시도 가능하다."""
+
+
+class RunDeletionBlockedError(RuntimeError):
+    """실행 중이거나 배포 이력에서 참조 중인 run은 삭제할 수 없다."""
+
+
+class RunDeletionFailedError(RuntimeError):
+    """run 삭제 부분 실패 — 메타데이터와 삭제 job이 남아 재시도 가능하다."""
 
 
 def delete_dataset(
@@ -79,6 +88,63 @@ def delete_dataset(
 
     jobs.finish(job["id"], "succeeded", result={"deleted_objects": len(object_paths)})
     return {"job_id": job["id"], "deleted_objects": len(object_paths)}
+
+
+def delete_run(
+    *,
+    runs: RunRepository,
+    jobs: JobRepository,
+    storage,
+    run_id: int,
+) -> dict:
+    run = runs.get(run_id)  # 없으면 RunNotFoundError
+    if run["status"] in ("queued", "running"):
+        raise RunDeletionBlockedError(
+            f"run {run_id} is {run['status']} — stop it before deletion"
+        )
+    deployment_ids = runs.deployment_ids(run_id)
+    if deployment_ids:
+        raise RunDeletionBlockedError(
+            f"run {run_id} is referenced by live deployment {deployment_ids[0]}"
+        )
+
+    artifacts = runs.detail(run_id)["artifacts"]
+    objects = [
+        {"bucket": artifact["bucket"], "object_path": artifact["object_path"]}
+        for artifact in artifacts
+    ]
+    try:
+        job = jobs.create(
+            kind="run_delete",
+            payload={
+                "run_id": run_id,
+                "run_name": run["name"],
+                "objects": objects,
+            },
+            total_items=len(objects),
+        )
+        jobs.mark_running(job["id"])
+    except Exception as exc:
+        raise RunDeletionFailedError(
+            f"failed to record the run_delete job — nothing was deleted: {exc}"
+        ) from exc
+
+    try:
+        by_bucket: dict[str, list[str]] = {}
+        for item in objects:
+            by_bucket.setdefault(item["bucket"], []).append(item["object_path"])
+        for bucket, paths in by_bucket.items():
+            storage.remove(bucket, paths)
+        runs.delete(run_id)
+    except Exception as exc:
+        jobs.finish(job["id"], "failed", error=str(exc))
+        raise RunDeletionFailedError(
+            f"run {run_id} deletion failed (retry with the same DELETE call; "
+            f"job #{job['id']} keeps the frozen object list): {exc}"
+        ) from exc
+
+    jobs.finish(job["id"], "succeeded", result={"deleted_objects": len(objects)})
+    return {"job_id": job["id"], "deleted_objects": len(objects)}
 
 
 def run_cleanup(

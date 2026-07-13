@@ -65,8 +65,10 @@ provenance, and Diagnostics verifies adjacent marker/sample conservation.
 verified Supabase shards with sample scaling and masking-safe padding; legacy and temporal
 CNN1D models train in a spawned process; run/epoch/evaluation/artifact state is durable in
 Supabase; verified best checkpoints live in private Storage; `/api/runs` exposes start,
-detail, SSE, stop, and prediction evaluation; and the Training tab shows live curves,
+detail, SSE, stop, deletion, and prediction evaluation; and the Training tab shows live curves,
 confusion matrices, per-class metrics, artifacts, and prediction markers on real candles.
+Terminal, never-deployed runs can be deleted object-first through a durable `run_delete` job;
+the corresponding remote-applied migration is `20260713133933_run_delete_job_kind.sql`.
 The integrated flow was browser-verified with dataset 20 on MPS (1 epoch, validation 137
 predictions) and the smoke run/artifact was removed afterward.
 

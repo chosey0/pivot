@@ -10,10 +10,14 @@ from pivot.storage.jobs import JobRepository, JobTransitionError
 from pivot.storage.lifecycle import (
     DatasetDeletionBlockedError,
     DatasetDeletionFailedError,
+    RunDeletionBlockedError,
+    RunDeletionFailedError,
     delete_dataset,
+    delete_run,
     run_cleanup,
 )
-from pivot.storage.supabase import DATASET_BUCKET
+from pivot.storage.runs import RunNotFoundError, RunRepository
+from pivot.storage.supabase import DATASET_BUCKET, MODEL_BUCKET
 
 from fakes import FakeDb, FakeStorage
 from test_batch import Harness
@@ -183,20 +187,144 @@ class TestDeleteDataset:
             delete_dataset(
                 datasets=datasets, jobs=jobs, storage=storage, dataset_id=dataset_id
             )
-        # 객체 삭제가 실패했으니 메타데이터는 남아 있어야 한다 (순서 보장)
         assert datasets.get(dataset_id)["id"] == dataset_id
         assert (DATASET_BUCKET, path) in storage.objects
         failed_jobs = [row for row in db.tables["jobs"] if row["kind"] == "dataset_delete"]
         assert failed_jobs[0]["status"] == "failed"
         assert failed_jobs[0]["payload"]["object_paths"] == [path]
 
-        # 같은 호출이 그대로 재시도가 된다
         delete_dataset(
             datasets=datasets, jobs=jobs, storage=storage, dataset_id=dataset_id
         )
         with pytest.raises(DatasetNotFoundError):
             datasets.get(dataset_id)
         assert (DATASET_BUCKET, path) not in storage.objects
+
+
+def make_deletable_run(db: FakeDb, storage: FakeStorage, *, status: str = "succeeded"):
+    dataset = db.insert(
+        "datasets",
+        {
+            "name": "run dataset",
+            "preset_id": 1,
+            "preset_snapshot": {},
+            "timeframe": "day",
+            "feature_columns": ["Close"],
+            "status": "ready",
+        },
+    )[0]
+    runs = RunRepository(db)
+    run = runs.create(name="삭제 run", dataset_id=dataset["id"], config={}, snapshot={})
+    if status not in ("queued", "running"):
+        runs.finish(run["id"], status)
+    elif status == "running":
+        runs.mark_running(run["id"], "cpu")
+    path = f"runs/{run['id']}/checkpoints/best-0000-{'b' * 12}.pt"
+    storage.upload(MODEL_BUCKET, path, b"checkpoint", content_type="application/octet-stream")
+    artifact = runs.record_artifact(
+        run_id=run["id"],
+        kind="best_checkpoint",
+        object_path=path,
+        size_bytes=10,
+        sha256="b" * 64,
+        metadata={},
+        epoch=0,
+    )
+    runs.record_epoch(run["id"], 0, {"validation_macro_f1": 0.5})
+    db.insert(
+        "evaluations",
+        {
+            "run_id": run["id"],
+            "dataset_id": dataset["id"],
+            "metrics": {},
+            "confusion_matrix": [],
+            "per_class_metrics": {},
+        },
+    )
+    return runs, run["id"], artifact, path
+
+
+class TestDeleteRun:
+    def test_objects_removed_before_run_metadata(self):
+        db, storage = FakeDb(), FakeStorage()
+        runs, run_id, _, path = make_deletable_run(db, storage)
+        jobs = JobRepository(db)
+
+        result = delete_run(runs=runs, jobs=jobs, storage=storage, run_id=run_id)
+
+        assert storage.removed == [[path]]
+        assert (MODEL_BUCKET, path) not in storage.objects
+        with pytest.raises(RunNotFoundError):
+            runs.get(run_id)
+        assert db.tables["training_epochs"] == []
+        assert db.tables["evaluations"] == []
+        assert db.tables["training_artifacts"] == []
+        job = jobs.get(result["job_id"])
+        assert job["kind"] == "run_delete"
+        assert job["status"] == "succeeded"
+        assert job["payload"]["objects"] == [
+            {"bucket": MODEL_BUCKET, "object_path": path}
+        ]
+
+    @pytest.mark.parametrize("status", ["queued", "running"])
+    def test_active_run_is_blocked(self, status):
+        db, storage = FakeDb(), FakeStorage()
+        runs, run_id, _, path = make_deletable_run(db, storage, status=status)
+
+        with pytest.raises(RunDeletionBlockedError):
+            delete_run(
+                runs=runs,
+                jobs=JobRepository(db),
+                storage=storage,
+                run_id=run_id,
+            )
+
+        assert runs.get(run_id)["status"] == status
+        assert (MODEL_BUCKET, path) in storage.objects
+        assert storage.removed == []
+
+    def test_deployment_history_blocks_deletion_before_storage(self):
+        db, storage = FakeDb(), FakeStorage()
+        runs, run_id, artifact, path = make_deletable_run(db, storage)
+        db.insert(
+            "live_deployments",
+            {"run_id": run_id, "artifact_id": artifact["id"], "active": False},
+        )
+
+        with pytest.raises(RunDeletionBlockedError, match="live deployment"):
+            delete_run(
+                runs=runs,
+                jobs=JobRepository(db),
+                storage=storage,
+                run_id=run_id,
+            )
+
+        assert runs.get(run_id)["id"] == run_id
+        assert (MODEL_BUCKET, path) in storage.objects
+        assert storage.removed == []
+
+    def test_storage_failure_keeps_run_metadata_for_retry(self):
+        class FlakyStorage(FakeStorage):
+            fail_next_remove = True
+
+            def remove(self, bucket: str, paths: list[str]) -> None:
+                if self.fail_next_remove:
+                    self.fail_next_remove = False
+                    raise RuntimeError("storage unavailable")
+                super().remove(bucket, paths)
+
+        db, storage = FakeDb(), FlakyStorage()
+        runs, run_id, _, path = make_deletable_run(db, storage)
+        jobs = JobRepository(db)
+
+        with pytest.raises(RunDeletionFailedError):
+            delete_run(runs=runs, jobs=jobs, storage=storage, run_id=run_id)
+        assert runs.get(run_id)["id"] == run_id
+        assert (MODEL_BUCKET, path) in storage.objects
+
+        delete_run(runs=runs, jobs=jobs, storage=storage, run_id=run_id)
+        with pytest.raises(RunNotFoundError):
+            runs.get(run_id)
 
 
 class TestCleanup:

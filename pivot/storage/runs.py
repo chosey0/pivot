@@ -181,6 +181,19 @@ class RunRepository:
     def delete_artifact(self, artifact_id: int) -> None:
         self.db.delete("training_artifacts", filters={"id": f"eq.{artifact_id}"})
 
+    def deployment_ids(self, run_id: int) -> list[int]:
+        return [
+            int(row["id"])
+            for row in self.db.select(
+                "live_deployments",
+                filters={"run_id": f"eq.{run_id}"},
+                columns="id",
+            )
+        ]
+
+    def delete(self, run_id: int) -> None:
+        self.db.delete("training_runs", filters={"id": f"eq.{run_id}"})
+
     def _update(self, run_id: int, values: dict, *, status: str) -> dict:
         rows = self.db.update(
             "training_runs",

@@ -110,7 +110,18 @@ class PresetRepository:
         return rows[0]
 
     def delete(self, preset_id: int) -> None:
-        """smoke test 정리용 hard delete. 운영 경로는 archive를 쓴다."""
+        """참조 데이터셋이 없는 프리셋만 영구 삭제한다."""
+        self.get(preset_id)
+        referenced = self.db.select(
+            "datasets",
+            filters={"preset_id": f"eq.{preset_id}"},
+            columns="id",
+            limit=1,
+        )
+        if referenced:
+            raise PresetConflictError(
+                f"preset {preset_id} is referenced by dataset {referenced[0]['id']}"
+            )
         self.db.delete(TABLE, filters={"id": f"eq.{preset_id}"})
 
     def _insert(self, name: str, version: int, preset: PreprocessPreset) -> dict:

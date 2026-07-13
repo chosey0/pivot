@@ -135,6 +135,23 @@ export function Datasets() {
     }
   }
 
+  async function removePreset(preset: PresetRow) {
+    if (
+      !window.confirm(
+        `프리셋 '${preset.name} v${preset.version}'을 영구 삭제할까요? 참조 중인 데이터셋이 있으면 삭제되지 않습니다.`,
+      )
+    )
+      return
+    setError(null)
+    try {
+      await api.deletePreset(preset.id)
+      setMessage(`프리셋 '${preset.name} v${preset.version}'을 삭제했습니다.`)
+      refreshPresets()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   function watchJob(jobId: number) {
     eventSourceRef.current?.close()
     const source = new EventSource(`/api/jobs/${jobId}/events`)
@@ -431,14 +448,24 @@ export function Datasets() {
                       {formatDate(preset.created_at)}
                     </span>
                   </button>
-                  <button
-                    className="ghost"
-                    onClick={() => archivePreset(preset)}
-                    title="보관 (batch 대상에서 제외)"
-                    type="button"
-                  >
-                    보관
-                  </button>
+                  <span className="row-actions">
+                    <button
+                      className="ghost"
+                      onClick={() => archivePreset(preset)}
+                      title="보관 (batch 대상에서 제외)"
+                      type="button"
+                    >
+                      보관
+                    </button>
+                    <button
+                      className="ghost danger"
+                      onClick={() => removePreset(preset)}
+                      title="참조 데이터셋이 없는 프리셋만 영구 삭제할 수 있습니다"
+                      type="button"
+                    >
+                      삭제
+                    </button>
+                  </span>
                 </div>
               ))}
             </div>

@@ -28,16 +28,11 @@
 }
 
 .run-item {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 10px;
-  border: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
   border-bottom: 1px solid #f3f4f6;
-  border-radius: 0;
   background: #ffffff;
-  text-align: left;
-  cursor: pointer;
 }
 
 .run-item:last-child {
@@ -48,18 +43,44 @@
   background: #eff6ff;
 }
 
-.run-item-head {
+.run-item-main {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
 }
 
-.run-item-head strong {
+.run-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.run-item-title {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.run-item-actions {
+  display: flex;
+  align-items: center;
+  padding: 8px 8px 8px 0;
+}
+
+.run-item-delete {
+  min-width: 44px;
+  padding: 4px 7px;
+  border-color: #fecaca;
+  background: #ffffff;
+  font-size: 11px;
 }
 
 .run-item-meta {

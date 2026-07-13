@@ -40,6 +40,7 @@ export function Diagnostics() {
 
   const [reports, setReports] = useState<DiagnosticReportRow[]>([])
   const [current, setCurrent] = useState<DiagnosticReportDetail | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(true)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -245,45 +246,6 @@ export function Diagnostics() {
           </p>
         </section>
 
-        <section className="control-section grow">
-          <div className="section-title-row">
-            <h2>리포트 이력</h2>
-            <button onClick={refreshReports} type="button">
-              새로고침
-            </button>
-          </div>
-          {reports.length === 0 ? (
-            <p className="empty">저장된 진단 리포트가 없습니다.</p>
-          ) : (
-            <div className="watch-table">
-              {reports.map((report) => (
-                <div
-                  className={report.id === current?.id ? 'watch-row selected' : 'watch-row'}
-                  key={report.id}
-                >
-                  <button
-                    className="watch-main"
-                    onClick={() => openReport(report.id)}
-                    type="button"
-                  >
-                    <strong>
-                      #{report.id} {TARGET_TEXT[report.target_type]}{' '}
-                      <em className={`diag-status ${report.status}`}>
-                        {STATUS_TEXT[report.status]}
-                      </em>
-                    </strong>
-                    <span>
-                      통과 {report.summary.passed} · 경고 {report.summary.warning} · 실패{' '}
-                      {report.summary.failed}
-                      {' · '}
-                      {formatDate(report.created_at)}
-                    </span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
       </aside>
 
       <section className="datasets-main">
@@ -293,7 +255,7 @@ export function Diagnostics() {
           <section className="placeholder">
             <h2>데이터 진단</h2>
             <p>
-              왼쪽에서 진단 대상을 선택해 실행하거나, 리포트 이력에서 저장된 리포트를
+              왼쪽에서 진단 대상을 선택해 실행하거나, 오른쪽 리포트 이력에서 저장된 리포트를
               열어보세요.
             </p>
           </section>
@@ -333,6 +295,59 @@ export function Diagnostics() {
           </section>
         )}
       </section>
+
+      <aside className={historyOpen ? 'diagnostics-history' : 'diagnostics-history collapsed'}>
+        <div className="section-title-row">
+          {historyOpen ? <h2>리포트 이력</h2> : null}
+          <div className="row-actions">
+            {historyOpen ? (
+              <button onClick={refreshReports} type="button">
+                새로고침
+              </button>
+            ) : null}
+            <button
+              aria-expanded={historyOpen}
+              onClick={() => setHistoryOpen((open) => !open)}
+              title={historyOpen ? '리포트 이력 접기' : '리포트 이력 열기'}
+              type="button"
+            >
+              {historyOpen ? '접기' : '이력 열기'}
+            </button>
+          </div>
+        </div>
+        {historyOpen &&
+          (reports.length === 0 ? (
+            <p className="empty">저장된 진단 리포트가 없습니다.</p>
+          ) : (
+            <div className="watch-table">
+              {reports.map((report) => (
+                <div
+                  className={report.id === current?.id ? 'watch-row selected' : 'watch-row'}
+                  key={report.id}
+                >
+                  <button
+                    className="watch-main"
+                    onClick={() => openReport(report.id)}
+                    type="button"
+                  >
+                    <strong>
+                      #{report.id} {TARGET_TEXT[report.target_type]}{' '}
+                      <em className={`diag-status ${report.status}`}>
+                        {STATUS_TEXT[report.status]}
+                      </em>
+                    </strong>
+                    <span>
+                      통과 {report.summary.passed} · 경고 {report.summary.warning} · 실패{' '}
+                      {report.summary.failed}
+                      {' · '}
+                      {formatDate(report.created_at)}
+                    </span>
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+      </aside>
     </>
   )
 }

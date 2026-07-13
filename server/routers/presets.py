@@ -50,3 +50,14 @@ def archive_preset(preset_id: int) -> dict:
         raise HTTPException(404, str(exc)) from exc
     except PresetConflictError as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+@router.delete("/{preset_id}/permanent")
+def delete_preset(preset_id: int) -> dict:
+    try:
+        preset_repo().delete(preset_id)
+    except PresetNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PresetConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"preset_id": preset_id}

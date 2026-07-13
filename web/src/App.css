@@ -1315,6 +1315,31 @@ button:disabled {
 
 /* ── 데이터 진단 (M3-B) ──────────────────────────────────────── */
 
+.diagnostics-history {
+  display: flex;
+  flex: 0 0 340px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  border-left: 1px solid #e5e7eb;
+  background: #ffffff;
+}
+
+.diagnostics-history.collapsed {
+  flex-basis: 92px;
+}
+
+.diagnostics-history > .watch-table {
+  flex: 1;
+}
+
+.diagnostics-history h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
 .diag-status {
   font-style: normal;
   font-weight: 700;

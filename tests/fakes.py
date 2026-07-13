@@ -188,6 +188,17 @@ class FakeDb:
                 for row in self.tables["dataset_shards"]
                 if row["dataset_id"] not in dataset_ids
             ]
+        elif table == "training_presets":
+            preset_ids = {row["id"] for row in deleted}
+            for report in self.tables["diagnostic_reports"]:
+                if report.get("preset_id") in preset_ids:
+                    report["preset_id"] = None
+        elif table == "training_runs":
+            run_ids = {row["id"] for row in deleted}
+            for child in ("training_epochs", "evaluations", "training_artifacts"):
+                self.tables[child] = [
+                    row for row in self.tables[child] if row["run_id"] not in run_ids
+                ]
         elif table == "jobs":
             job_ids = {row["id"] for row in deleted}
             self.tables["job_events"] = [

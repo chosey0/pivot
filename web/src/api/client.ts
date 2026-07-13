@@ -417,6 +417,10 @@ export const api = {
     }),
   archivePreset: (presetId: number) =>
     fetchJson<PresetRow>(`/api/presets/${presetId}`, { method: 'DELETE' }),
+  deletePreset: (presetId: number) =>
+    fetchJson<{ preset_id: number }>(`/api/presets/${presetId}/permanent`, {
+      method: 'DELETE',
+    }),
   preprocessBatch: (presetId: number, datasetName: string, symbols: string[]) =>
     fetchJson<BatchStartResponse>('/api/preprocess/batch', {
       method: 'POST',
