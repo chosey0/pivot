@@ -104,6 +104,28 @@ CNN1D 학습 (3-클래스 분류)
 데이터셋 명명 규칙: `kis_day20_ma20120_cls3`
 = 한국투자(kis) + 일봉/프랙탈 n=20(day20) + 이평 20/120 사용(ma20120) + 3클래스(cls3)
 
+### 4.1 Pivot 재구현의 확정 샘플 페어링 계약 (구현 예정)
+
+위 `create_dataset()` 설명은 구 프로젝트의 고정 길이 동작이다. Pivot은 가변 길이 스윙
+샘플을 사용하며, 프리셋의 `labeling.sample_pairing`으로 다음 두 규칙을 구분한다.
+
+- `adjacent_markers_v1` (**신규 프리셋 기본값**): 프랙탈 탐지, plateau 정규화, MA 정렬·거래대금
+  같은 point filter와 클리닝 세그먼트 분할을 마친 뒤 남은 마커를 시간순으로 정렬하고,
+  바로 이웃한 `(i-1, i)`를 하나의 pair로 만든다. 입력 윈도우는 두 마커 위치를 모두 포함한다.
+  - 같은 종류: base label `2`(무시)
+  - 다른 종류: 도착 마커가 저점이면 `0`, 고점이면 `1`
+  - 예: `L1 → L2 → H`는 `[2, 1]`, `L1 → L2 → L3 → H`는 `[2, 2, 1]`
+  - 선택한 MA/스윙 무시 조건은 base `0/1`을 `2`로 덮어쓴다.
+  - `cls2_drop`은 최종 label `2`인 **샘플만** 제외한다. 도착 마커는 다음 인접 pair의
+    anchor로 남으므로 `L1 → L2 → H`에서 `L1→L2`를 제외해도 `L2→H`는 유지된다.
+- `latest_opposite_v1` (**저장 legacy fallback**): 현재 구현의 종류별 최신 반대 마커 페어링과
+  point ignore → `cls2_drop` point 제거 → pairing 순서를 그대로 재현한다.
+
+저장된 schema v1 프리셋·dataset/run snapshot에 `labeling.sample_pairing`이 없으면
+`latest_opposite_v1`로 읽는다. 저장 row와 무관한 새 preview 요청과 새 프리셋은
+`adjacent_markers_v1`을 사용한다. 프랙탈 탐지, 확정 lag, plateau, 클리닝, point filter 규칙은
+이 변경으로 달라지지 않는다.
+
 ## 5. 배치 구성 — `collate()`
 
 원본: `scripts/utils/collate.py:9`

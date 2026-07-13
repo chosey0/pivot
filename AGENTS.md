@@ -52,6 +52,12 @@ boundary. Cleaning policy and outcomes are preserved in preset snapshots and dat
 symbol metadata. New presets also default to `fractal.tie_policy=plateau_last`, collapsing
 consecutive equal-price extrema to the last label; Diagnostics reports residual 90% overlap
 clusters without deleting samples. Legacy stored presets without this field remain `all`.
+**Approved preprocessing contract (implementation pending)**: new presets will default to
+`labeling.sample_pairing=adjacent_markers_v1`. Retained markers are paired by chronological
+adjacency, same-kind pairs are label 2, and opposite-kind pairs use the destination low/high
+label. `cls2_drop` removes label-2 samples without removing the destination marker as the next
+adjacent anchor. Stored presets/snapshots without this field remain `latest_opposite_v1` for
+reproducibility.
 
 **M4 (training + evaluation) done**: `pivot/dataset/loader.py` and shared transforms load
 verified Supabase shards with sample scaling and masking-safe padding; legacy and temporal
@@ -116,8 +122,9 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
   store full immutable snapshots for reproducibility.
 - Only the FastAPI backend may use the Supabase secret/service-role key. The browser must
   never receive it or access private training buckets directly.
-- Label convention: `0` = fractal low, `1` = fractal high, `2` = ignore (MA20 < MA120 at
-  the labeled bar).
+- Label convention: `0` = fractal low, `1` = fractal high, `2` = ignore. Label 2 is the
+  base label for same-kind adjacent marker pairs and may also override 0/1 through optional
+  MA/swing ignore rules.
 - When reimplementing legacy behavior, apply backlog group A fixes (float features, no
   Time column in features, masking-safe padding, symbol-level train/val split, per-class
   metrics, …) — see `docs/02_improvement_backlog.md`.
