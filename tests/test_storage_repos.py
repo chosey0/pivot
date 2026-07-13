@@ -9,6 +9,7 @@ from pivot.storage.presets import (
     PresetConflictError,
     PresetNotFoundError,
     PresetRepository,
+    resolve_stored_preset,
     validate_preset,
 )
 
@@ -71,6 +72,34 @@ class TestPresetRepository:
         assert validate_preset(
             legacy, schema_version=PRESET_SCHEMA_VERSION
         ).fractal.tie_policy == "all"
+
+    def test_new_preset_defaults_to_adjacent_pairing(self):
+        assert preset().labeling.sample_pairing == "adjacent_markers_v1"
+
+    def test_legacy_preset_without_pairing_uses_latest_opposite(self):
+        legacy = preset().model_dump(mode="json")
+        legacy["labeling"].pop("sample_pairing")
+
+        resolved = resolve_stored_preset(
+            legacy, schema_version=PRESET_SCHEMA_VERSION
+        )
+
+        assert resolved.labeling.sample_pairing == "latest_opposite_v1"
+        assert "sample_pairing" not in legacy["labeling"]
+
+    def test_repository_materializes_legacy_pairing_on_read(self):
+        db = FakeDb()
+        repo = PresetRepository(db)
+        created = repo.create(preset())
+        db.tables["training_presets"][0]["preset"]["labeling"].pop("sample_pairing")
+
+        row = repo.get(created["id"])
+
+        assert row["preset"]["labeling"]["sample_pairing"] == "latest_opposite_v1"
+        assert (
+            "sample_pairing"
+            not in db.tables["training_presets"][0]["preset"]["labeling"]
+        )
 
     def test_validate_rejects_unknown_fields_value(self):
         broken = preset().model_dump()

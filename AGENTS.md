@@ -52,12 +52,14 @@ boundary. Cleaning policy and outcomes are preserved in preset snapshots and dat
 symbol metadata. New presets also default to `fractal.tie_policy=plateau_last`, collapsing
 consecutive equal-price extrema to the last label; Diagnostics reports residual 90% overlap
 clusters without deleting samples. Legacy stored presets without this field remain `all`.
-**Approved preprocessing contract (implementation pending)**: new presets will default to
+**Sample pairing contract implemented**: new presets default to
 `labeling.sample_pairing=adjacent_markers_v1`. Retained markers are paired by chronological
 adjacency, same-kind pairs are label 2, and opposite-kind pairs use the destination low/high
 label. `cls2_drop` removes label-2 samples without removing the destination marker as the next
 adjacent anchor. Stored presets/snapshots without this field remain `latest_opposite_v1` for
 reproducibility.
+Preview markers expose incoming sample indices, batch symbol metadata preserves pairing
+provenance, and Diagnostics verifies adjacent marker/sample conservation.
 
 **M4 (training + evaluation) done**: `pivot/dataset/loader.py` and shared transforms load
 verified Supabase shards with sample scaling and masking-safe padding; legacy and temporal

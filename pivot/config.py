@@ -172,12 +172,15 @@ class LabelingConfig(BaseModel):
     - cls3: 무시 규칙에 걸린 고점/저점을 label 2로 덮어씀 (구 방식)
     - cls2_drop: 무시 규칙에 걸린 샘플을 제외하고 0/1만 유지
 
-    ignore_swing_pct는 두 번째 무시 규칙이다: 스윙 시작(직전 반대 프랙탈)과
-    끝(현재 프랙탈) 가격의 변화율(%)이 이 값 미만이면 잔진동으로 보고 무시(2)로
+    ignore_swing_pct는 두 번째 무시 규칙이다: 선택한 pair의 시작 마커와
+    끝 마커 가격의 변화율(%)이 이 값 미만이면 잔진동으로 보고 무시(2)로
     라벨한다. None이면 사용하지 않는다. ignore_rule과 독립적으로 조합된다.
     """
 
     mode: Literal["cls3", "cls2_drop"] = "cls3"
+    sample_pairing: Literal[
+        "adjacent_markers_v1", "latest_opposite_v1"
+    ] = "adjacent_markers_v1"
     ignore_rule: Literal["ma20<ma120", "none"] = "ma20<ma120"
     ignore_swing_pct: float | None = None
 

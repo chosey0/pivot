@@ -72,6 +72,10 @@ export interface PreviewMarker {
   kind: 'low' | 'high'
   label: 0 | 1 | 2
   price: number
+  incoming_sample_label: 0 | 1 | 2 | null
+  incoming_sample_included: boolean
+  incoming_sample_index: number | null
+  incoming_sample_drop_reason: 'unpaired' | 'invalid_position' | 'label2' | 'nan' | null
 }
 
 export interface PreviewSample {
@@ -95,12 +99,22 @@ export interface PreviewStats {
   dropped_filters: number
   dropped_ignore: number
   swing_ignored: number
+  pairing_stats: PairingStats
   confirmation_lag: number
   overlap_clusters: OverlapClusterStats
   cleaning: CleaningStats
 }
 
 export type FractalTiePolicy = 'all' | 'plateau_last'
+export type SamplePairing = 'adjacent_markers_v1' | 'latest_opposite_v1'
+
+export interface PairingStats {
+  rule: SamplePairing
+  adjacent_edges: number
+  unpaired_markers: number
+  dropped_invalid_position: number
+  dropped_label2: number
+}
 
 export interface OverlapClusterStats {
   tie_policy: FractalTiePolicy
@@ -152,6 +166,7 @@ export interface PreviewParams {
   features: string[]
   labeling: {
     mode: 'cls3' | 'cls2_drop'
+    sample_pairing: SamplePairing
     ignore_rule: 'ma20<ma120' | 'none'
     ignore_swing_pct: number | null
   }

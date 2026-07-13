@@ -310,6 +310,9 @@ def _process_symbol(
         },
         "length_stats": {
             **_length_stats(result.samples),
+            "points": result.stats["points"],
+            "dropped_nan": result.stats["dropped_nan"],
+            "pairing_stats": result.stats["pairing_stats"],
             "overlap_clusters": result.stats["overlap_clusters"],
         },
         "shard_count": len(shards),

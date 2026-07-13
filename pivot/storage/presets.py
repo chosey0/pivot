@@ -18,21 +18,37 @@ class PresetConflictError(ValueError):
     pass
 
 
-def validate_preset(preset_json: dict, *, schema_version: int) -> PreprocessPreset:
-    """저장/로드 경계에서 프리셋 전체 JSON과 schema_version을 검증한다."""
+def resolve_stored_preset(preset_json: dict, *, schema_version: int) -> PreprocessPreset:
+    """저장된 프리셋의 legacy 누락값을 재현 가능한 설정으로 materialize한다."""
     if schema_version != PRESET_SCHEMA_VERSION:
         raise ValueError(
             f"unsupported preset schema_version {schema_version} "
             f"(expected {PRESET_SCHEMA_VERSION})"
         )
-    compatible = {**preset_json, "fractal": dict(preset_json.get("fractal") or {})}
-    # schema v1 초기에 저장된 프리셋은 tie를 모두 라벨했다. 누락 필드를 새 기본값으로
-    # 해석하면 과거 프리셋의 재실행 결과가 달라지므로 명시적으로 legacy 동작을 보존한다.
+    compatible = {
+        **preset_json,
+        "fractal": dict(preset_json.get("fractal") or {}),
+        "labeling": dict(preset_json.get("labeling") or {}),
+    }
+    # schema v1 초기 누락값을 새 기본값으로 해석하면 과거 결과가 달라진다.
     compatible["fractal"].setdefault("tie_policy", "all")
+    compatible["labeling"].setdefault("sample_pairing", "latest_opposite_v1")
     preset = PreprocessPreset.model_validate(compatible)
     if not preset.name.strip():
         raise ValueError("saved presets require a non-empty name")
     return preset
+
+
+def validate_preset(preset_json: dict, *, schema_version: int) -> PreprocessPreset:
+    """하위 호환 이름. 저장 프리셋 검증은 resolver와 같은 경로를 사용한다."""
+    return resolve_stored_preset(preset_json, schema_version=schema_version)
+
+
+def _materialize_row(row: dict) -> dict:
+    preset = resolve_stored_preset(
+        row["preset"], schema_version=int(row["schema_version"])
+    )
+    return {**row, "preset": preset.model_dump(mode="json")}
 
 
 class PresetRepository:
@@ -41,15 +57,18 @@ class PresetRepository:
 
     def list(self, *, include_archived: bool = False) -> list[dict]:
         filters = {} if include_archived else {"archived_at": "is.null"}
-        return self.db.select(
-            TABLE, filters=filters, order="name.asc,version.desc"
-        )
+        return [
+            _materialize_row(row)
+            for row in self.db.select(
+                TABLE, filters=filters, order="name.asc,version.desc"
+            )
+        ]
 
     def get(self, preset_id: int) -> dict:
         rows = self.db.select(TABLE, filters={"id": f"eq.{preset_id}"})
         if not rows:
             raise PresetNotFoundError(f"preset {preset_id} not found")
-        return rows[0]
+        return _materialize_row(rows[0])
 
     def create(self, preset: PreprocessPreset) -> dict:
         """새 이름의 프리셋을 version=1로 만든다. 이름이 있으면 새 버전 생성을 유도한다."""

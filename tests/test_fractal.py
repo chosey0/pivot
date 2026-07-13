@@ -113,7 +113,13 @@ class TestLabelPoints:
 
     def test_cls2_drop_removes_ignored(self):
         df = self.make_trend_df(invert=True)
-        points, stats = label_points(df, n=5, labeling=LabelingConfig(mode="cls2_drop"))
+        points, stats = label_points(
+            df,
+            n=5,
+            labeling=LabelingConfig(
+                mode="cls2_drop", sample_pairing="latest_opposite_v1"
+            ),
+        )
         assert (points["label"] != 2).all() if not points.empty else True
         assert stats["dropped_ignore"] > 0
 
@@ -190,12 +196,17 @@ class TestBuildSamples:
         # 고점@30 → 저점@50: 저점 샘플의 윈도우 = 직전 고점(30)부터 저점(50)까지.
         df = self.make_swing_df(80, highs_at=(30,), lows_at=(50,))
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
-        samples, dropped_nan, dropped_unpaired = build_samples(
-            df, points, feature_columns=["Open", "High", "Low", "Close"]
+        built = build_samples(
+            df,
+            points,
+            feature_columns=["Open", "High", "Low", "Close"],
+            labeling=LabelingConfig(
+                ignore_rule="none", sample_pairing="latest_opposite_v1"
+            ),
         )
-        assert dropped_nan == 0
-        assert dropped_unpaired == 1  # 첫 고점은 직전 저점 마커가 없음
-        [sample] = samples
+        assert built.dropped_nan == 0
+        assert built.dropped_unpaired == 1  # 첫 고점은 직전 저점 마커가 없음
+        [sample] = built.samples
         assert sample.kind == "low"
         assert sample.start_position == 30
         assert sample.end_position == 50
@@ -205,22 +216,32 @@ class TestBuildSamples:
         # 고점@20 → 저점@35 → 고점@55: 저점은 20부터, 마지막 고점은 35부터.
         df = self.make_swing_df(90, highs_at=(20, 55), lows_at=(35,))
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
-        samples, _, dropped_unpaired = build_samples(
-            df, points, feature_columns=["Close"]
+        built = build_samples(
+            df,
+            points,
+            feature_columns=["Close"],
+            labeling=LabelingConfig(
+                ignore_rule="none", sample_pairing="latest_opposite_v1"
+            ),
         )
-        assert dropped_unpaired == 1
-        windows = {(s.kind, s.start_position, s.end_position) for s in samples}
+        assert built.dropped_unpaired == 1
+        windows = {(s.kind, s.start_position, s.end_position) for s in built.samples}
         assert windows == {("low", 20, 35), ("high", 35, 55)}
 
     def test_first_point_without_opposite_marker_is_dropped(self):
         df = self.make_swing_df(40, highs_at=(20,))
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
         assert len(points) == 1
-        samples, _, dropped_unpaired = build_samples(
-            df, points, feature_columns=["Close"]
+        built = build_samples(
+            df,
+            points,
+            feature_columns=["Close"],
+            labeling=LabelingConfig(
+                ignore_rule="none", sample_pairing="latest_opposite_v1"
+            ),
         )
-        assert samples == []
-        assert dropped_unpaired == 1
+        assert built.samples == []
+        assert built.dropped_unpaired == 1
 
     def test_nan_feature_window_is_dropped(self):
         # MA20 확보 전 구간을 포함한 윈도우는 피처 NaN → 샘플 제외.
@@ -228,12 +249,121 @@ class TestBuildSamples:
         df["20"] = df["Close"].rolling(20).mean()
         points, _ = label_points(df, n=5, labeling=LabelingConfig(ignore_rule="none"))
         assert len(points) == 2
-        samples, dropped_nan, dropped_unpaired = build_samples(
-            df, points, feature_columns=["Close", "20"]
+        built = build_samples(
+            df,
+            points,
+            feature_columns=["Close", "20"],
+            labeling=LabelingConfig(
+                ignore_rule="none", sample_pairing="latest_opposite_v1"
+            ),
         )
-        assert samples == []
-        assert dropped_unpaired == 1  # 고점@10
-        assert dropped_nan == 1  # 저점@25 윈도우 [10, 25]에 MA20 NaN 포함
+        assert built.samples == []
+        assert built.dropped_unpaired == 1  # 고점@10
+        assert built.dropped_nan == 1  # 저점@25 윈도우 [10, 25]에 MA20 NaN 포함
+
+    def test_adjacent_pairing_labels_same_kind_and_keeps_next_anchor(self):
+        df = self.make_swing_df(50)
+        points = pd.DataFrame(
+            [
+                {"position": 10, "kind": "low", "price": 90.0, "label": 0},
+                {"position": 20, "kind": "low", "price": 91.0, "label": 0},
+                {"position": 30, "kind": "high", "price": 110.0, "label": 1},
+            ],
+            index=df.index[[10, 20, 30]],
+        )
+
+        built = build_samples(
+            df,
+            points,
+            ["Close"],
+            labeling=LabelingConfig(ignore_rule="none"),
+        )
+
+        assert [sample.label for sample in built.samples] == [2, 1]
+        assert [
+            (sample.start_position, sample.end_position) for sample in built.samples
+        ] == [(10, 20), (20, 30)]
+        assert built.pairing_stats == {
+            "rule": "adjacent_markers_v1",
+            "adjacent_edges": 2,
+            "unpaired_markers": 1,
+            "dropped_invalid_position": 0,
+            "dropped_label2": 0,
+        }
+
+    def test_adjacent_cls2_drops_label2_sample_but_keeps_marker_anchor(self):
+        df = self.make_swing_df(50)
+        points = pd.DataFrame(
+            [
+                {"position": 10, "kind": "low", "price": 90.0, "label": 0},
+                {"position": 20, "kind": "low", "price": 91.0, "label": 0},
+                {"position": 30, "kind": "high", "price": 110.0, "label": 1},
+            ],
+            index=df.index[[10, 20, 30]],
+        )
+
+        built = build_samples(
+            df,
+            points,
+            ["Close"],
+            labeling=LabelingConfig(mode="cls2_drop", ignore_rule="none"),
+        )
+
+        assert [(sample.start_position, sample.end_position) for sample in built.samples] == [
+            (20, 30)
+        ]
+        assert built.dropped_ignore == 1
+        assert built.pairing_stats["dropped_label2"] == 1
+        assert built.incoming[1] == {
+            "incoming_sample_label": 2,
+            "incoming_sample_included": False,
+            "incoming_sample_index": None,
+            "incoming_sample_drop_reason": "label2",
+        }
+        assert built.incoming[2]["incoming_sample_index"] == 0
+
+    def test_adjacent_pairing_counts_same_position_as_invalid(self):
+        df = self.make_swing_df(40)
+        points = pd.DataFrame(
+            [
+                {"position": 10, "kind": "high", "price": 110.0, "label": 1},
+                {"position": 10, "kind": "low", "price": 90.0, "label": 0},
+                {"position": 20, "kind": "high", "price": 120.0, "label": 1},
+            ],
+            index=df.index[[10, 10, 20]],
+        )
+
+        built = build_samples(df, points, ["Close"], labeling=LabelingConfig(ignore_rule="none"))
+
+        assert [(sample.start_position, sample.end_position) for sample in built.samples] == [
+            (10, 20)
+        ]
+        assert built.pairing_stats["dropped_invalid_position"] == 1
+
+    def test_latest_opposite_pairing_preserves_legacy_windows(self):
+        df = self.make_swing_df(50)
+        points = pd.DataFrame(
+            [
+                {"position": 10, "kind": "low", "price": 90.0, "label": 0},
+                {"position": 20, "kind": "low", "price": 91.0, "label": 0},
+                {"position": 30, "kind": "high", "price": 110.0, "label": 1},
+            ],
+            index=df.index[[10, 20, 30]],
+        )
+
+        built = build_samples(
+            df,
+            points,
+            ["Close"],
+            labeling=LabelingConfig(
+                ignore_rule="none", sample_pairing="latest_opposite_v1"
+            ),
+        )
+
+        assert [(sample.start_position, sample.end_position) for sample in built.samples] == [
+            (20, 30)
+        ]
+        assert built.dropped_unpaired == 2
 
 
 class TestRunPreprocess:
@@ -248,9 +378,13 @@ class TestRunPreprocess:
         stats = result.stats
         assert stats["bars"] == 400
         assert stats["samples"] == sum(stats["class_counts"].values())
-        assert (
-            stats["points"]
-            == stats["samples"] + stats["dropped_nan"] + stats["dropped_unpaired"]
+        pairing = stats["pairing_stats"]
+        assert stats["points"] == pairing["adjacent_edges"] + pairing["unpaired_markers"]
+        assert pairing["adjacent_edges"] == (
+            stats["samples"]
+            + pairing["dropped_label2"]
+            + stats["dropped_nan"]
+            + pairing["dropped_invalid_position"]
         )
         assert stats["confirmation_lag"] == confirmation_lag(20)
         assert result.feature_columns == ["Open", "High", "Low", "Close", "20", "120"]
@@ -278,7 +412,10 @@ class TestSwingIgnoreRule:
             df,
             n=5,
             labeling=LabelingConfig(
-                mode="cls3", ignore_rule="none", ignore_swing_pct=small + 1.0
+                mode="cls3",
+                ignore_rule="none",
+                ignore_swing_pct=small + 1.0,
+                sample_pairing="latest_opposite_v1",
             ),
         )
         assert list(points["position"]) == [5, 10, 15, 20]
@@ -292,7 +429,10 @@ class TestSwingIgnoreRule:
             df,
             n=5,
             labeling=LabelingConfig(
-                mode="cls3", ignore_rule="none", ignore_swing_pct=small - 1.0
+                mode="cls3",
+                ignore_rule="none",
+                ignore_swing_pct=small - 1.0,
+                sample_pairing="latest_opposite_v1",
             ),
         )
         assert list(points["label"]) == [0, 1, 0, 1]
@@ -304,7 +444,10 @@ class TestSwingIgnoreRule:
             df,
             n=5,
             labeling=LabelingConfig(
-                mode="cls2_drop", ignore_rule="none", ignore_swing_pct=small + 1.0
+                mode="cls2_drop",
+                ignore_rule="none",
+                ignore_swing_pct=small + 1.0,
+                sample_pairing="latest_opposite_v1",
             ),
         )
         # 작은 스윙 고점@10은 제거되고, 제거된 지점은 다음 스윙의 anchor가 아니다

@@ -1,8 +1,8 @@
 """시퀀스 샘플 생성 (구 create_dataset의 max_len 고정 윈도우를 대체).
 
-입력 윈도우는 **직전 반대 종류 프랙탈 마커부터 현재 마커까지**의 스윙 구간이다:
-고점 샘플은 직전 저점 마커 ~ 해당 고점, 저점 샘플은 직전 고점 마커 ~ 해당 저점
-(양 끝 봉 포함, 가변 길이). 직전 반대 마커가 없는 첫 지점은 샘플에서 제외한다.
+입력 윈도우는 프리셋의 pairing 전략이 선택한 두 프랙탈 마커 사이의 가변 길이
+구간이다. 신규 기본값은 시간순 인접 마커, legacy fallback은 최근 반대 마커이며
+양 끝 봉을 모두 포함한다.
 구 방식과 달리 (백로그 A그룹):
 - low/high 루프를 label_points로 통합 (A7)
 - 피처는 float로 유지, int64 캐스팅 없음 (A1)
@@ -22,7 +22,7 @@ from pivot.cleaning.kronos import (
     CleanSegment,
     analyze_kline_quality,
 )
-from pivot.config import PreprocessPreset
+from pivot.config import LabelingConfig, PreprocessPreset
 from pivot.ingestion.indicators import add_moving_averages
 from pivot.labeling.fractal import confirmation_lag, label_points
 from pivot.dataset.overlap import analyze_overlap_clusters
@@ -38,6 +38,17 @@ class Sample:
     kind: str  # low | high
     price: float
     length: int
+
+
+@dataclass
+class SampleBuildResult:
+    samples: list[Sample]
+    dropped_nan: int
+    dropped_unpaired: int
+    dropped_ignore: int
+    swing_ignored: int
+    pairing_stats: dict
+    incoming: list[dict]
 
 
 @dataclass
@@ -59,18 +70,23 @@ def build_samples(
     df: pd.DataFrame,
     points: pd.DataFrame,
     feature_columns: list[str],
-) -> tuple[list[Sample], int, int]:
-    """라벨 지점별 시퀀스 샘플 목록과 (NaN 제외, 짝 없음 제외) 수를 반환한다.
+    labeling: LabelingConfig | None = None,
+) -> SampleBuildResult:
+    """설정된 pairing 전략으로 라벨 지점 사이의 시퀀스 샘플을 만든다."""
+    labeling = labeling or LabelingConfig()
+    if labeling.sample_pairing == "adjacent_markers_v1":
+        return _build_adjacent_samples(df, points, feature_columns, labeling)
+    return _build_latest_opposite_samples(df, points, feature_columns)
 
-    윈도우 = 직전 반대 종류 마커 위치 ~ 현재 마커 위치 (양 끝 포함).
-    직전 반대 마커가 없는 지점(시리즈 첫 스윙)은 제외한다.
-    선택한 피처에 NaN이 있는 윈도우(예: MA 초기 구간)는 학습 불가로 제외한다.
-    points는 position 오름차순이어야 한다 (label_points 반환 순서).
-    """
+
+def _build_latest_opposite_samples(
+    df: pd.DataFrame, points: pd.DataFrame, feature_columns: list[str]
+) -> SampleBuildResult:
     features = df[feature_columns]
     samples: list[Sample] = []
     dropped_nan = 0
     dropped_unpaired = 0
+    incoming: list[dict] = []
     last_position: dict[str, int | None] = {"low": None, "high": None}
     for row in points.itertuples():
         kind = str(row.kind)
@@ -79,13 +95,15 @@ def build_samples(
         start = last_position[opposite]
         last_position[kind] = end
         if start is None or start >= end:
-            # 직전 반대 마커가 없거나 같은 봉(고/저 동시 확정)이면 윈도우 불성립
             dropped_unpaired += 1
+            incoming.append(_incoming(None, False, None, "unpaired"))
             continue
         window = features.iloc[start : end + 1]
         if window.isna().any().any():
             dropped_nan += 1
+            incoming.append(_incoming(int(row.label), False, None, "nan"))
             continue
+        sample_index = len(samples)
         samples.append(
             Sample(
                 end_position=end,
@@ -96,7 +114,121 @@ def build_samples(
                 length=end - start + 1,
             )
         )
-    return samples, dropped_nan, dropped_unpaired
+        incoming.append(_incoming(int(row.label), True, sample_index, None))
+    paired = len(points) - dropped_unpaired
+    return SampleBuildResult(
+        samples=samples,
+        dropped_nan=dropped_nan,
+        dropped_unpaired=dropped_unpaired,
+        dropped_ignore=0,
+        swing_ignored=0,
+        pairing_stats={
+            "rule": "latest_opposite_v1",
+            "adjacent_edges": paired,
+            "unpaired_markers": dropped_unpaired,
+            "dropped_invalid_position": 0,
+            "dropped_label2": 0,
+        },
+        incoming=incoming,
+    )
+
+
+def _build_adjacent_samples(
+    df: pd.DataFrame,
+    points: pd.DataFrame,
+    feature_columns: list[str],
+    labeling: LabelingConfig,
+) -> SampleBuildResult:
+    features = df[feature_columns]
+    samples: list[Sample] = []
+    incoming: list[dict] = []
+    dropped_nan = 0
+    dropped_invalid = 0
+    dropped_label2 = 0
+    swing_ignored = 0
+    previous = None
+
+    for row in points.itertuples():
+        if previous is None:
+            incoming.append(_incoming(None, False, None, "unpaired"))
+            previous = row
+            continue
+
+        start = int(previous.position)
+        end = int(row.position)
+        same_kind = str(previous.kind) == str(row.kind)
+        label = 2 if same_kind else int(row.label)
+        if start >= end:
+            dropped_invalid += 1
+            incoming.append(_incoming(label, False, None, "invalid_position"))
+            previous = row
+            continue
+
+        if label != 2 and labeling.ignore_swing_pct is not None:
+            start_price = float(previous.price)
+            end_price = float(row.price)
+            if (
+                start_price > 0
+                and abs(end_price / start_price - 1.0) * 100.0
+                < labeling.ignore_swing_pct
+            ):
+                label = 2
+                swing_ignored += 1
+
+        if label == 2 and labeling.mode == "cls2_drop":
+            dropped_label2 += 1
+            incoming.append(_incoming(label, False, None, "label2"))
+            previous = row
+            continue
+
+        window = features.iloc[start : end + 1]
+        if window.isna().any().any():
+            dropped_nan += 1
+            incoming.append(_incoming(label, False, None, "nan"))
+            previous = row
+            continue
+
+        sample_index = len(samples)
+        samples.append(
+            Sample(
+                end_position=end,
+                start_position=start,
+                label=label,
+                kind=str(row.kind),
+                price=float(row.price),
+                length=end - start + 1,
+            )
+        )
+        incoming.append(_incoming(label, True, sample_index, None))
+        previous = row
+
+    unpaired = 1 if len(points) else 0
+    return SampleBuildResult(
+        samples=samples,
+        dropped_nan=dropped_nan,
+        dropped_unpaired=unpaired,
+        dropped_ignore=dropped_label2,
+        swing_ignored=swing_ignored,
+        pairing_stats={
+            "rule": "adjacent_markers_v1",
+            "adjacent_edges": max(len(points) - 1, 0),
+            "unpaired_markers": unpaired,
+            "dropped_invalid_position": dropped_invalid,
+            "dropped_label2": dropped_label2,
+        },
+        incoming=incoming,
+    )
+
+
+def _incoming(
+    label: int | None, included: bool, index: int | None, reason: str | None
+) -> dict:
+    return {
+        "incoming_sample_label": label,
+        "incoming_sample_included": included,
+        "incoming_sample_index": index,
+        "incoming_sample_drop_reason": reason,
+    }
 
 
 def run_preprocess(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult:
@@ -151,32 +283,41 @@ def _run_segment(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult
         labeling=preset.labeling,
         filters=preset.filters,
     )
-    samples, dropped_nan, dropped_unpaired = build_samples(
-        enriched, points, preset.features
-    )
+    built = build_samples(enriched, points, preset.features, preset.labeling)
+    points = points.copy()
+    for key in (
+        "incoming_sample_label",
+        "incoming_sample_included",
+        "incoming_sample_index",
+        "incoming_sample_drop_reason",
+    ):
+        points[key] = [item[key] for item in built.incoming]
     plateau = label_stats.pop("plateau")
     sample_overlap = analyze_overlap_clusters(
-        samples, max_end_gap=confirmation_lag(preset.fractal.n)
+        built.samples, max_end_gap=confirmation_lag(preset.fractal.n)
     )
 
     class_counts = {0: 0, 1: 0, 2: 0}
-    for sample in samples:
+    for sample in built.samples:
         class_counts[sample.label] += 1
+    label_stats["dropped_ignore"] += built.dropped_ignore
+    label_stats["swing_ignored"] += built.swing_ignored
     stats = {
         "bars": len(df),
         "points": len(points),
-        "samples": len(samples),
+        "samples": len(built.samples),
         "class_counts": class_counts,
-        "dropped_nan": dropped_nan,
-        "dropped_unpaired": dropped_unpaired,
+        "dropped_nan": built.dropped_nan,
+        "dropped_unpaired": built.dropped_unpaired,
         **label_stats,
+        "pairing_stats": built.pairing_stats,
         "overlap_clusters": _combined_overlap_stats(plateau, sample_overlap),
         "confirmation_lag": confirmation_lag(preset.fractal.n),
     }
     return PreprocessResult(
         frame=enriched,
         points=points,
-        samples=samples,
+        samples=built.samples,
         feature_columns=list(preset.features),
         stats=stats,
     )
@@ -200,6 +341,7 @@ def _run_clean_segments(
         "dropped_ignore": 0,
         "swing_ignored": 0,
     }
+    pairing_totals = _empty_pairing_stats(preset)
     overlap_totals = _empty_overlap_stats(preset)
     class_counts = {0: 0, 1: 0, 2: 0}
     offset = 0
@@ -208,6 +350,12 @@ def _run_clean_segments(
         frames.append(part.frame)
         adjusted_points = part.points.copy()
         adjusted_points["position"] = adjusted_points["position"] + offset
+        sample_offset = len(samples)
+        sample_index = adjusted_points["incoming_sample_index"]
+        included = sample_index.notna()
+        adjusted_points.loc[included, "incoming_sample_index"] = (
+            sample_index.loc[included].astype(int) + sample_offset
+        )
         point_frames.append(adjusted_points)
         samples.extend(
             Sample(
@@ -224,6 +372,7 @@ def _run_clean_segments(
             totals[key] += int(part.stats[key])
         for label, count in part.stats["class_counts"].items():
             class_counts[int(label)] += int(count)
+        _merge_pairing_stats(pairing_totals, part.stats["pairing_stats"])
         _merge_overlap_stats(overlap_totals, part.stats["overlap_clusters"])
         offset += len(part.frame)
 
@@ -252,6 +401,7 @@ def _run_clean_segments(
             "bars": len(frame),
             **totals,
             "class_counts": class_counts,
+            "pairing_stats": pairing_totals,
             "overlap_clusters": overlap_totals,
             "confirmation_lag": confirmation_lag(preset.fractal.n),
         },
@@ -272,6 +422,28 @@ def _combined_overlap_stats(plateau: dict, samples: dict) -> dict:
         "threshold": samples["threshold"],
         "max_end_gap": samples["max_end_gap"],
     }
+
+
+def _empty_pairing_stats(preset: PreprocessPreset) -> dict:
+    return {
+        "rule": preset.labeling.sample_pairing,
+        "adjacent_edges": 0,
+        "unpaired_markers": 0,
+        "dropped_invalid_position": 0,
+        "dropped_label2": 0,
+    }
+
+
+def _merge_pairing_stats(total: dict, part: dict) -> None:
+    if part["rule"] != total["rule"]:
+        raise ValueError("pairing rule changed between cleaning segments")
+    for key in (
+        "adjacent_edges",
+        "unpaired_markers",
+        "dropped_invalid_position",
+        "dropped_label2",
+    ):
+        total[key] += int(part[key])
 
 
 def _empty_overlap_stats(preset: PreprocessPreset) -> dict:

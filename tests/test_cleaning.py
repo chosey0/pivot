@@ -4,7 +4,13 @@ import numpy as np
 import pandas as pd
 
 from pivot.cleaning.kronos import analyze_kline_quality
-from pivot.config import CleaningConfig, FractalConfig, LabelingConfig, PreprocessPreset, Timeframe
+from pivot.config import (
+    CleaningConfig,
+    FractalConfig,
+    LabelingConfig,
+    PreprocessPreset,
+    Timeframe,
+)
 from pivot.dataset.build import run_preprocess
 
 
@@ -107,6 +113,20 @@ def test_filter_never_builds_sample_across_structural_break():
     assert list(result.points.index) == [
         result.frame.index[int(position)] for position in result.points["position"]
     ]
+    pairing = result.stats["pairing_stats"]
+    assert result.stats["points"] == (
+        pairing["adjacent_edges"] + pairing["unpaired_markers"]
+    )
+    assert pairing["adjacent_edges"] == (
+        result.stats["samples"]
+        + pairing["dropped_label2"]
+        + result.stats["dropped_nan"]
+        + pairing["dropped_invalid_position"]
+    )
+    included = result.points.loc[
+        result.points["incoming_sample_included"], "incoming_sample_index"
+    ]
+    assert included.astype(int).tolist() == list(range(len(result.samples)))
 
 
 def test_tick_defaults_apply_only_field_integrity_rules():

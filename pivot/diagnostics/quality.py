@@ -270,6 +270,34 @@ def diagnose_preview(results: dict[str, dict], *, input_snapshot: dict) -> dict:
                 data={"samples": samples, "class_counts": class_counts},
             )
         )
+        pairing = result.get("pairing_stats")
+        if pairing and pairing.get("rule") == "adjacent_markers_v1":
+            points = int(result["points"])
+            edges = int(pairing["adjacent_edges"])
+            marker_counts_ok = points == edges + int(pairing["unpaired_markers"])
+            sample_counts_ok = edges == (
+                samples
+                + int(pairing["dropped_label2"])
+                + int(result["dropped_nan"])
+                + int(pairing["dropped_invalid_position"])
+            )
+            pairing_ok = marker_counts_ok and sample_counts_ok
+            checks.append(
+                check(
+                    "sample_pairing",
+                    PASSED if pairing_ok else FAILED,
+                    "adjacent 마커·샘플 보존식 일치"
+                    if pairing_ok
+                    else "adjacent 마커·샘플 보존식 불일치",
+                    symbol=symbol,
+                    data={
+                        **pairing,
+                        "points": points,
+                        "samples": samples,
+                        "dropped_nan": int(result["dropped_nan"]),
+                    },
+                )
+            )
         if samples == 0:
             continue
 
@@ -451,6 +479,59 @@ def diagnose_dataset(
                 data={
                     "min": min(item["min"] for item in lengths),
                     "max": max(item["max"] for item in lengths),
+                },
+            )
+        )
+
+    snapshot = dataset.get("preset_snapshot") or {}
+    snapshot_preset = snapshot.get("preset") or {}
+    snapshot_labeling = snapshot_preset.get("labeling") or {}
+    snapshot_pairing = snapshot_labeling.get("sample_pairing")
+    sample_counts = {row["symbol"]: int(row["sample_count"]) for row in ready_rows}
+    pairing_rows = [
+        (row["symbol"], row["length_stats"], row["length_stats"].get("pairing_stats"))
+        for row in ready_rows
+        if (row.get("length_stats") or {}).get("pairing_stats")
+    ]
+    if snapshot_pairing or pairing_rows:
+        expected_rule = snapshot_pairing or "latest_opposite_v1"
+        mismatched: dict[str, str | None] = {}
+        broken: list[str] = []
+        for symbol, length_stats, pairing in pairing_rows:
+            if pairing.get("rule") != expected_rule:
+                mismatched[symbol] = pairing.get("rule")
+            if expected_rule == "adjacent_markers_v1" and {
+                "points",
+                "dropped_nan",
+            }.issubset(length_stats):
+                edges = int(pairing["adjacent_edges"])
+                if int(length_stats["points"]) != edges + int(
+                    pairing["unpaired_markers"]
+                ) or edges != (
+                    sample_counts[symbol]
+                    + int(pairing["dropped_label2"])
+                    + int(length_stats["dropped_nan"])
+                    + int(pairing["dropped_invalid_position"])
+                ):
+                    broken.append(symbol)
+        missing = sorted(
+            row["symbol"]
+            for row in ready_rows
+            if not (row.get("length_stats") or {}).get("pairing_stats")
+        )
+        pairing_ok = not mismatched and not broken and not missing
+        checks.append(
+            check(
+                "sample_pairing",
+                PASSED if pairing_ok else FAILED,
+                f"pairing {expected_rule} 메타데이터 일치"
+                if pairing_ok
+                else "pairing 메타데이터 불일치 또는 누락",
+                data={
+                    "rule": expected_rule,
+                    "mismatched": mismatched,
+                    "broken_conservation": sorted(broken),
+                    "missing": missing,
                 },
             )
         )

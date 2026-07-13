@@ -87,6 +87,13 @@ class TestPreviewDiagnostics:
             "points": 120,
             "class_counts": {0: 40, 1: 40, 2: 20},
             "dropped_nan": 5,
+            "pairing_stats": {
+                "rule": "adjacent_markers_v1",
+                "adjacent_edges": 119,
+                "unpaired_markers": 1,
+                "dropped_invalid_position": 0,
+                "dropped_label2": 14,
+            },
             "overlap_clusters": {
                 "tie_policy": "plateau_last",
                 "plateau_clusters": 0,
@@ -139,6 +146,13 @@ class TestPreviewDiagnostics:
             {"AAA": self.stats(dropped_nan=60)}, input_snapshot={}
         )
         assert checks_by_id(report, "feature_nan")[0]["status"] == "warning"
+
+    def test_pairing_conservation_mismatch_fails(self):
+        pairing = self.stats()["pairing_stats"] | {"adjacent_edges": 118}
+        report = quality.diagnose_preview(
+            {"AAA": self.stats(pairing_stats=pairing)}, input_snapshot={}
+        )
+        assert checks_by_id(report, "sample_pairing")[0]["status"] == "failed"
 
     def test_cleaning_findings_warn(self):
         report = quality.diagnose_preview(
@@ -194,7 +208,10 @@ def make_dataset_rows(symbols: list[str], *, seed: int = 42):
         "status": "ready",
         "sample_count": 10 * len(symbols),
         "class_counts": {"0": 4 * len(symbols), "1": 4 * len(symbols), "2": 2 * len(symbols)},
-        "preset_snapshot": {"split": split_config(seed)},
+        "preset_snapshot": {
+            "preset": {"labeling": {"sample_pairing": "adjacent_markers_v1"}},
+            "split": split_config(seed),
+        },
     }
     symbol_rows = [
         {
@@ -203,7 +220,20 @@ def make_dataset_rows(symbols: list[str], *, seed: int = 42):
             "status": "ready",
             "sample_count": 10,
             "class_counts": {"0": 4, "1": 4, "2": 2},
-            "length_stats": {"min": 3, "max": 40, "mean": 12.0},
+            "length_stats": {
+                "min": 3,
+                "max": 40,
+                "mean": 12.0,
+                "points": 13,
+                "dropped_nan": 1,
+                "pairing_stats": {
+                    "rule": "adjacent_markers_v1",
+                    "adjacent_edges": 12,
+                    "unpaired_markers": 1,
+                    "dropped_invalid_position": 0,
+                    "dropped_label2": 1,
+                },
+            },
         }
         for symbol in symbols
     ]
@@ -252,6 +282,14 @@ class TestDatasetDiagnostics:
         shard_rows[0]["row_count"] = 7
         report = quality.diagnose_dataset(dataset, symbol_rows, shard_rows)
         assert checks_by_id(report, "shard_integrity")[0]["status"] == "failed"
+
+    def test_pairing_rule_mismatch_fails(self):
+        dataset, symbol_rows, shard_rows = make_dataset_rows(["AAA"])
+        symbol_rows[0]["length_stats"]["pairing_stats"]["rule"] = (
+            "latest_opposite_v1"
+        )
+        report = quality.diagnose_dataset(dataset, symbol_rows, shard_rows)
+        assert checks_by_id(report, "sample_pairing")[0]["status"] == "failed"
 
     def test_missing_shards_fail(self):
         symbols = [f"S{i:03d}" for i in range(20)]

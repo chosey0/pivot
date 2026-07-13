@@ -4,6 +4,7 @@ run_preprocess를 호출한다 (단일 파이프라인 원칙)."""
 
 import functools
 
+import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, field_validator
 
@@ -72,6 +73,18 @@ def preview(request: PreviewRequest) -> dict:
             "kind": str(row.kind),
             "label": int(row.label),
             "price": float(row.price),
+            "incoming_sample_label": (
+                None
+                if pd.isna(row.incoming_sample_label)
+                else int(row.incoming_sample_label)
+            ),
+            "incoming_sample_included": bool(row.incoming_sample_included),
+            "incoming_sample_index": (
+                None
+                if pd.isna(row.incoming_sample_index)
+                else int(row.incoming_sample_index)
+            ),
+            "incoming_sample_drop_reason": row.incoming_sample_drop_reason,
         }
         for row in result.points.itertuples()
     ]

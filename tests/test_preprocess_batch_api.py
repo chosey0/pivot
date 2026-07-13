@@ -4,11 +4,33 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from pivot.config import PreprocessPreset
+from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.storage.datasets import DatasetRepository
 from server.routers import preprocess
 
-from fakes import FakeDb
+from fakes import FakeDb, make_candles
+
+
+def test_preview_markers_reference_incoming_sample_by_index(monkeypatch):
+    monkeypatch.setattr(preprocess, "load_cache", lambda path: make_candles(length=120))
+    preset = PreprocessPreset(
+        fractal=FractalConfig(n=5),
+        features=["Open", "High", "Low", "Close"],
+        labeling=LabelingConfig(ignore_rule="none"),
+    )
+
+    response = preprocess.preview(
+        preprocess.PreviewRequest(symbol="005930", params=preset)
+    )
+
+    included = [
+        marker for marker in response["markers"] if marker["incoming_sample_included"]
+    ]
+    assert included
+    for marker in included:
+        sample = response["samples"][marker["incoming_sample_index"]]
+        assert sample["end_position"] == marker["position"]
+        assert sample["label"] == marker["incoming_sample_label"]
 
 
 def test_batch_request_rejects_path_like_symbol():

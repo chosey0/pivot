@@ -99,6 +99,7 @@ class TestRunBatch:
 
         assert snapshot["preset"]["cleaning"]["mode"] == "report_only"
         assert snapshot["preset"]["cleaning"]["policy"] == "kronos_adapted_v1"
+        assert snapshot["preset"]["labeling"]["sample_pairing"] == "adjacent_markers_v1"
 
     def test_success_marks_everything_ready(self, tmp_path):
         h = Harness(tmp_path, ["AAA", "BBB"], cached=["AAA", "BBB"])
@@ -130,6 +131,17 @@ class TestRunBatch:
 
         assert all(
             row["length_stats"]["cleaning"]["policy"] == "kronos_adapted_v1"
+            for row in symbol_rows
+        )
+        assert all(
+            row["length_stats"]["pairing_stats"]["rule"]
+            == "adjacent_markers_v1"
+            for row in symbol_rows
+        )
+        assert all(
+            row["length_stats"]["points"]
+            == row["length_stats"]["pairing_stats"]["adjacent_edges"]
+            + row["length_stats"]["pairing_stats"]["unpaired_markers"]
             for row in symbol_rows
         )
 

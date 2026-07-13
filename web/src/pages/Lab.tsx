@@ -6,6 +6,7 @@ import {
   type PresetJson,
   type PreviewParams,
   type PreviewResponse,
+  type SamplePairing,
   type PreviewSample,
   type PreviewStats,
   type WatchItem,
@@ -50,6 +51,7 @@ export function Lab() {
   const [fractalN, setFractalN] = useState(20)
   const [tiePolicy, setTiePolicy] = useState<FractalTiePolicy>('plateau_last')
   const [labelMode, setLabelMode] = useState<'cls3' | 'cls2_drop'>('cls3')
+  const [samplePairing, setSamplePairing] = useState<SamplePairing>('adjacent_markers_v1')
   const [ignoreRuleOn, setIgnoreRuleOn] = useState(true)
   const [ignoreSwingPctInput, setIgnoreSwingPctInput] = useState('')
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
@@ -93,6 +95,7 @@ export function Lab() {
       features: featureColumns,
       labeling: {
         mode: labelMode,
+        sample_pairing: samplePairing,
         ignore_rule: ignoreRuleOn ? 'ma20<ma120' : 'none',
         ignore_swing_pct:
           ignoreSwingPctInput.trim() === '' ? null : Number(ignoreSwingPctInput),
@@ -119,6 +122,7 @@ export function Lab() {
       labelMode,
       maAlignment,
       minAmountInput,
+      samplePairing,
       timeframeKind,
       timeframeUnit,
       tiePolicy,
@@ -189,12 +193,14 @@ export function Lab() {
   const selectSampleByTime = useCallback(
     (time: string | number) => {
       if (!preview) return
-      const matches = preview.samples.filter((sample) => sample.end_time === time)
-      if (matches.length === 0) return
+      const sampleIndexes = preview.markers
+        .filter((marker) => marker.time === time && marker.incoming_sample_index !== null)
+        .map((marker) => marker.incoming_sample_index as number)
+      if (sampleIndexes.length === 0) return
       setSelectedSample((current) => {
-        // 같은 봉 재클릭 시 고점/저점 등 겹친 샘플을 순환 선택
-        const index = current ? matches.findIndex((m) => m.index === current.index) : -1
-        return matches[(index + 1) % matches.length]
+        const index = current ? sampleIndexes.indexOf(current.index) : -1
+        const sampleIndex = sampleIndexes[(index + 1) % sampleIndexes.length]
+        return preview.samples[sampleIndex] ?? null
       })
     },
     [preview],
@@ -327,7 +333,8 @@ export function Lab() {
         subtitle={
           <>
             {timeframe} · 프랙탈 n={fractalN} ·{' '}
-            {tiePolicy === 'plateau_last' ? '동률 마지막 봉' : '동률 전체 봉'}
+            {tiePolicy === 'plateau_last' ? '동률 마지막 봉' : '동률 전체 봉'} ·{' '}
+            {samplePairing === 'adjacent_markers_v1' ? '인접 마커' : '최근 반대 마커'}
             {loading ? ' · 계산 중...' : ''}
           </>
         }
@@ -365,10 +372,15 @@ export function Lab() {
                     라벨 지점 {stats.points.toLocaleString()} · NaN 제외 {stats.dropped_nan.toLocaleString()}
                     {stats.dropped_unpaired > 0 ? ` · 짝 없음 제외 ${stats.dropped_unpaired.toLocaleString()}` : ''}
                     {stats.dropped_filters > 0 ? ` · 필터 제외 ${stats.dropped_filters.toLocaleString()}` : ''}
-                    {stats.dropped_ignore > 0 ? ` · 역배열 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
+                    {stats.dropped_ignore > 0 ? ` · 무시 샘플 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
                     {stats.swing_ignored > 0 ? ` · 스윙 무시 ${stats.swing_ignored.toLocaleString()}` : ''}
                   </span>
                   <span>미확정: 마지막 {stats.confirmation_lag}봉 (미래 확인 대기)</span>
+                  <span>
+                    페어링 {stats.pairing_stats.rule} · edge{' '}
+                    {stats.pairing_stats.adjacent_edges.toLocaleString()} · label2 제외{' '}
+                    {stats.pairing_stats.dropped_label2.toLocaleString()}
+                  </span>
                   <span>
                     동률 정규화 {stats.overlap_clusters.dropped_plateau_points.toLocaleString()}개 제거
                     {' · '}잔여 overlap cluster{' '}
@@ -404,8 +416,7 @@ export function Lab() {
                   </span>
                 ) : (
                   <span className="muted-text">
-                    마커가 있는 봉을 클릭하면 직전 반대 마커부터 해당 마커까지의 입력 윈도우가
-                    하이라이트됩니다.
+                    마커가 있는 봉을 클릭하면 선택한 페어링 전략의 입력 윈도우가 하이라이트됩니다.
                   </span>
                 )}
               </div>
@@ -508,13 +519,26 @@ export function Lab() {
             같은 가격의 연속 고점·저점은 plateau로 묶고 마지막 봉만 대표 라벨로 사용합니다.
           </p>
           <p className="hint">
-            입력 윈도우는 직전 반대 마커부터 선택한 마커까지의 스윙 구간입니다
-            (고점은 직전 저점부터, 저점은 직전 고점부터).
+            입력 윈도우의 시작 마커는 아래 라벨 모드의 샘플 페어링 전략으로 결정됩니다.
           </p>
         </section>
 
         <section className="control-section">
           <h2>라벨 모드</h2>
+          <label className="field">
+            샘플 페어링
+            <select
+              onChange={(event) => setSamplePairing(event.target.value as SamplePairing)}
+              value={samplePairing}
+            >
+              <option value="adjacent_markers_v1">adjacent — 바로 이전 마커</option>
+              <option value="latest_opposite_v1">legacy — 최근 반대 마커</option>
+            </select>
+          </label>
+          <p className="hint">
+            adjacent는 같은 종류의 연속 마커를 무시(2) 샘플로 만들고, 도착 마커를 다음
+            샘플의 시작점으로 유지합니다.
+          </p>
           <label className="field">
             모드
             <select
@@ -549,7 +573,7 @@ export function Lab() {
             />
           </label>
           <p className="hint">
-            스윙 시작(직전 반대 프랙탈)과 끝의 가격 변화율이 이 값 미만이면
+            선택한 pair의 시작 마커와 끝의 가격 변화율이 이 값 미만이면
             잔진동으로 보고 무시(2)로 라벨합니다.
           </p>
         </section>

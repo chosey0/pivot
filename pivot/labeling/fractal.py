@@ -107,7 +107,8 @@ def label_points(
     dropped_filters = 0
     dropped_ignore = 0
     swing_ignored = 0
-    # 스윙 진폭 평가용 — 살아남은 지점만 anchor로 쓴다 (build_samples 페어링과 동일)
+    # legacy는 무시된 point를 pairing 전에 제거하므로 여기서 anchor를 추적한다.
+    # adjacent는 point를 유지하고 pair 단위 무시 규칙을 dataset.build에서 적용한다.
     last_price: dict[str, float] = {}
     for candidate in candidates:
         time = candidate["time"]
@@ -121,7 +122,10 @@ def label_points(
             ma20, ma120 = marked.at[time, "20"], marked.at[time, "120"]
             if pd.notna(ma20) and pd.notna(ma120) and ma20 < ma120:
                 label = LABEL_IGNORE
-        if labeling.ignore_swing_pct is not None:
+        if (
+            labeling.sample_pairing == "latest_opposite_v1"
+            and labeling.ignore_swing_pct is not None
+        ):
             # 스윙 진폭 무시 규칙: 직전 반대 프랙탈 대비 변화율이 임계 미만이면 잔진동
             start_price = last_price.get("high" if kind == "low" else "low")
             if (
@@ -132,10 +136,15 @@ def label_points(
                 if label != LABEL_IGNORE:
                     swing_ignored += 1
                 label = LABEL_IGNORE
-        if label == LABEL_IGNORE and labeling.mode == "cls2_drop":
+        if (
+            labeling.sample_pairing == "latest_opposite_v1"
+            and label == LABEL_IGNORE
+            and labeling.mode == "cls2_drop"
+        ):
             dropped_ignore += 1
             continue
-        last_price[kind] = price
+        if labeling.sample_pairing == "latest_opposite_v1":
+            last_price[kind] = price
         rows.append(
             {
                 "time": time,
