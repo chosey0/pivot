@@ -44,7 +44,7 @@ wheels = [
 [[package]]
 name = "broker-modules"
 version = "0.1.0"
-source = { git = "https://github.com/chosey0/broker-modules.git#e06150b32dfe2683235cac18deed92965001eff0" }
+source = { git = "https://github.com/chosey0/broker-modules.git#61f3a11a51b0211f45dce5036b086bbbccb810d6" }
 dependencies = [
     { name = "httpx" },
     { name = "pandas" },
