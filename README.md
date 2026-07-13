@@ -77,24 +77,38 @@ Supabase        학습 메타데이터(Postgres) · 데이터셋/모델 파일(p
 
 ### 요구사항
 
-- Python **3.12+**, [uv](https://docs.astral.sh/uv/), Node.js 20+
+- Python **3.12+**, [uv](https://docs.astral.sh/uv/), Node.js **20.19+ 또는 22.12+**
 - 키움증권 OpenAPI 앱 키 (캔들 수집)
 - Supabase 프로젝트 (종목 검색은 선택, M3 이후 학습 데이터 저장은 필수)
 
 ### 설치 & 실행
 
 ```bash
-uv sync --extra server
-npm --prefix web install
+uv sync --extra server --extra train
+npm --prefix web ci --include=optional --offline=false
+
+# Windows x64: npm 11 optional dependency 누락 우회
+npm --prefix web install --no-save --package-lock=false --offline=false @oxlint/binding-win32-x64-msvc@1.73.0 @rolldown/binding-win32-x64-msvc@1.1.5
 
 # .env 작성 (git 미추적 — 키는 절대 커밋하지 않는다)
 # KIWOOM_APP_KEY / KIWOOM_SECRET_KEY
 # KIS_APP_KEY / KIS_APP_SECRET_KEY          (실시간·종목마스터용)
 # SUPABASE_URL / SUPABASE_SECRET_KEY 등     (서버 전용, 종목 검색·학습 데이터 저장)
 
-scripts/run-api.sh   # 백엔드 :8000 (.env 자동 로드)
-scripts/run-web.sh   # 프론트 :5173 (/api → 8000 프록시)
+# macOS / Linux / Windows 공통 (API :8000 + 웹 :5173)
+uv run --extra server --extra train python scripts/dev.py all
+
+# 서버를 별도 터미널에서 실행할 때
+uv run --extra server --extra train python scripts/dev.py api
+uv run python scripts/dev.py web
 ```
+
+`.env`는 서버 코드가 저장소 루트에서 자동으로 읽는다. 호스트나 포트를 바꾸려면
+`--host`, `--api-port`, `--web-port`를 사용한다. 기존 macOS/Linux용
+`scripts/run-api.sh`, `scripts/run-web.sh`도 같은 공통 런처를 호출한다.
+운영체제를 바꾼 뒤에는 이전 OS의 `node_modules`를 재사용하지 말고
+`npm --prefix web ci --include=optional --offline=false`로 현재 OS용 네이티브
+패키지를 다시 설치한다.
 
 브라우저에서 `http://localhost:5173` 접속 → 종목 추가 → 타임프레임 선택 → 수집 →
 전처리 실험실에서 파라미터를 조작하며 라벨링 결과를 확인한다.

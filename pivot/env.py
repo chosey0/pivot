@@ -29,5 +29,10 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def read_env_file(*, path: Path = ENV_PATH) -> dict[str, str]:
+    """Return a copy of repository environment values without mutating os.environ."""
+    return _read_env_file(path).copy()
+
+
 def env_value(name: str, *, path: Path = ENV_PATH) -> str:
     return os.getenv(name) or _read_env_file(path).get(name, "")

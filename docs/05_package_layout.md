@@ -110,5 +110,9 @@ pivot/                        # 저장소 루트
 | `server` extra | fastapi, uvicorn | 웹 서버 (SSE/WebSocket은 fastapi로 처리) |
 | `train` extra | torch, scikit-learn | 로더/모델/학습 ③(loader)~⑤, 실시간 추론 ⑥ |
 
-개발 실행: `uv run --env-file .env uvicorn server.main:app --reload` + `web/`에서 `npm run dev`
-(Vite proxy `/api` → 8000). 배포(로컬 사용)는 `vite build` 산출물을 FastAPI가 정적 서빙.
+개발 실행은 운영체제와 무관하게 저장소 루트에서
+`uv run --extra server --extra train python scripts/dev.py all`을 사용한다.
+API와 웹을 분리해서 실행할 때는 마지막 인자를 각각 `api`, `web`으로 바꾼다.
+공통 런처가 Windows의 `npm.cmd`와 macOS/Linux의 `npm` 차이를 처리하고,
+Vite proxy `/api`와 `/ws`는 선택한 API 포트를 따른다. 배포(로컬 사용)는
+`vite build` 산출물을 FastAPI가 정적 서빙.

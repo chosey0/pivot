@@ -8,7 +8,7 @@ PORT="${PORT:-8000}"
 cd "$ROOT_DIR"
 
 if [[ -f ".env" ]]; then
-  exec uv run --extra server --extra train --env-file .env uvicorn server.main:app --reload --host "$HOST" --port "$PORT"
+  exec uv run --extra server --extra train --env-file .env python scripts/dev.py api --host "$HOST" --api-port "$PORT"
 fi
 
-exec uv run --extra server --extra train uvicorn server.main:app --reload --host "$HOST" --port "$PORT"
+exec uv run --extra server --extra train python scripts/dev.py api --host "$HOST" --api-port "$PORT"

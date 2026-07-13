@@ -64,8 +64,9 @@ predictions) and the smoke run/artifact was removed afterward.
 
 Milestones M0–M5 are defined in `docs/04_webapp_design.md` §7. Next: **M5** (live inference).
 
-Run dev servers: `./scripts/run-api.sh` (port 8000, installs `server` + `train` extras) and
-`./scripts/run-web.sh` (port 5173, proxies `/api` and `/ws` to 8000).
+Run both dev servers on macOS, Linux, or Windows with
+`uv run --extra server --extra train python scripts/dev.py all` (API 8000, web 5173).
+Use mode `api` or `web` to run one server; Vite proxies `/api` and `/ws` to the selected API port.
 
 ## Documents are the source of truth
 
