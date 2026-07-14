@@ -40,7 +40,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   const [symbolInput, setSymbolInput] = useState('005930')
   const [nameInput, setNameInput] = useState('삼성전자')
   const [region, setRegion] = useState<InstrumentRegion>('domestic')
-  const [exchange, setExchange] = useState('ND')
+  const [exchange, setExchange] = useState('')
   const [rangeEnabled, setRangeEnabled] = useState(false)
   const [startDate, setStartDate] = useState(today)
   const [endDate, setEndDate] = useState(today)
@@ -380,18 +380,6 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
 
         <section className="control-section">
           <h2>종목 추가</h2>
-          {region === 'overseas' ? (
-            <div className="range-grid">
-              <label className="field">
-                거래소
-                <select onChange={(event) => setExchange(event.target.value)} value={exchange}>
-                  <option value="ND">NASDAQ</option>
-                  <option value="NY">NYSE</option>
-                  <option value="NA">AMEX</option>
-                </select>
-              </label>
-            </div>
-          ) : null}
           <form className="add-form" onSubmit={addWatchItem}>
             <label className="field">
               시장
@@ -399,6 +387,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                 onChange={(event) => {
                   const next = event.target.value as InstrumentRegion
                   setRegion(next)
+                  setExchange('')
                   setSymbolInput(next === 'domestic' ? '005930' : '')
                   setNameInput(next === 'domestic' ? '삼성전자' : '')
                 }}
@@ -420,7 +409,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                 onSelect={(item) => {
                   setSymbolInput(item.symbol)
                   setNameInput(item.name)
-                  if (item.exchange) setExchange(item.exchange)
+                  setExchange(item.exchange)
                 }}
                 placeholder={
                   region === 'domestic' ? '삼성전자 또는 005930' : 'Apple 또는 AAPL'

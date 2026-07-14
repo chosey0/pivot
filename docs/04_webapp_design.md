@@ -35,8 +35,8 @@
 
 - 종목 검색(심볼 마스터) → 관심종목 추가/제거
   - 종목 추가 폼은 별도 종목코드 입력 없이 `시장 + 종목명 또는 코드` 검색 입력을 사용한다.
-    국내/해외 시장을 선택하고, 해외는 NASDAQ/NYSE/AMEX 거래소를 선택하며 검색 결과가
-    실제 종목코드와 거래소를 채운다.
+    국내/해외 시장을 선택하고, 해외 거래소(NASDAQ/NYSE/AMEX)는 검색 결과에서
+    종목코드와 함께 자동으로 채우며 별도로 선택하지 않는다.
   - 국내 종목마스터는 Supabase `public.domestic_master`에 저장한다.
   - 원천은 `broker-modules`의 `brokers.kis.symbols` KOSPI/KOSDAQ master이며, 우선 범위는 보통주다.
   - 검색은 Postgres `pg_trgm` 기반 RPC `search_domestic_master(query, match_limit)`로 수행한다.
