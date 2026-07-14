@@ -43,6 +43,7 @@ export interface ChartMarker {
   kind: 'low' | 'high'
   label: 0 | 1 | 2
   source?: 'calculated' | 'prediction'
+  confidence?: number
 }
 
 export interface TimeRange {
@@ -137,13 +138,15 @@ function toLineData(points: LinePoint[], validTimes: Set<string | number>): Line
 function toSeriesMarker(marker: ChartMarker): SeriesMarker<Time> {
   const time = marker.time as Time
   if (marker.source === 'prediction') {
+    const confidence =
+      marker.confidence === undefined ? '' : ` ${Math.round(marker.confidence * 100)}%`
     if (marker.label === 0) {
-      return { time, position: 'belowBar', shape: 'circle', color: '#00897b', text: '예측 L' }
+      return { time, position: 'belowBar', shape: 'circle', color: '#00897b', text: `판정 L${confidence}` }
     }
     if (marker.label === 1) {
-      return { time, position: 'aboveBar', shape: 'circle', color: '#d32f2f', text: '예측 H' }
+      return { time, position: 'aboveBar', shape: 'circle', color: '#d32f2f', text: `판정 H${confidence}` }
     }
-    return { time, position: 'aboveBar', shape: 'square', color: '#757575', text: '예측 -' }
+    return { time, position: 'aboveBar', shape: 'square', color: '#757575', text: `판정 -${confidence}` }
   }
   if (marker.label === 0) {
     return { time, position: 'belowBar', shape: 'arrowUp', color: '#26a69a', text: 'L' }

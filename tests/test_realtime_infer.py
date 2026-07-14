@@ -4,6 +4,7 @@ import hashlib
 import io
 
 import numpy as np
+import pivot.realtime.infer as infer_module
 import pytest
 import torch
 
@@ -17,6 +18,7 @@ from pivot.dataset.build import run_preprocess
 from pivot.dataset.transforms import sample_standardize
 from pivot.models import build_model
 from pivot.realtime.infer import (
+    CandidatePrediction,
     LiveInferenceEngine,
     build_candidate_windows,
     infer_candidates,
@@ -98,6 +100,99 @@ def test_legacy_candidates_use_latest_low_and_high_anchors():
     by_label = {candidate.target_label: candidate for candidate in candidates}
     assert by_label[1].anchor_position == latest["low"]
     assert by_label[0].anchor_position == latest["high"]
+
+
+@pytest.mark.parametrize(
+    ("threshold", "expected_source"),
+    [(0.8, "prediction"), (0.95, "calculated")],
+)
+def test_only_predictions_above_threshold_become_the_next_candidate_anchor(
+    monkeypatch, threshold, expected_source
+):
+    frame = make_candles(length=240)
+    config = preset()
+    snapshot = {
+        "dataset": {
+            "id": 1,
+            "feature_columns": config.features,
+            "preset_snapshot": {
+                "schema_version": 1,
+                "preset": config.model_dump(mode="json"),
+            },
+        }
+    }
+    data, digest = checkpoint_bytes(config.features, dataset_snapshot=snapshot)
+    engine = LiveInferenceEngine(
+        load_verified_checkpoint(data, digest),
+        deployment_id=9,
+        device=torch.device("cpu"),
+    )
+    engine.set_prediction_threshold(threshold)
+
+    def high_prediction(checkpoint, candidates, *, device):
+        return [
+            CandidatePrediction(
+                candidate=candidate,
+                probabilities=[0.05, 0.9, 0.05],
+                selected_class=1,
+                standardized_features=candidate.features,
+            )
+            for candidate in candidates
+        ]
+
+    monkeypatch.setattr(infer_module, "infer_candidates", high_prediction)
+
+    first = engine.infer("005930", frame.iloc[:-1])
+    second = engine.infer("005930", frame)
+
+    assert first is not None and first.selected_class == 1
+    assert second is not None
+    assert second.candidates[0].candidate.anchor_source == expected_source
+    if expected_source == "prediction":
+        assert second.candidates[0].candidate.anchor_time == first.closed_time
+        assert second.candidates[0].candidate.anchor_confidence == pytest.approx(0.9)
+
+
+def test_lowering_threshold_rebuilds_anchor_from_recent_predictions(monkeypatch):
+    frame = make_candles(length=240)
+    config = preset()
+    snapshot = {
+        "dataset": {
+            "id": 1,
+            "feature_columns": config.features,
+            "preset_snapshot": {
+                "schema_version": 1,
+                "preset": config.model_dump(mode="json"),
+            },
+        }
+    }
+    data, digest = checkpoint_bytes(config.features, dataset_snapshot=snapshot)
+    engine = LiveInferenceEngine(
+        load_verified_checkpoint(data, digest),
+        deployment_id=10,
+        device=torch.device("cpu"),
+    )
+    engine.set_prediction_threshold(0.95)
+
+    def high_prediction(checkpoint, candidates, *, device):
+        return [
+            CandidatePrediction(
+                candidate=candidate,
+                probabilities=[0.05, 0.9, 0.05],
+                selected_class=1,
+                standardized_features=candidate.features,
+            )
+            for candidate in candidates
+        ]
+
+    monkeypatch.setattr(infer_module, "infer_candidates", high_prediction)
+    first = engine.infer("005930", frame.iloc[:-1])
+    engine.set_prediction_threshold(0.8)
+    second = engine.infer("005930", frame)
+
+    assert first is not None and second is not None
+    assert second.candidates[0].candidate.anchor_time == first.closed_time
+    assert second.candidates[0].candidate.anchor_source == "prediction"
 
 
 def test_checkpoint_loader_verifies_digest_schema_and_feature_order():

@@ -89,6 +89,15 @@ button:disabled {
   background: #ffffff;
 }
 
+/* 분봉·틱봉은 컨트롤이 늘어 패널이 454.5px까지 벌어졌다 — 타임프레임과 무관하게 그 폭으로 고정한다 */
+.watch-side {
+  flex-basis: 456px;
+}
+
+.collection-target-form {
+  display: contents;
+}
+
 .control-section {
   display: flex;
   flex-direction: column;
@@ -164,7 +173,7 @@ button:disabled {
 .add-form {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(0, 2fr);
   align-items: end;
   gap: 8px;
 }
@@ -181,11 +190,11 @@ button:disabled {
   width: 100%;
 }
 
-.add-form .primary {
+.collection-target-add {
+  width: 100%;
   border-color: #b7ecc1;
   background: #daf9de;
   color: #166534;
-  white-space: nowrap;
 }
 
 .symbol-suggestions {
@@ -283,6 +292,7 @@ button:disabled {
 }
 
 .watch-row {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
@@ -296,6 +306,43 @@ button:disabled {
 
 .watch-row.selected {
   background: #eff6ff;
+}
+
+.watch-collection-overlay {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: rgb(255 255 255 / 68%);
+  backdrop-filter: blur(2px);
+  color: #1e3a8a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.watch-collection-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: watch-collection-spin 0.7s linear infinite;
+}
+
+@keyframes watch-collection-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watch-collection-spinner {
+    animation: none;
+  }
 }
 
 .watch-main {
@@ -536,7 +583,7 @@ button:disabled {
   font-weight: 700;
 }
 
-.ma-setting-row input[type='number'],
+.ma-setting-row input[type='text'],
 .ma-setting-row select {
   height: 32px;
   min-width: 0;
@@ -945,9 +992,21 @@ button:disabled {
   min-width: 0;
 }
 
-.batch-symbols {
+.field-title-row {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.batch-form .primary {
+  align-self: flex-start;
+}
+
+/* 항목마다 폭이 달라 flex-wrap으로는 열이 어긋난다 — 고정 열 그리드로 정렬한다 */
+.batch-symbols {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 8px 14px;
   padding: 10px;
   border: 1px solid #e5e7eb;
@@ -957,6 +1016,18 @@ button:disabled {
 
 .batch-symbols .muted-text {
   font-weight: 400;
+}
+
+.inline-check.unusable {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.target-range {
+  color: #2563eb;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .batch-progress {
@@ -1015,7 +1086,8 @@ button:disabled {
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #ffffff;
-  overflow: hidden;
+  /* 좁은 폭에서 열을 자르지 않고 가로로 스크롤한다 (기존 hidden은 '동작' 열을 통째로 감췄다) */
+  overflow: auto hidden;
 }
 
 .dataset-row {
@@ -1023,6 +1095,8 @@ button:disabled {
   grid-template-columns: minmax(150px, 1.4fr) 80px minmax(110px, 1fr) 120px minmax(150px, 1.2fr) 140px 110px;
   gap: 10px;
   align-items: center;
+  /* 열 최소 폭 합계 — 스크롤 컨테이너 안에서 행이 좁아져 헤더와 어긋나는 것을 막는다 */
+  min-width: 940px;
   padding: 10px 12px;
   border-bottom: 1px solid #f1f5f9;
   font-size: 13px;
@@ -1158,7 +1232,7 @@ button:disabled {
 .sample-layout {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   padding-top: 12px;
@@ -1174,9 +1248,10 @@ button:disabled {
   padding-right: 4px;
 }
 
+/* 3열은 '종목 · 타임프레임', 4열은 '봉 수 · split' — 고정 폭이면 두 줄로 깨진다 */
 .sample-item {
   display: grid;
-  grid-template-columns: 72px 60px 70px 1fr;
+  grid-template-columns: 68px 48px minmax(90px, auto) minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   padding: 7px 10px;
@@ -1186,6 +1261,12 @@ button:disabled {
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+}
+
+.sample-item > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sample-item.selected {
@@ -1351,7 +1432,7 @@ button:disabled {
 
 @media (max-width: 1200px) {
   .sample-layout {
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 320px minmax(0, 1fr);
   }
 
   .sample-meta {

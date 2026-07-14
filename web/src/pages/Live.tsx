@@ -75,6 +75,54 @@ function compareTimes(a: string | number, b: string | number): number {
   return String(a).localeCompare(String(b))
 }
 
+function timeKey(time: string | number): string {
+  if (typeof time === 'number' || /^\d+$/.test(time)) return `number:${Number(time)}`
+  return `string:${time}`
+}
+
+function PredictionMarkerControl({
+  disabled,
+  onApply,
+  saving,
+  threshold,
+}: {
+  disabled: boolean
+  onApply: (threshold: number) => Promise<void>
+  saving: boolean
+  threshold: number
+}) {
+  const [value, setValue] = useState(String(threshold))
+  useEffect(() => setValue(String(threshold)), [threshold])
+  const parsed = Number(value)
+  const valid = /\d/.test(value) && Number.isFinite(parsed) && parsed >= 0 && parsed <= 100
+
+  return (
+    <div className="live-prediction-threshold">
+      <label htmlFor="live-prediction-threshold">판정 표시</label>
+      <input
+        id="live-prediction-threshold"
+        aria-label="모델 판정 표시 최소 확률"
+        disabled={disabled || saving}
+        inputMode="decimal"
+        onChange={(event) => {
+          if (/^\d*\.?\d*$/.test(event.target.value)) setValue(event.target.value)
+        }}
+        pattern="[0-9]*[.]?[0-9]*"
+        type="text"
+        value={value}
+      />
+      <span>% 이상</span>
+      <button
+        disabled={disabled || saving || !valid || parsed === threshold}
+        onClick={() => onApply(parsed)}
+        type="button"
+      >
+        {saving ? '적용 중' : '적용'}
+      </button>
+    </div>
+  )
+}
+
 function mergeLiveHistory(
   current: LiveHistoryResponse,
   older: LiveHistoryResponse,
@@ -106,6 +154,7 @@ export function Live({ active }: { active: boolean }) {
   const [chartError, setChartError] = useState<string | null>(null)
   const [chartMessage, setChartMessage] = useState<string | null>(null)
   const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
+  const [thresholdSaving, setThresholdSaving] = useState(false)
 
   const indicators = useIndicatorSettings({ onMessage: setChartMessage })
   const {
@@ -240,7 +289,11 @@ export function Live({ active }: { active: boolean }) {
       const older = await liveApi.history(selectedSymbol, chartTimeframe, maWindows, {
         before: first.time,
       })
-      setChart((current) => (current ? mergeLiveHistory(current, older) : older))
+      setChart((current) =>
+        current?.symbol === older.symbol && current.timeframe === older.timeframe
+          ? mergeLiveHistory(current, older)
+          : current,
+      )
     } catch (e) {
       setChartError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -258,6 +311,7 @@ export function Live({ active }: { active: boolean }) {
   }, [merged.candles])
 
   const displayedOhlc = selectedOhlc ?? merged.candles.at(-1) ?? null
+  const predictionThreshold = Number((state.predictionThreshold * 100).toFixed(4))
   const displayedOhlcPreviousClose = useMemo(() => {
     if (!displayedOhlc) return null
     const index = merged.candles.findIndex((candle) => candle.time === displayedOhlc.time)
@@ -279,38 +333,82 @@ export function Live({ active }: { active: boolean }) {
   // 실제 프랙탈과 모델 판정을 같은 차트에 표시하되 모양과 문구를 구분한다.
   const markers = useMemo<ChartMarker[]>(() => {
     if (!selectedSymbol) return []
-    const times = new Set(merged.candles.map((candle) => candle.time))
+    const times = new Map(merged.candles.map((candle) => [timeKey(candle.time), candle.time]))
     const predictions = state.predictions.filter(
       (row) => row.symbol === selectedSymbol && row.timeframe === chartTimeframe,
     )
     const calculated = new Map<string, ChartMarker>()
+    const inferred = new Map<string, ChartMarker>()
     for (const row of predictions.flatMap((prediction) => prediction.candidate_windows)) {
-      if (!times.has(row.anchor_time)) continue
-      calculated.set(`${row.anchor_time}:${row.anchor_kind}`, {
-        time: row.anchor_time,
+      const candleTime = times.get(timeKey(row.anchor_time))
+      if (candleTime === undefined) continue
+      const marker = {
+        time: candleTime,
         kind: row.anchor_kind,
         label: row.anchor_kind === 'low' ? 0 : 1,
+        source: row.anchor_source,
+        confidence: row.anchor_confidence ?? undefined,
+      } satisfies ChartMarker
+      const key = `${timeKey(candleTime)}:${row.anchor_kind}`
+      if (row.anchor_source === 'prediction') inferred.set(key, marker)
+      else calculated.set(key, marker)
+    }
+    for (const row of historicalChart?.fractal_markers ?? []) {
+      const candleTime = times.get(timeKey(row.time))
+      if (candleTime === undefined) continue
+      calculated.set(`${timeKey(candleTime)}:${row.kind}`, {
+        ...row,
+        time: candleTime,
         source: 'calculated',
       })
     }
-    for (const row of historicalChart?.fractal_markers ?? []) {
-      if (!times.has(row.time)) continue
-      calculated.set(`${row.time}:${row.kind}`, { ...row, source: 'calculated' })
-    }
-    const inferred = predictions
-      .filter(
-        (row) => times.has(row.time),
-      )
-      .map<ChartMarker>((row) => ({
-        time: row.time,
-        kind: row.selected_class === 1 ? 'high' : 'low',
+    for (const row of predictions) {
+      const candleTime = times.get(timeKey(row.time))
+      const confidence = row.scores[row.selected_class]
+      if (
+        row.selected_class === 2 ||
+        candleTime === undefined ||
+        !Number.isFinite(confidence) ||
+        confidence < predictionThreshold / 100
+      ) {
+        continue
+      }
+      const kind = row.selected_class === 1 ? 'high' : 'low'
+      inferred.set(`${timeKey(candleTime)}:${kind}`, {
+        time: candleTime,
+        kind,
         label: row.selected_class,
         source: 'prediction',
-      }))
-    return [...calculated.values(), ...inferred].sort((a, b) =>
+        confidence,
+      })
+    }
+    return [...calculated.values(), ...inferred.values()].sort((a, b) =>
       compareTimes(a.time, b.time),
     )
-  }, [chartTimeframe, historicalChart, merged.candles, selectedSymbol, state.predictions])
+  }, [
+    chartTimeframe,
+    historicalChart,
+    merged.candles,
+    predictionThreshold,
+    selectedSymbol,
+    state.predictions,
+  ])
+  const visiblePredictionCount = markers.filter((marker) => marker.source === 'prediction').length
+
+  const applyPredictionThreshold = useCallback(
+    async (threshold: number) => {
+      setThresholdSaving(true)
+      setChartError(null)
+      try {
+        applyState(await liveApi.setPredictionThreshold(threshold / 100))
+      } catch (error) {
+        setChartError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setThresholdSaving(false)
+      }
+    },
+    [applyState],
+  )
 
   const subscribe = useCallback(async () => {
     if (!addSuggestion) return
@@ -541,6 +639,12 @@ export function Live({ active }: { active: boolean }) {
                   1분봉
                 </button>
               </div>
+              <PredictionMarkerControl
+                disabled={state.deployment?.timeframe !== chartTimeframe}
+                onApply={applyPredictionThreshold}
+                saving={thresholdSaving}
+                threshold={predictionThreshold}
+              />
               <button
                 className="indicator-button"
                 onClick={indicators.openIndicatorPanel}
@@ -622,7 +726,9 @@ export function Live({ active }: { active: boolean }) {
                 {state.deployment?.timeframe === chartTimeframe ? (
                   <div className="legend-row">
                     <span>H/L 학습 기준 프랙탈</span>
-                    <span>● 모델 예측</span>
+                    <span>
+                      ● 모델 판정 {visiblePredictionCount}건 · {predictionThreshold}% 이상
+                    </span>
                   </div>
                 ) : null}
               </div>
@@ -688,7 +794,7 @@ export function Live({ active }: { active: boolean }) {
               {selectedSymbol ? ` · ${selectedSymbol} ${symbolPredictions.length}건` : ''}
             </span>
           </div>
-          <PredictionLog predictions={state.predictions} />
+          <PredictionLog predictions={symbolPredictions} />
         </section>
       </section>
     </>

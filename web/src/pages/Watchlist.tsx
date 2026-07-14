@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   type CacheStatus,
@@ -41,6 +41,8 @@ interface WatchlistProps {
   onSubtitleChange: (subtitle: string | null) => void
 }
 
+type CollectionState = 'queued' | 'running'
+
 export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   const today = kstDateValue()
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
@@ -58,6 +60,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   const [endDate, setEndDate] = useState(today)
   const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
   const [loading, setLoading] = useState(false)
+  const [collectionStates, setCollectionStates] = useState<Record<string, CollectionState>>({})
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [chartFitKey, setChartFitKey] = useState('')
   const [message, setMessage] = useState<string | null>(null)
@@ -87,6 +90,9 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     return `${symbol} • ${timeframeLabel(item.timeframe)}`
   }, [selectedKey, watchlist])
   const selectedItem = watchlist.find((item) => watchItemKey(item) === selectedKey) ?? null
+  const selectedKeyRef = useRef(selectedKey)
+  const collectionQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const queuedCollectionKeysRef = useRef(new Set<string>())
   const selectedCurrency = selectedItem?.region === 'overseas' ? 'USD' : 'KRW'
   const displayedOhlc = selectedOhlc ?? chart?.candles[chart.candles.length - 1] ?? null
   const displayedOhlcPreviousClose = useMemo(() => {
@@ -110,6 +116,10 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       }
     })
   }, [displayedOhlc, displayedOhlcPreviousClose])
+
+  useEffect(() => {
+    selectedKeyRef.current = selectedKey
+  }, [selectedKey])
 
   function selectTimeframeKind(next: 'day' | 'minute' | 'tick', unit: number) {
     setTimeframeKind(next)
@@ -340,52 +350,60 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     }
   }
 
-  async function ingest(item: WatchItem) {
-    const target = item.timeframe === timeframe
-      ? {
-          ...item,
-          start: rangeEnabled ? startDate : null,
-          end: rangeEnabled ? endDate : null,
-        }
-      : item
-    const { symbol } = target
-    if (target.start && target.end && target.start > target.end) {
-      setError('수집 시작일은 종료일보다 늦을 수 없습니다.')
-      return
-    }
-    setLoading(true)
+  function enqueueIngest(item: WatchItem) {
+    const queueKey = watchItemKey(item)
+    if (queuedCollectionKeysRef.current.has(queueKey)) return
+    queuedCollectionKeysRef.current.add(queueKey)
+    setCollectionStates((current) => ({
+      ...current,
+      [queueKey]: 'queued',
+    }))
+    setMessage(`${item.symbol} ${item.timeframe} 수집 대기 중...`)
+    collectionQueueRef.current = collectionQueueRef.current.then(() =>
+      runIngest(item, queueKey),
+    )
+  }
+
+  async function runIngest(item: WatchItem, queueKey: string) {
+    const { symbol } = item
+    setCollectionStates((current) => ({
+      ...current,
+      [queueKey]: 'running',
+    }))
     setError(null)
-    const rangeText = target.start || target.end
-      ? ` (${target.start ?? ''} ~ ${target.end ?? ''})`
+    const rangeText = item.start || item.end
+      ? ` (${item.start ?? ''} ~ ${item.end ?? ''})`
       : ''
-    setMessage(`${symbol} ${target.timeframe}${rangeText} 수집 중...`)
+    setMessage(`${symbol} ${item.timeframe}${rangeText} 수집 중...`)
     try {
-      let items = watchlist
-      if (watchItemKey(target) !== watchItemKey(item)) {
-        items = await api.updateWatchItem(item, target)
-        setWatchlist(items)
-        setSelectedKey(watchItemKey(target))
-      }
       const response = await api.ingest(
         [symbol],
-        target.timeframe,
+        item.timeframe,
         {
-          ...(target.start ? { start: target.start } : {}),
-          ...(target.end ? { end: target.end } : {}),
-          region: target.region,
-          exchange: target.exchange,
+          ...(item.start ? { start: item.start } : {}),
+          ...(item.end ? { end: item.end } : {}),
+          region: item.region,
+          exchange: item.exchange,
         },
       )
       const result = response.results[symbol]
       if (!result?.ok) throw new Error(result?.error ?? '수집 실패')
+      const items = await refreshWatchlist()
       await refreshStatus(items)
-      await loadChart(target, maWindows)
-      setMessage(`${symbol} ${target.timeframe}${rangeText} 수집 완료: ${result.bars ?? 0}봉`)
+      if (selectedKeyRef.current === queueKey) {
+        await loadChart(item, maWindows)
+      }
+      setMessage(`${symbol} ${item.timeframe}${rangeText} 수집 완료: ${result.bars ?? 0}봉`)
     } catch (e) {
       setMessage(null)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoading(false)
+      queuedCollectionKeysRef.current.delete(queueKey)
+      setCollectionStates((current) => {
+        const next = { ...current }
+        delete next[queueKey]
+        return next
+      })
     }
   }
 
@@ -393,10 +411,55 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
 
   return (
     <>
-      <aside className="side-panel">
-        <section className="control-section">
-          <h2>수집 타임프레임</h2>
-          <div className="segmented">
+      <aside className="side-panel watch-side">
+        <form className="collection-target-form" onSubmit={addWatchItem}>
+          <section className="control-section">
+            <h2>종목 검색</h2>
+            <div className="add-form">
+              <label className="field">
+                시장
+                <select
+                  onChange={(event) => {
+                    const next = event.target.value as InstrumentRegion
+                    setRegion(next)
+                    setExchange('')
+                    setSymbolInput(next === 'domestic' ? '005930' : '')
+                    setNameInput(next === 'domestic' ? '삼성전자' : '')
+                  }}
+                  value={region}
+                >
+                  <option value="domestic">국내</option>
+                  <option value="overseas">해외</option>
+                </select>
+              </label>
+              <label className="field">
+                종목명 또는 코드
+                <SymbolSearchBox
+                  onError={setError}
+                  onQueryChange={(query) => {
+                    setSymbolInput('')
+                    setNameInput(query)
+                    setError(null)
+                  }}
+                  onSelect={(item) => {
+                    setSymbolInput(item.symbol)
+                    setNameInput(item.name)
+                    setExchange(item.exchange)
+                  }}
+                  placeholder={
+                    region === 'domestic' ? '삼성전자 또는 005930' : 'Apple 또는 AAPL'
+                  }
+                  query={nameInput}
+                  region={region}
+                  selectedSymbol={symbolInput}
+                />
+              </label>
+            </div>
+          </section>
+
+          <section className="control-section">
+            <h2>수집 타임프레임</h2>
+            <div className="segmented">
             <button
               className={timeframeKind === 'day' ? 'selected' : ''}
               onClick={() => selectTimeframeKind('day', 1)}
@@ -418,116 +481,73 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
             >
               틱봉
             </button>
-          </div>
-          {timeframeKind !== 'day' && (
-            <label className="field">
-              단위
-              <select
-                value={timeframeUnit}
-                onChange={(event) => setTimeframeUnit(Number(event.target.value))}
-              >
-                {(timeframeKind === 'minute' ? MINUTE_UNITS : TICK_UNITS).map((unit) => (
-                  <option key={unit} value={unit}>
-                    {unit}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </section>
+            </div>
+            {timeframeKind !== 'day' && (
+              <label className="field">
+                단위
+                <select
+                  value={timeframeUnit}
+                  onChange={(event) => setTimeframeUnit(Number(event.target.value))}
+                >
+                  {(timeframeKind === 'minute' ? MINUTE_UNITS : TICK_UNITS).map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </section>
 
-        <section className="control-section">
-          <div className="section-title-row">
-            <h2>수집 기간</h2>
-            <label className="inline-check">
-              <input
-                checked={rangeEnabled}
-                onChange={(event) => setRangeEnabled(event.target.checked)}
-                type="checkbox"
-              />
-              직접 지정
-            </label>
-          </div>
-          <div className="range-grid">
-            <label className="field">
-              {timeframeKind === 'day' ? '시작일' : '시작 시각'}
-              <input
-                disabled={!rangeEnabled}
-                max={endDate}
-                onChange={(event) => setStartDate(event.target.value)}
-                step={timeframeKind === 'day' ? undefined : 1}
-                type={rangeInputType}
-                value={startDate}
-              />
-            </label>
-            <label className="field">
-              {timeframeKind === 'day' ? '종료일' : '종료 시각'}
-              <input
-                disabled={!rangeEnabled}
-                min={startDate}
-                onChange={(event) => setEndDate(event.target.value)}
-                step={timeframeKind === 'day' ? undefined : 1}
-                type={rangeInputType}
-                value={endDate}
-              />
-            </label>
-          </div>
-          <p className="hint">
-            날짜와 시각은 대한민국 시간(KST) 기준입니다. 미지정 시 기존 캐시의 마지막 봉 이후를
-            증분 수집하고, 지정 시 해당 기간을 조회해 캐시에 병합합니다.
-          </p>
-        </section>
-
-        <section className="control-section">
-          <h2>종목 추가</h2>
-          <form className="add-form" onSubmit={addWatchItem}>
-            <label className="field">
-              시장
-              <select
-                onChange={(event) => {
-                  const next = event.target.value as InstrumentRegion
-                  setRegion(next)
-                  setExchange('')
-                  setSymbolInput(next === 'domestic' ? '005930' : '')
-                  setNameInput(next === 'domestic' ? '삼성전자' : '')
-                }}
-                value={region}
-              >
-                <option value="domestic">국내</option>
-                <option value="overseas">해외</option>
-              </select>
-            </label>
-            <label className="field">
-              종목명 또는 코드
-              <SymbolSearchBox
-                onError={setError}
-                onQueryChange={(query) => {
-                  setSymbolInput('')
-                  setNameInput(query)
-                  setError(null)
-                }}
-                onSelect={(item) => {
-                  setSymbolInput(item.symbol)
-                  setNameInput(item.name)
-                  setExchange(item.exchange)
-                }}
-                placeholder={
-                  region === 'domestic' ? '삼성전자 또는 005930' : 'Apple 또는 AAPL'
-                }
-                query={nameInput}
-                region={region}
-                selectedSymbol={symbolInput}
-              />
-            </label>
-            <button className="primary" disabled={loading} type="submit">
-              추가
+          <section className="control-section">
+            <div className="section-title-row">
+              <h2>수집 기간</h2>
+              <label className="inline-check">
+                <input
+                  checked={rangeEnabled}
+                  onChange={(event) => setRangeEnabled(event.target.checked)}
+                  type="checkbox"
+                />
+                직접 지정
+              </label>
+            </div>
+            <div className="range-grid">
+              <label className="field">
+                {timeframeKind === 'day' ? '시작일' : '시작 시각'}
+                <input
+                  disabled={!rangeEnabled}
+                  max={endDate}
+                  onChange={(event) => setStartDate(event.target.value)}
+                  step={timeframeKind === 'day' ? undefined : 1}
+                  type={rangeInputType}
+                  value={startDate}
+                />
+              </label>
+              <label className="field">
+                {timeframeKind === 'day' ? '종료일' : '종료 시각'}
+                <input
+                  disabled={!rangeEnabled}
+                  min={startDate}
+                  onChange={(event) => setEndDate(event.target.value)}
+                  step={timeframeKind === 'day' ? undefined : 1}
+                  type={rangeInputType}
+                  value={endDate}
+                />
+              </label>
+            </div>
+            <p className="hint">
+              날짜와 시각은 대한민국 시간(KST) 기준입니다. 미지정 시 기존 캐시의 마지막 봉 이후를
+              증분 수집하고, 지정 시 해당 기간을 조회해 캐시에 병합합니다.
+            </p>
+            <button className="primary collection-target-add" disabled={loading} type="submit">
+              수집 대상 추가
             </button>
-          </form>
-        </section>
+          </section>
+        </form>
 
         <section className="control-section grow">
           <div className="section-title-row">
-            <h2>종목</h2>
+            <h2>수집 대상</h2>
             <button
               className="ghost"
               disabled={loading || watchlist.length === 0}
@@ -539,14 +559,19 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
           </div>
           <div className="watch-table">
             {watchlist.length === 0 ? (
-              <p className="empty">종목을 검색해 목록에 추가하세요.</p>
+              <p className="empty">종목과 수집 조건을 설정해 대상을 추가하세요.</p>
             ) : (
               watchlist.map((item) => {
                 const key = watchItemKey(item)
                 const status = statuses[key]
+                const collectionStatus = collectionStates[key]
                 return (
                   <div
-                    className={key === selectedKey ? 'watch-row selected' : 'watch-row'}
+                    className={[
+                      'watch-row',
+                      key === selectedKey ? 'selected' : '',
+                      collectionStatus === 'running' ? 'collecting' : '',
+                    ].filter(Boolean).join(' ')}
                     key={key}
                   >
                     <button
@@ -562,23 +587,37 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                       </span>
                       <small className="data-range">
                         {status
-                          ? `${status.bars.toLocaleString()}봉 · ${formatDateTime(status.first)} ~ ${formatDateTime(status.last)}`
-                          : `${item.timeframe} 미수집`}
+                          ? `${status.bars.toLocaleString()} · ${formatDateTime(status.first)} ~ ${formatDateTime(status.last)}`
+                          : `null · ${item.timeframe} · ${formatDateTime(item.start ?? undefined)} ~ ${formatDateTime(item.end ?? undefined)}`}
                       </small>
                     </button>
                     <div className="row-actions">
-                      <button disabled={loading} onClick={() => ingest(item)} type="button">
-                        수집
+                      <button
+                        disabled={loading || Boolean(collectionStatus)}
+                        onClick={() => enqueueIngest(item)}
+                        type="button"
+                      >
+                        {collectionStatus === 'queued'
+                          ? '대기 중...'
+                          : collectionStatus === 'running'
+                            ? '수집 중...'
+                            : '수집'}
                       </button>
                       <button
                         className="danger"
-                        disabled={loading}
+                        disabled={loading || Boolean(collectionStatus)}
                         onClick={() => removeWatchItem(item)}
                         type="button"
                       >
                         삭제
                       </button>
                     </div>
+                    {collectionStatus === 'running' ? (
+                      <div aria-live="polite" className="watch-collection-overlay" role="status">
+                        <span aria-hidden="true" className="watch-collection-spinner" />
+                        <span>데이터 수집 중</span>
+                      </div>
+                    ) : null}
                   </div>
                 )
               })

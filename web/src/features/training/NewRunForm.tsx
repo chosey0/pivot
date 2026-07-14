@@ -26,7 +26,7 @@ export function NewRunForm({ datasets, onCreated, onClose }: Props) {
   const [model, setModel] = useState<ModelType>('cnn1d_legacy_v1')
   const [epochs, setEpochs] = useState(20)
   const [batchSize, setBatchSize] = useState(64)
-  const [learningRate, setLearningRate] = useState(0.001)
+  const [learningRate, setLearningRate] = useState('0.001')
   const [sampler, setSampler] = useState<SamplerType>('none')
   const [seed, setSeed] = useState(42)
   const [submitting, setSubmitting] = useState(false)
@@ -49,7 +49,7 @@ export function NewRunForm({ datasets, onCreated, onClose }: Props) {
     epochs >= 1 &&
     Number.isInteger(batchSize) &&
     batchSize >= 1 &&
-    learningRate > 0 &&
+    Number(learningRate) > 0 &&
     Number.isInteger(seed)
 
   async function submit() {
@@ -61,7 +61,7 @@ export function NewRunForm({ datasets, onCreated, onClose }: Props) {
         model,
         epochs,
         batch_size: batchSize,
-        learning_rate: learningRate,
+        learning_rate: Number(learningRate),
         sampler,
         seed,
         scaling: 'sample_standard_v1',
@@ -137,36 +137,44 @@ export function NewRunForm({ datasets, onCreated, onClose }: Props) {
             <label className="field">
               epochs
               <input
-                min={1}
-                onChange={(event) => setEpochs(Number(event.target.value))}
-                type="number"
+                inputMode="numeric"
+                onChange={(event) => setEpochs(Number(event.target.value.replace(/\D/g, '')))}
+                pattern="[0-9]*"
+                type="text"
                 value={epochs}
               />
             </label>
             <label className="field">
               batch size
               <input
-                min={1}
-                onChange={(event) => setBatchSize(Number(event.target.value))}
-                type="number"
+                inputMode="numeric"
+                onChange={(event) => setBatchSize(Number(event.target.value.replace(/\D/g, '')))}
+                pattern="[0-9]*"
+                type="text"
                 value={batchSize}
               />
             </label>
             <label className="field">
               learning rate
               <input
-                min={0}
-                onChange={(event) => setLearningRate(Number(event.target.value))}
-                step={0.0001}
-                type="number"
+                inputMode="decimal"
+                onChange={(event) => {
+                  if (/^\d*\.?\d*$/.test(event.target.value)) {
+                    setLearningRate(event.target.value)
+                  }
+                }}
+                pattern="[0-9]*[.]?[0-9]*"
+                type="text"
                 value={learningRate}
               />
             </label>
             <label className="field">
               seed
               <input
-                onChange={(event) => setSeed(Number(event.target.value))}
-                type="number"
+                inputMode="numeric"
+                onChange={(event) => setSeed(Number(event.target.value.replace(/\D/g, '')))}
+                pattern="[0-9]*"
+                type="text"
                 value={seed}
               />
             </label>

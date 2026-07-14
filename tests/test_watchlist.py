@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from pivot.ingestion.cache import cache_path
 from server.routers import watchlist
-from server.routers.watchlist import WatchItem, WatchItemUpdate
+from server.routers.watchlist import WatchItem
 
 
 def test_legacy_item_expands_to_cached_timeframes(tmp_path, monkeypatch):
@@ -76,33 +76,6 @@ def test_removing_last_cache_reference_deletes_local_data(tmp_path, monkeypatch)
     watchlist.remove_watch_item("005930", timeframe="min1")
 
     assert not cache.exists()
-
-
-def test_collection_range_can_be_updated_without_deleting_shared_cache(
-    tmp_path, monkeypatch
-):
-    data_root = tmp_path / "data"
-    monkeypatch.setattr(watchlist, "WATCHLIST_PATH", tmp_path / "watchlist.json")
-    monkeypatch.setattr(watchlist, "DATA_ROOT", data_root)
-    original = WatchItem(symbol="005930", timeframe="min1")
-    replacement = WatchItem.model_validate(
-        {
-            **original.model_dump(),
-            "start": "2026-07-15T09:00:00",
-            "end": "2026-07-15T10:00:00",
-        }
-    )
-    cache = cache_path(data_root, "kiwoom", "min1", "005930")
-    cache.mkdir(parents=True)
-    watchlist.add_watch_item(original)
-
-    items = watchlist.update_watch_item(
-        WatchItemUpdate(original=original, replacement=replacement)
-    )
-
-    assert items[0]["start"] == "2026-07-15T09:00:00"
-    assert items[0]["end"] == "2026-07-15T10:00:00"
-    assert cache.exists()
 
 
 def test_removing_shared_range_keeps_cache_until_last_reference(tmp_path, monkeypatch):

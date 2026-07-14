@@ -21,6 +21,7 @@ class FakeLiveService:
                 "market_state": "closed",
             },
             "deployment": None,
+            "prediction_threshold": 0.7,
             "subscriptions": self.rows,
             "counters": {},
         }
@@ -47,6 +48,11 @@ class FakeLiveService:
 
     async def deactivate_model(self):
         return self.state()
+
+    async def set_prediction_threshold(self, threshold):
+        result = self.state()
+        result["prediction_threshold"] = threshold
+        return result
 
     def subscriptions(self):
         return self.rows
@@ -94,6 +100,9 @@ def test_live_http_mutations_return_ui_contract_state():
         state = client.get("/api/live/state")
         activated = client.put("/api/live/model", json={"run_id": 4, "artifact_id": 7})
         deactivated = client.delete("/api/live/model")
+        threshold = client.put(
+            "/api/live/prediction-threshold", json={"threshold": 0.825}
+        )
         subscribed = client.post("/api/live/subscriptions", json={"symbol": "005930"})
         removed = client.delete("/api/live/subscriptions/005930")
 
@@ -101,6 +110,7 @@ def test_live_http_mutations_return_ui_contract_state():
     assert set(state.json()) == {
         "connection",
         "deployment",
+        "prediction_threshold",
         "subscriptions",
         "counters",
     }
@@ -119,9 +129,19 @@ def test_live_http_mutations_return_ui_contract_state():
         "activated_at": "2026-07-13T00:00:00+00:00",
     }
     assert deactivated.json()["deployment"] is None
+    assert threshold.json()["prediction_threshold"] == 0.825
     assert subscribed.json()[0]["inference_status"] == "no_model"
     assert subscribed.json()[0]["region"] == "domestic"
     assert removed.json() == []
+
+
+def test_live_prediction_threshold_rejects_out_of_range_value():
+    with _client() as client:
+        response = client.put(
+            "/api/live/prediction-threshold", json={"threshold": 1.01}
+        )
+
+    assert response.status_code == 422
 
 
 def test_live_http_subscribes_overseas_symbol_with_market_metadata():
@@ -200,6 +220,7 @@ def test_live_websocket_starts_with_snapshot(tmp_path):
     assert set(event["data"]) == {
         "connection",
         "deployment",
+        "prediction_threshold",
         "subscriptions",
         "counters",
         "latest_candles",

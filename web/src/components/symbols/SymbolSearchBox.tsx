@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { api, type InstrumentRegion, type SymbolSuggestion } from '../../api/client'
 
 interface SymbolSearchBoxProps {
@@ -28,6 +28,7 @@ export function SymbolSearchBox({
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(0)
   const [loading, setLoading] = useState(false)
+  const pendingCompositionSelection = useRef<SymbolSuggestion | null>(null)
 
   useEffect(() => {
     const normalized = query.trim()
@@ -77,10 +78,22 @@ export function SymbolSearchBox({
       setActiveIndex((current) => (current === 0 ? suggestions.length - 1 : current - 1))
     } else if (event.key === 'Enter') {
       event.preventDefault()
-      select(suggestions[activeIndex])
+      const item = suggestions[activeIndex]
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+        pendingCompositionSelection.current = item
+      } else {
+        select(item)
+      }
     } else if (event.key === 'Escape') {
       setOpen(false)
     }
+  }
+
+  function handleKeyUp(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== 'Enter' || !pendingCompositionSelection.current) return
+    const item = pendingCompositionSelection.current
+    pendingCompositionSelection.current = null
+    window.setTimeout(() => select(item), 0)
   }
 
   return (
@@ -91,6 +104,7 @@ export function SymbolSearchBox({
         onChange={(event) => onQueryChange(event.target.value)}
         onFocus={() => setOpen(suggestions.length > 0)}
         onKeyDown={handleKeyDown}
+        onKeyUp={handleKeyUp}
         placeholder={placeholder}
         value={query}
       />

@@ -59,6 +59,7 @@ CLIENT_QUEUE_SIZE = 256
 LIVE_DISPLAY_TIMEFRAMES = ("day", "min1")
 LIVE_MINUTE_PAGE_DAYS = 7
 LIVE_DAY_PAGE_DAYS = 365
+DEFAULT_PREDICTION_THRESHOLD = 0.7
 OVERSEAS_SYMBOL_RE = re.compile(r"^[A-Z0-9.-]{1,20}$")
 logger = logging.getLogger(__name__)
 
@@ -249,6 +250,7 @@ class LiveService:
         self._listeners: set[LiveListener] = set()
         self._engine: LiveInferenceEngine | None = None
         self._deployment: dict | None = None
+        self._prediction_threshold = DEFAULT_PREDICTION_THRESHOLD
         self._client: Any = None
         self._sessions: dict[str, Any] = {}
         self._gateway_task: asyncio.Task | None = None
@@ -351,6 +353,7 @@ class LiveService:
                 deployment_id=deployment["id"],
                 device=torch.device("cpu"),
             )
+            engine.set_prediction_threshold(self._prediction_threshold)
             await self._install_engine(
                 engine,
                 self._public_deployment(
@@ -360,6 +363,17 @@ class LiveService:
             await self._reconcile_all()
             await self._broadcast_snapshot()
             return self.state()
+
+    async def set_prediction_threshold(self, threshold: float) -> dict:
+        if not 0 <= threshold <= 1:
+            raise ValueError("prediction threshold must be between 0 and 1")
+        async with self._activation_lock:
+            async with self._inference_lock:
+                self._prediction_threshold = threshold
+                if self._engine is not None:
+                    self._engine.set_prediction_threshold(threshold)
+        await self._broadcast_snapshot()
+        return self.state()
 
     async def deactivate_model(self) -> dict:
         async with self._activation_lock:
@@ -611,6 +625,7 @@ class LiveService:
                 "market_state": self._market_state,
             },
             "deployment": self._deployment.copy() if self._deployment else None,
+            "prediction_threshold": self._prediction_threshold,
             "subscriptions": self.subscriptions(),
             "counters": counters,
         }
@@ -741,6 +756,7 @@ class LiveService:
                 deployment_id=deployment["id"],
                 device=torch.device("cpu"),
             )
+            engine.set_prediction_threshold(self._prediction_threshold)
             await self._install_engine(
                 engine,
                 self._public_deployment(
@@ -1266,7 +1282,15 @@ class LiveService:
 
     def _prediction_payload(self, prediction: LivePrediction) -> dict:
         timeframe = Timeframe.from_code(prediction.timeframe)
-        time = _live_time_value(prediction.closed_time, timeframe)
+        target = self._desired.get(prediction.symbol)
+        source_timezone = (
+            target.timezone
+            if target is not None and target.region == "overseas"
+            else None
+        )
+        time = _live_time_value(
+            prediction.closed_time, timeframe, source_timezone=source_timezone
+        )
         return {
             "symbol": prediction.symbol,
             "timeframe": prediction.timeframe,
@@ -1278,11 +1302,23 @@ class LiveService:
                     "pairing_rule": item.candidate.pairing_rule,
                     "anchor_position": item.candidate.anchor_position,
                     "anchor_time": _live_time_value(
-                        item.candidate.anchor_time, timeframe
+                        item.candidate.anchor_time,
+                        timeframe,
+                        source_timezone=source_timezone,
                     ),
                     "anchor_kind": item.candidate.anchor_kind,
-                    "start": _live_time_value(item.candidate.anchor_time, timeframe),
-                    "end": _live_time_value(item.candidate.end_time, timeframe),
+                    "anchor_source": item.candidate.anchor_source,
+                    "anchor_confidence": item.candidate.anchor_confidence,
+                    "start": _live_time_value(
+                        item.candidate.anchor_time,
+                        timeframe,
+                        source_timezone=source_timezone,
+                    ),
+                    "end": _live_time_value(
+                        item.candidate.end_time,
+                        timeframe,
+                        source_timezone=source_timezone,
+                    ),
                     "shared_window": item.candidate.shared_window,
                 }
                 for item in prediction.candidates
@@ -1365,13 +1401,17 @@ def _symbol(value: Any, region: Region = "domestic") -> str:
 
 
 def _live_time_value(
-    value: dt.datetime | pd.Timestamp, timeframe: Timeframe
+    value: dt.datetime | pd.Timestamp,
+    timeframe: Timeframe,
+    *,
+    source_timezone: ZoneInfo | None = None,
 ) -> str | int:
     """실시간 aware 시각을 기존 차트의 KST 벽시계 인코딩으로 맞춘다."""
     timestamp = pd.Timestamp(value)
     if timestamp.tzinfo is not None:
         source_timezone = timestamp.tzinfo
         timestamp = timestamp.tz_localize(None)
+    if source_timezone is not None:
         return display_time_value(timestamp, timeframe, source_timezone)
     return time_value(timestamp, timeframe)
 

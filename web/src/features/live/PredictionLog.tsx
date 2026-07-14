@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { PredictionEventData } from '../../api/live'
 import { formatEventTime } from './time'
 
@@ -14,9 +14,18 @@ function predictionKey(row: PredictionEventData) {
  */
 export function PredictionLog({ predictions }: { predictions: PredictionEventData[] }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const rowRefs = useRef(new Map<string, HTMLTableRowElement>())
 
   const rows = [...predictions].reverse()
   const selected = rows.find((row) => predictionKey(row) === selectedKey) ?? null
+
+  const moveSelection = (index: number, direction: -1 | 1) => {
+    const next = rows[index + direction]
+    if (!next) return
+    const key = predictionKey(next)
+    setSelectedKey(key)
+    requestAnimationFrame(() => rowRefs.current.get(key)?.focus())
+  }
 
   if (rows.length === 0) {
     return <p className="empty">아직 판정이 없습니다. 봉이 마감되면 후보 점수가 기록됩니다.</p>
@@ -36,13 +45,27 @@ export function PredictionLog({ predictions }: { predictions: PredictionEventDat
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
+          {rows.map((row, index) => {
             const key = predictionKey(row)
             return (
               <tr
+                aria-selected={key === selectedKey}
                 className={key === selectedKey ? 'selected' : undefined}
                 key={key}
-                onClick={() => setSelectedKey(key === selectedKey ? null : key)}
+                onClick={(event) => {
+                  setSelectedKey(key === selectedKey ? null : key)
+                  event.currentTarget.focus()
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                  event.preventDefault()
+                  moveSelection(index, event.key === 'ArrowUp' ? -1 : 1)
+                }}
+                ref={(element) => {
+                  if (element) rowRefs.current.set(key, element)
+                  else rowRefs.current.delete(key)
+                }}
+                tabIndex={key === selectedKey || (selectedKey === null && index === 0) ? 0 : -1}
               >
                 <td>{formatEventTime(row.time)}</td>
                 <td>{row.symbol}</td>
@@ -110,7 +133,11 @@ export function PredictionLog({ predictions }: { predictions: PredictionEventDat
                   <dt>anchor</dt>
                   <dd>
                     {window.anchor_kind === 'low' ? '저점' : '고점'} ·{' '}
-                    {formatEventTime(window.anchor_time)} (#{window.anchor_position})
+                    {formatEventTime(window.anchor_time)} (#{window.anchor_position}) ·{' '}
+                    {window.anchor_source === 'prediction' ? '모델 판정' : '계산 프랙탈'}
+                    {window.anchor_confidence == null
+                      ? ''
+                      : ` ${(window.anchor_confidence * 100).toFixed(1)}%`}
                   </dd>
                 </div>
                 <div>

@@ -18,9 +18,16 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'live', label: '실시간' },
 ]
 
+const TAB_STORAGE_KEY = 'pivot.active-tab'
+
+function storedTab(): TabId {
+  const value = localStorage.getItem(TAB_STORAGE_KEY)
+  return TABS.some((tab) => tab.id === value) ? (value as TabId) : 'watchlist'
+}
+
 function App() {
-  const [activeTab, setActiveTab] = useState<TabId>('watchlist')
-  const [liveVisited, setLiveVisited] = useState(false)
+  const [activeTab, setActiveTab] = useState<TabId>(storedTab)
+  const [liveVisited, setLiveVisited] = useState(activeTab === 'live')
   const [subtitle, setSubtitle] = useState<string | null>(null)
 
   return (
@@ -36,6 +43,7 @@ function App() {
               className={tab.id === activeTab ? 'tab active' : 'tab'}
               key={tab.id}
               onClick={() => {
+                localStorage.setItem(TAB_STORAGE_KEY, tab.id)
                 setActiveTab(tab.id)
                 if (tab.id === 'live') setLiveVisited(true)
               }}

@@ -85,7 +85,13 @@ def run_training(
         config = TrainingConfig.model_validate(run["config"])
         device = select_device()
         runs.mark_running(run_id, str(device))
-        emit("run", public_run(runs.get(run_id)))
+        emit(
+            "run",
+            {
+                **public_run(runs.get(run_id)),
+                "deployment_ids": runs.deployment_ids(run_id),
+            },
+        )
 
         splits = build_split_datasets(
             datasets, storage, diagnostics, run["dataset_id"], cache_root

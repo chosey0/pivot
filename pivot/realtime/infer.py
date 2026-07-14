@@ -32,6 +32,8 @@ class CandidateWindow:
     anchor_position: int
     anchor_time: pd.Timestamp
     anchor_kind: str
+    anchor_source: str
+    anchor_confidence: float | None
     end_position: int
     end_time: pd.Timestamp
     target_label: int | None
@@ -58,6 +60,13 @@ class LivePrediction:
     candidates: list[CandidatePrediction]
 
 
+@dataclass(frozen=True)
+class PredictionAnchor:
+    time: pd.Timestamp
+    kind: str
+    confidence: float
+
+
 class LiveInferenceEngine:
     """활성 deployment 하나의 snapshot 계약과 멱등 추론을 소유한다."""
 
@@ -72,6 +81,9 @@ class LiveInferenceEngine:
         self.deployment_id = deployment_id
         self.device = device
         self.preset = preset_from_checkpoint(checkpoint)
+        self.prediction_threshold = 0.7
+        self._prediction_history: dict[str, deque[PredictionAnchor]] = {}
+        self._prediction_anchors: dict[str, dict[str, PredictionAnchor]] = {}
         self._seen: set[tuple[str, str, pd.Timestamp, int]] = set()
         self._seen_order: deque[tuple[str, str, pd.Timestamp, int]] = deque()
 
@@ -83,22 +95,56 @@ class LiveInferenceEngine:
         if key in self._seen:
             return None
         candidates = build_candidate_windows(
-            frame, self.preset, self.checkpoint.feature_columns
+            frame,
+            self.preset,
+            self.checkpoint.feature_columns,
+            prediction_anchors=self._prediction_anchors.get(symbol),
         )
         predictions = infer_candidates(
             self.checkpoint, candidates, device=self.device
         )
         scores = _combined_scores(predictions)
         self._remember(key)
-        return LivePrediction(
+        selected_class = max(range(len(scores)), key=scores.__getitem__)
+        prediction = LivePrediction(
             deployment_id=self.deployment_id,
             symbol=symbol,
             timeframe=self.preset.timeframe.code,
             closed_time=closed_time,
             scores=scores,
-            selected_class=max(range(len(scores)), key=scores.__getitem__),
+            selected_class=selected_class,
             candidates=predictions,
         )
+        if selected_class in (0, 1):
+            kind = "low" if selected_class == 0 else "high"
+            self._prediction_history.setdefault(symbol, deque(maxlen=1_000)).append(
+                PredictionAnchor(
+                    time=closed_time,
+                    kind=kind,
+                    confidence=scores[selected_class],
+                )
+            )
+            self._rebuild_prediction_anchors(symbol)
+        return prediction
+
+    def set_prediction_threshold(self, threshold: float) -> None:
+        if not 0 <= threshold <= 1:
+            raise ValueError("prediction threshold must be between 0 and 1")
+        if threshold == self.prediction_threshold:
+            return
+        self.prediction_threshold = threshold
+        for symbol in self._prediction_history:
+            self._rebuild_prediction_anchors(symbol)
+
+    def _rebuild_prediction_anchors(self, symbol: str) -> None:
+        anchors: dict[str, PredictionAnchor] = {}
+        for anchor in self._prediction_history.get(symbol, ()):
+            if anchor.confidence >= self.prediction_threshold:
+                anchors[anchor.kind] = anchor
+        if anchors:
+            self._prediction_anchors[symbol] = anchors
+        else:
+            self._prediction_anchors.pop(symbol, None)
 
     @torch.no_grad()
     def warmup(self) -> None:
@@ -138,6 +184,8 @@ def build_candidate_windows(
     frame: pd.DataFrame,
     preset: PreprocessPreset,
     feature_columns: list[str],
+    *,
+    prediction_anchors: dict[str, PredictionAnchor] | None = None,
 ) -> list[CandidateWindow]:
     if list(feature_columns) != list(preset.features):
         raise ValueError("checkpoint feature columns do not match the preset snapshot")
@@ -145,25 +193,44 @@ def build_candidate_windows(
     if active.empty:
         raise LiveWarmupError("current bar is outside a retained cleaning segment")
     result = run_preprocess(active, active_preset)
-    if result.frame.empty or result.points.empty:
+    if result.frame.empty:
         raise LiveWarmupError("not enough confirmed fractal history")
     end = len(result.frame) - 1
     points = result.points[result.points["position"] < end]
-    if points.empty:
+    if points.empty and not prediction_anchors:
         raise LiveWarmupError("no confirmed anchor before the current bar")
 
     if preset.labeling.sample_pairing == "adjacent_markers_v1":
-        return [_candidate(result.frame, points.iloc[-1], end, feature_columns, None, True)]
+        anchors = [
+            anchor
+            for kind in ("low", "high")
+            if (anchor := _latest_anchor(result.frame, points, end, kind, prediction_anchors))
+            is not None
+        ]
+        if not anchors:
+            raise LiveWarmupError("no confirmed anchor before the current bar")
+        return [
+            _candidate(
+                result.frame,
+                max(anchors, key=lambda anchor: anchor[0]),
+                end,
+                feature_columns,
+                None,
+                True,
+            )
+        ]
 
     candidates: list[CandidateWindow] = []
     for anchor_kind, target_label in (("high", 0), ("low", 1)):
-        anchors = points[points["kind"] == anchor_kind]
-        if anchors.empty:
+        anchor = _latest_anchor(
+            result.frame, points, end, anchor_kind, prediction_anchors
+        )
+        if anchor is None:
             raise LiveWarmupError(f"no confirmed {anchor_kind} anchor")
         candidates.append(
             _candidate(
                 result.frame,
-                anchors.iloc[-1],
+                anchor,
                 end,
                 feature_columns,
                 target_label,
@@ -222,13 +289,13 @@ def _combined_scores(predictions: list[CandidatePrediction]) -> list[float]:
 
 def _candidate(
     frame: pd.DataFrame,
-    anchor: pd.Series,
+    anchor: tuple[int, str, str, float | None],
     end: int,
     feature_columns: list[str],
     target_label: int | None,
     shared: bool,
 ) -> CandidateWindow:
-    start = int(anchor["position"])
+    start, anchor_kind, anchor_source, anchor_confidence = anchor
     values = frame[feature_columns].iloc[start : end + 1].to_numpy(dtype=np.float64)
     if not np.isfinite(values).all():
         raise LiveWarmupError("candidate features contain NaN or infinite values")
@@ -236,13 +303,34 @@ def _candidate(
         pairing_rule="adjacent_markers_v1" if shared else "latest_opposite_v1",
         anchor_position=start,
         anchor_time=pd.Timestamp(frame.index[start]),
-        anchor_kind=str(anchor["kind"]),
+        anchor_kind=anchor_kind,
+        anchor_source=anchor_source,
+        anchor_confidence=anchor_confidence,
         end_position=end,
         end_time=pd.Timestamp(frame.index[end]),
         target_label=target_label,
         shared_window=shared,
         features=values,
     )
+
+
+def _latest_anchor(
+    frame: pd.DataFrame,
+    points: pd.DataFrame,
+    end: int,
+    kind: str,
+    prediction_anchors: dict[str, PredictionAnchor] | None,
+) -> tuple[int, str, str, float | None] | None:
+    candidates: list[tuple[int, str, str, float | None]] = []
+    calculated = points[points["kind"] == kind]
+    if not calculated.empty:
+        candidates.append((int(calculated.iloc[-1]["position"]), kind, "calculated", None))
+    predicted = (prediction_anchors or {}).get(kind)
+    if predicted is not None:
+        position = int(frame.index.get_indexer([predicted.time])[0])
+        if 0 <= position < end:
+            candidates.append((position, kind, "prediction", predicted.confidence))
+    return max(candidates, key=lambda anchor: anchor[0]) if candidates else None
 
 
 def _active_frame(

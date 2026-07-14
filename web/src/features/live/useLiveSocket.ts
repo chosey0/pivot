@@ -34,6 +34,7 @@ export interface LiveErrorInfo extends ErrorEventData {
 export interface LiveSocketState {
   connection: LiveConnection
   deployment: LiveDeployment | null
+  predictionThreshold: number
   subscriptions: LiveSubscription[]
   candles: Record<string, SymbolCandles>
   predictions: PredictionEventData[]
@@ -57,23 +58,82 @@ const EMPTY_CONNECTION: LiveConnection = {
   market_state: null,
 }
 
-const INITIAL_STATE: LiveSocketState = {
-  connection: EMPTY_CONNECTION,
-  deployment: null,
-  subscriptions: [],
-  candles: {},
-  predictions: [],
-  warmups: {},
-  lastError: null,
-  snapshotNonce: 0,
-  hasSnapshot: false,
-  ignoredEvents: 0,
-}
-
-const MAX_PREDICTIONS = 50
+const PREDICTION_STORAGE_KEY = 'pivot.live.predictions.v1'
+const MAX_PREDICTIONS_PER_SYMBOL = 200
 const MAX_LIVE_CANDLES = 500
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 15000
+
+function predictionKey(row: PredictionEventData): string {
+  return `${row.symbol}:${row.timeframe}:${row.time}:${row.deployment_id}`
+}
+
+function mergePredictions(
+  rows: PredictionEventData[],
+  symbols?: Set<string>,
+): PredictionEventData[] {
+  const unique = new Map<string, PredictionEventData>()
+  for (const row of rows) {
+    if (symbols && !symbols.has(row.symbol)) continue
+    unique.delete(predictionKey(row))
+    unique.set(predictionKey(row), row)
+  }
+  const counts = new Map<string, number>()
+  return [...unique.values()]
+    .reverse()
+    .filter((row) => {
+      const count = counts.get(row.symbol) ?? 0
+      if (count >= MAX_PREDICTIONS_PER_SYMBOL) return false
+      counts.set(row.symbol, count + 1)
+      return true
+    })
+    .reverse()
+}
+
+function loadStoredPredictions(): PredictionEventData[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PREDICTION_STORAGE_KEY) ?? '[]')
+    if (!Array.isArray(parsed)) return []
+    return mergePredictions(
+      parsed.filter(
+        (row): row is PredictionEventData =>
+          typeof row === 'object' &&
+          row !== null &&
+          typeof row.symbol === 'string' &&
+          typeof row.timeframe === 'string' &&
+          (typeof row.time === 'string' || typeof row.time === 'number') &&
+          Array.isArray(row.scores) &&
+          row.scores.length === 3 &&
+          row.scores.every(
+            (score: unknown) => typeof score === 'number' && Number.isFinite(score),
+          ) &&
+          Number.isInteger(row.selected_class) &&
+          row.selected_class >= 0 &&
+          row.selected_class <= 2 &&
+          typeof row.deployment_id === 'number' &&
+          Array.isArray(row.candidate_windows),
+      ),
+    )
+  } catch {
+    return []
+  }
+}
+
+function initialState(): LiveSocketState {
+  return {
+    connection: EMPTY_CONNECTION,
+    deployment: null,
+    predictionThreshold: 0.7,
+    subscriptions: [],
+    candles: {},
+    predictions: loadStoredPredictions(),
+    warmups: {},
+    lastError: null,
+    snapshotNonce: 0,
+    hasSnapshot: false,
+    ignoredEvents: 0,
+  }
+}
 
 function compareTimes(a: string | number, b: string | number): number {
   if (typeof a === 'number' && typeof b === 'number') return a - b
@@ -146,13 +206,19 @@ function applyEvent(state: LiveSocketState, event: LiveEvent): LiveSocketState {
       for (const entry of data.latest_candles ?? []) {
         candles = applyCandleEvent(candles, entry, !entry.provisional)
       }
+      const subscriptions = data.subscriptions ?? []
+      const symbols = new Set(subscriptions.map((row) => row.symbol))
       return {
         ...state,
         connection: { ...EMPTY_CONNECTION, ...data.connection },
         deployment: data.deployment ?? null,
-        subscriptions: data.subscriptions ?? [],
+        predictionThreshold: data.prediction_threshold ?? 0.7,
+        subscriptions,
         candles,
-        predictions: (data.recent_predictions ?? []).slice(-MAX_PREDICTIONS),
+        predictions: mergePredictions(
+          [...state.predictions, ...(data.recent_predictions ?? [])],
+          symbols,
+        ),
         warmups: {},
         snapshotNonce: state.snapshotNonce + 1,
         hasSnapshot: true,
@@ -183,7 +249,7 @@ function applyEvent(state: LiveSocketState, event: LiveEvent): LiveSocketState {
       delete warmups[data.symbol]
       return {
         ...state,
-        predictions: [...state.predictions, data].slice(-MAX_PREDICTIONS),
+        predictions: mergePredictions([...state.predictions, data]),
         warmups,
         subscriptions: setInference(state.subscriptions, data.symbol, 'ready'),
       }
@@ -228,6 +294,7 @@ function reducer(state: LiveSocketState, action: Action): LiveSocketState {
         ...state,
         connection: { ...state.connection, ...action.state.connection },
         deployment: action.state.deployment,
+        predictionThreshold: action.state.prediction_threshold ?? 0.7,
         subscriptions: action.state.subscriptions,
       }
     case 'apply_subscriptions': {
@@ -235,7 +302,12 @@ function reducer(state: LiveSocketState, action: Action): LiveSocketState {
       const warmups = Object.fromEntries(
         Object.entries(state.warmups).filter(([symbol]) => symbols.has(symbol)),
       )
-      return { ...state, subscriptions: action.rows, warmups }
+      return {
+        ...state,
+        subscriptions: action.rows,
+        predictions: mergePredictions(state.predictions, symbols),
+        warmups,
+      }
     }
     case 'dismiss_error':
       return { ...state, lastError: null }
@@ -248,13 +320,21 @@ function reducer(state: LiveSocketState, action: Action): LiveSocketState {
  * 브라우저 WS 단절은 제한 백오프(1s→최대 15s)로 재접속한다.
  */
 export function useLiveSocket() {
-  const [state, dispatch] = useReducer(reducer, INITIAL_STATE)
+  const [state, dispatch] = useReducer(reducer, undefined, initialState)
   const [socketStatus, setSocketStatus] = useReducer(
     (_: SocketStatus, next: SocketStatus) => next,
     'connecting',
   )
   const lastSequenceRef = useRef<number | null>(null)
   const hasSnapshotRef = useRef(false)
+
+  useEffect(() => {
+    if (state.predictions.length === 0) {
+      localStorage.removeItem(PREDICTION_STORAGE_KEY)
+      return
+    }
+    localStorage.setItem(PREDICTION_STORAGE_KEY, JSON.stringify(state.predictions))
+  }, [state.predictions])
 
   useEffect(() => {
     let stale = false

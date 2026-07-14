@@ -7,6 +7,7 @@ import {
   type PresetRow,
   type SampleDetail,
   type SampleListResponse,
+  type TimeframeCode,
   type WatchItem,
 } from '../api/client'
 import { MiniSampleChart } from '../components/chart/MiniSampleChart'
@@ -39,8 +40,45 @@ function formatDate(value: string) {
   return value.slice(0, 19).replace('T', ' ')
 }
 
-function formatFeatureValue(value: number) {
-  return value.toLocaleString('ko-KR', { maximumFractionDigits: 3 })
+function formatFeatureValue(value: number, digits: number) {
+  return value.toLocaleString('ko-KR', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  })
+}
+
+/** 열 안에서 자릿수가 흔들리면 값 비교가 안 되므로, 열별로 실제 소수 자릿수(최대 3)에 맞춰 고정한다. */
+function columnDigits(features: number[][], columnIndex: number): number {
+  let digits = 0
+  for (const row of features) {
+    const value = row[columnIndex]
+    if (!Number.isFinite(value)) continue
+    const decimals = (String(value).split('.')[1] ?? '').length
+    digits = Math.max(digits, Math.min(decimals, 3))
+    if (digits === 3) break
+  }
+  return digits
+}
+
+/**
+ * 일봉은 날짜까지, 분/틱봉은 분까지 자른다. 초까지 적으면 체크박스 라벨이 줄바꿈되고,
+ * 분/틱봉을 날짜까지만 자르면 같은 날 시각만 다른 수집 항목이 구분되지 않는다.
+ */
+function compactTime(value: string, timeframe: TimeframeCode) {
+  return value.slice(0, timeframe === 'day' ? 10 : 16).replace('T', ' ')
+}
+
+/** 같은 종목·타임프레임이라도 수집 기간이 다르면 별개 항목이다 (watchItemKey). */
+function rangeLabel(item: WatchItem) {
+  if (!item.start && !item.end) return null
+  const start = item.start ? compactTime(item.start, item.timeframe) : '처음'
+  const end = item.end ? compactTime(item.end, item.timeframe) : '현재'
+  return `${start} ~ ${end}`
+}
+
+/** 캐시에 실제로 들어 있는 봉의 첫/마지막 시각. */
+function compactRange(item: WatchItem, status: CacheStatus) {
+  return `${compactTime(status.first, item.timeframe)} ~ ${compactTime(status.last, item.timeframe)}`
 }
 
 /** 스윙 시작(직전 반대 프랙탈 봉)~끝(현재 프랙탈 봉)의 가격 변화율(%). */
@@ -162,18 +200,28 @@ export function Datasets() {
     }
   }, [watchlist])
 
+  // 수집 데이터가 없는 항목으로 job을 걸면 반드시 실패하므로 선택 대상에서 제외한다
+  const usableKeys = useMemo(
+    () => watchlist.map(watchItemKey).filter((key) => targetStatuses[key]),
+    [targetStatuses, watchlist],
+  )
+  const usableKeySet = useMemo(() => new Set(usableKeys), [usableKeys])
+
   useEffect(() => {
-    const keys = watchlist.map(watchItemKey)
     setSelectedTargets((current) => {
-      const retained = current.filter((key) => keys.includes(key))
-      return retained.length > 0 ? retained : keys
+      const retained = current.filter((key) => usableKeySet.has(key))
+      return retained.length > 0 ? retained : usableKeys
     })
-  }, [watchlist])
+  }, [usableKeySet, usableKeys])
 
   function toggleTarget(key: string) {
     setSelectedTargets((current) =>
       current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
     )
+  }
+
+  function toggleAllTargets() {
+    setSelectedTargets((current) => (current.length === usableKeys.length ? [] : usableKeys))
   }
 
   async function archivePreset(preset: PresetRow) {
@@ -464,6 +512,15 @@ export function Datasets() {
 
   const jobRunning = job !== null && (job.status === 'queued' || job.status === 'running')
   const sampleRate = selectedSample ? sampleChangeRate(selectedSample) : null
+  const featureDigits = useMemo(
+    () =>
+      selectedSample
+        ? selectedSample.feature_columns.map((_, index) =>
+            columnDigits(selectedSample.features, index),
+          )
+        : [],
+    [selectedSample],
+  )
   const selectedSampleSource = selectedSample
     ? browse?.targets.find(
         (target) => datasetSourceKey(target) === selectedSample.source_key,
@@ -623,8 +680,20 @@ export function Datasets() {
               />
             </label>
             <div className="field">
-              대상 데이터 ({selectedTargets.length}/{watchlist.length})
-              <div className="batch-symbols">
+              <span className="field-title-row">
+                대상 데이터 ({selectedTargets.length}/{usableKeys.length})
+                <button
+                  className="ghost"
+                  disabled={usableKeys.length === 0}
+                  onClick={toggleAllTargets}
+                  type="button"
+                >
+                  {selectedTargets.length === usableKeys.length && usableKeys.length > 0
+                    ? '전체 해제'
+                    : '전체 선택'}
+                </button>
+              </span>
+              <div aria-label="대상 데이터 선택" className="batch-symbols" role="group">
                 {watchlist.length === 0 ? (
                   <p className="empty">
                     종목 & 데이터 탭에서 수집 항목을 먼저 추가하세요.
@@ -634,24 +703,31 @@ export function Datasets() {
                     const key = watchItemKey(item)
                     const status = targetStatuses[key]
                     const statusLoaded = Object.hasOwn(targetStatuses, key)
+                    const cacheRange = status ? compactRange(item, status) : null
+                    // 요청 기간과 캐시 범위가 같으면 같은 값을 두 번 적을 뿐이라 배지를 숨긴다
+                    const range = rangeLabel(item)
+                    const showRange = range !== null && range !== cacheRange
                     return (
                     <label
-                      className="inline-check"
+                      className={status ? 'inline-check' : 'inline-check unusable'}
                       key={key}
+                      title={status ? undefined : '수집된 봉이 없어 전처리 대상으로 쓸 수 없습니다'}
                     >
                       <input
                         checked={selectedTargets.includes(key)}
+                        disabled={statusLoaded && !status}
                         onChange={() => toggleTarget(key)}
                         type="checkbox"
                       />
                       {item.name || item.symbol} · {timeframeLabel(item.timeframe)}
+                      {showRange ? (
+                        <em className="target-range" title="수집 요청 기간">
+                          {range}
+                        </em>
+                      ) : null}
                       <span className="muted-text">
                         {item.symbol} ·{' '}
-                        {status
-                          ? `${formatDate(status.first)} ~ ${formatDate(status.last)}`
-                          : statusLoaded
-                            ? '수집 데이터 없음'
-                            : '범위 확인 중'}
+                        {cacheRange ?? (statusLoaded ? '수집 데이터 없음' : '범위 확인 중')}
                       </span>
                     </label>
                     )
@@ -735,40 +811,40 @@ export function Datasets() {
           ) : datasets.length === 0 ? (
             <p className="empty">아직 생성된 데이터셋이 없습니다.</p>
           ) : (
-            <div className="dataset-table">
-              <div className="dataset-row dataset-head">
-                <span>이름</span>
-                <span>상태</span>
-                <span>프리셋</span>
-                <span>샘플</span>
-                <span>클래스 분포</span>
-                <span>생성일</span>
-                <span>동작</span>
+            <div className="dataset-table" role="table">
+              <div className="dataset-row dataset-head" role="row">
+                <span role="columnheader">이름</span>
+                <span role="columnheader">상태</span>
+                <span role="columnheader">프리셋</span>
+                <span role="columnheader">샘플</span>
+                <span role="columnheader">클래스 분포</span>
+                <span role="columnheader">생성일</span>
+                <span role="columnheader">동작</span>
               </div>
               {datasets.map((dataset) => (
-                <div className="dataset-row" key={dataset.id}>
-                  <span>
+                <div className="dataset-row" key={dataset.id} role="row">
+                  <span role="cell">
                     <strong>{dataset.name}</strong>
                     <em className="muted-text"> · {dataset.timeframe}</em>
                   </span>
-                  <span className={`dataset-status ${dataset.status}`}>
+                  <span className={`dataset-status ${dataset.status}`} role="cell">
                     {DATASET_STATUS_TEXT[dataset.status] ?? dataset.status}
                     {dataset.failure_message ? (
                       <em title={dataset.failure_message}> ⓘ</em>
                     ) : null}
                   </span>
-                  <span>
+                  <span role="cell">
                     {dataset.preset_snapshot?.preset_name ?? dataset.preset_id}
                     {dataset.preset_snapshot?.preset_version
                       ? ` v${dataset.preset_snapshot.preset_version}`
                       : ''}
                   </span>
-                  <span>
+                  <span role="cell">
                     {dataset.sample_count.toLocaleString()} ({dataset.symbol_count}종목)
                   </span>
-                  <span>{classCountsText(dataset.class_counts)}</span>
-                  <span>{formatDate(dataset.created_at)}</span>
-                  <span className="dataset-actions">
+                  <span role="cell">{classCountsText(dataset.class_counts)}</span>
+                  <span role="cell">{formatDate(dataset.created_at)}</span>
+                  <span className="dataset-actions" role="cell">
                     {dataset.status === 'ready' && (
                       <button
                         className="ghost"
@@ -971,7 +1047,9 @@ export function Datasets() {
                               <tr key={barIndex}>
                                 <td>{barIndex}</td>
                                 {row.map((value, columnIndex) => (
-                                  <td key={columnIndex}>{formatFeatureValue(value)}</td>
+                                  <td key={columnIndex}>
+                                    {formatFeatureValue(value, featureDigits[columnIndex] ?? 0)}
+                                  </td>
                                 ))}
                               </tr>
                             ))}

@@ -45,11 +45,6 @@ class WatchItem(BaseModel):
         return self
 
 
-class WatchItemUpdate(BaseModel):
-    original: WatchItem
-    replacement: WatchItem
-
-
 def _as_datetime(value: date | datetime, *, end_of_day: bool) -> datetime:
     if isinstance(value, datetime):
         return value
@@ -110,30 +105,6 @@ def add_watch_item(item: WatchItem) -> list[dict]:
     if any(_identity(existing) == _identity(item) for existing in items):
         raise HTTPException(409, f"same data item already exists for {item.symbol}")
     items.append(item.model_dump(mode="json"))
-    _save(items)
-    return items
-
-
-@router.put("")
-def update_watch_item(request: WatchItemUpdate) -> list[dict]:
-    if _identity(request.original)[:4] != _identity(request.replacement)[:4]:
-        raise HTTPException(422, "only the name and collection range can be updated")
-    items = _load()
-    original_identity = _identity(request.original)
-    try:
-        index = next(
-            index for index, item in enumerate(items) if _identity(item) == original_identity
-        )
-    except StopIteration:
-        raise HTTPException(404, f"data item not found for {request.original.symbol}") from None
-    replacement_identity = _identity(request.replacement)
-    if replacement_identity != original_identity and any(
-        _identity(item) == replacement_identity for item in items
-    ):
-        raise HTTPException(
-            409, f"same data item already exists for {request.replacement.symbol}"
-        )
-    items[index] = request.replacement.model_dump(mode="json")
     _save(items)
     return items
 

@@ -53,6 +53,10 @@ def test_training_run_persists_epochs_evaluations_and_verified_checkpoint(tmp_pa
     artifact = detail["artifacts"][0]
     assert storage.download(artifact["bucket"], artifact["object_path"])
     assert "object_path" not in public_artifact(artifact)
+    run_event = next(
+        event for event in db.tables["job_events"] if event["event_type"] == "run"
+    )
+    assert run_event["payload"]["deployment_ids"] == []
     assert [event["event_type"] for event in db.tables["job_events"]][
         -1
     ] == "run_succeeded"

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   api,
   type Candle,
@@ -34,6 +34,11 @@ function formatTime(value: string | number) {
     return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
   }
   return String(value)
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
 }
 
 function chartBefore(points: PredictionPoint[], timeframe: string) {
@@ -149,6 +154,37 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
   const incorrect = points.filter((point) => !point.correct)
   const visiblePoints = misclassifiedOnly ? incorrect : points
 
+  const movePoint = useCallback(
+    (delta: number) => {
+      if (visiblePoints.length === 0) return
+      setSelected((current) => {
+        const position = current
+          ? visiblePoints.findIndex((point) => point.sample_index === current.sample_index)
+          : -1
+        const next =
+          position === -1
+            ? delta > 0
+              ? 0
+              : visiblePoints.length - 1
+            : (position + delta + visiblePoints.length) % visiblePoints.length
+        return visiblePoints[next]
+      })
+    },
+    [visiblePoints],
+  )
+
+  useEffect(() => {
+    if (!selected) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableTarget(event.target)) return
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+      event.preventDefault()
+      movePoint(event.key === 'ArrowLeft' ? -1 : 1)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [movePoint, selected])
+
   return (
     <div className="pred-panel">
       <div className="pred-toolbar">
@@ -249,7 +285,9 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
                 <span>
                   <i className="pred-key incorrect" /> 오답
                 </span>
-                <span className="muted-text">마커 클릭 → 상세 · P#=예측 클래스</span>
+                <span className="muted-text">
+                  마커 클릭 → 상세 · ←/→ 포인트 이동 · P#=예측 클래스
+                </span>
               </div>
               <PredictionChart
                 candles={candles}

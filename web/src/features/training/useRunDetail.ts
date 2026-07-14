@@ -100,7 +100,17 @@ export function useRunDetail(runId: number | null) {
       source.addEventListener('run', (event) => {
         if (stale) return
         const run = JSON.parse((event as MessageEvent).data) as RunSummary
-        setDetail((current) => (current ? { ...current, run } : current))
+        setDetail((current) =>
+          current
+            ? {
+                ...current,
+                run: {
+                  ...run,
+                  deployment_ids: run.deployment_ids ?? current.run.deployment_ids ?? [],
+                },
+              }
+            : current,
+        )
       })
       source.addEventListener('epoch', (event) => {
         if (stale) return

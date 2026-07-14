@@ -174,13 +174,17 @@ export function IndicatorSettingsPanel({ settings, barCount }: IndicatorSettings
               </select>
               <input
                 aria-label={`기간${index + 1} 값`}
-                min={1}
+                inputMode="numeric"
                 onChange={(event) =>
                   updateDraftMaSetting(setting.id, {
-                    window: Math.max(1, Number(event.target.value) || 1),
+                    window: Math.max(
+                      1,
+                      Number(event.target.value.replace(/\D/g, '')) || 1,
+                    ),
                   })
                 }
-                type="number"
+                pattern="[0-9]*"
+                type="text"
                 value={setting.window}
               />
               <label className="compact-check">

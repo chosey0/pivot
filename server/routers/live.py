@@ -4,7 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi import Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from pivot.config import Timeframe
 from server.routers.chart import _parse_before, _parse_ma_windows
@@ -23,6 +23,10 @@ class SubscribeRequest(BaseModel):
     name: str = ""
     region: Literal["domestic", "overseas"] = "domestic"
     exchange: str = ""
+
+
+class PredictionThresholdRequest(BaseModel):
+    threshold: float = Field(ge=0, le=1)
 
 
 def _service(request: Request) -> LiveService:
@@ -53,6 +57,13 @@ async def deactivate_model(request: Request) -> dict:
         return await _service(request).deactivate_model()
     except (LiveServiceError, RuntimeError, ValueError) as exc:
         raise HTTPException(503, "model deactivation failed") from exc
+
+
+@router.put("/api/live/prediction-threshold")
+async def set_prediction_threshold(
+    payload: PredictionThresholdRequest, request: Request
+) -> dict:
+    return await _service(request).set_prediction_threshold(payload.threshold)
 
 
 @router.get("/api/live/subscriptions")

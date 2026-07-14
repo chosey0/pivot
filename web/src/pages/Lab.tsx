@@ -52,16 +52,19 @@ export function Lab() {
   const [fractalByTimeframe, setFractalByTimeframe] = useState<
     Partial<Record<TimeframeCode, number>>
   >({})
+  const [fractalInputByTimeframe, setFractalInputByTimeframe] = useState<
+    Partial<Record<TimeframeCode, string>>
+  >({})
   const [tiePolicy, setTiePolicy] = useState<FractalTiePolicy>('plateau_last')
   const [labelMode, setLabelMode] = useState<'cls3' | 'cls2_drop'>('cls3')
   const [samplePairing, setSamplePairing] = useState<SamplePairing>('adjacent_markers_v1')
-  const [ignoreRuleOn, setIgnoreRuleOn] = useState(true)
+  const [ignoreRuleOn, setIgnoreRuleOn] = useState(false)
   const [ignoreSwingPctInput, setIgnoreSwingPctInput] = useState('')
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
   const [minAmountInput, setMinAmountInput] = useState('')
   const [cleaningMode, setCleaningMode] = useState<CleaningMode>('report_only')
-  const [featureWindows, setFeatureWindows] = useState<number[]>([20, 120])
-  const [volumeFeature, setVolumeFeature] = useState(false)
+  const [featureWindows, setFeatureWindows] = useState<number[]>([5, 20, 60, 120])
+  const [volumeFeature, setVolumeFeature] = useState(true)
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
   const [prevStats, setPrevStats] = useState<PreviewStats | null>(null)
   const [selectedSample, setSelectedSample] = useState<PreviewSample | null>(null)
@@ -79,7 +82,8 @@ export function Lab() {
   )
   const timeframe = selectedItem?.timeframe ?? 'day'
   const timeframeConfig = useMemo(() => fromTimeframeCode(timeframe), [timeframe])
-  const fractalN = fractalByTimeframe[timeframe] ?? 20
+  const fractalN = fractalByTimeframe[timeframe] ?? 3
+  const fractalNInput = fractalInputByTimeframe[timeframe] ?? ''
 
   const featureColumns = useMemo(
     () => [
@@ -490,13 +494,28 @@ export function Lab() {
           <label className="field">
             fractal n (center window)
             <input
-              min={3}
+              inputMode="numeric"
               onChange={(event) => {
-                const n = Math.max(3, Number(event.target.value) || 3)
-                setFractalByTimeframe((current) => ({ ...current, [timeframe]: n }))
+                const value = event.target.value.replace(/\D/g, '')
+                setFractalInputByTimeframe((current) => ({ ...current, [timeframe]: value }))
+                setFractalByTimeframe((current) => ({
+                  ...current,
+                  [timeframe]: Math.max(3, Number(value) || 3),
+                }))
               }}
-              type="number"
-              value={fractalN}
+              onBlur={() => {
+                if (fractalNInput !== '' && Number(fractalNInput) < 3) {
+                  setFractalInputByTimeframe((current) => ({
+                    ...current,
+                    [timeframe]: '3',
+                  }))
+                  setFractalByTimeframe((current) => ({ ...current, [timeframe]: 3 }))
+                }
+              }}
+              pattern="[0-9]*"
+              placeholder="미입력 시 최소값 3 적용"
+              type="text"
+              value={fractalNInput}
             />
           </label>
           <p className="hint">fractal n만 타임프레임별로 저장됩니다.</p>
@@ -563,11 +582,15 @@ export function Lab() {
           <label className="field">
             최소 스윙 변화율 (%)
             <input
-              min={0}
-              onChange={(event) => setIgnoreSwingPctInput(event.target.value)}
+              inputMode="decimal"
+              onChange={(event) => {
+                if (/^\d*\.?\d*$/.test(event.target.value)) {
+                  setIgnoreSwingPctInput(event.target.value)
+                }
+              }}
+              pattern="[0-9]*[.]?[0-9]*"
               placeholder="미입력 시 미적용"
-              step={0.1}
-              type="number"
+              type="text"
               value={ignoreSwingPctInput}
             />
           </label>
@@ -595,10 +618,11 @@ export function Lab() {
           <label className="field">
             최소 거래대금 (원)
             <input
-              min={0}
-              onChange={(event) => setMinAmountInput(event.target.value)}
+              inputMode="numeric"
+              onChange={(event) => setMinAmountInput(event.target.value.replace(/\D/g, ''))}
+              pattern="[0-9]*"
               placeholder="미입력 시 미적용"
-              type="number"
+              type="text"
               value={minAmountInput}
             />
           </label>

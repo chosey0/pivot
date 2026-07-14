@@ -57,6 +57,7 @@ export interface LiveSubscription {
 export interface LiveStateResponse {
   connection: LiveConnection
   deployment: LiveDeployment | null
+  prediction_threshold: number
   subscriptions: LiveSubscription[]
   counters: Record<string, number>
 }
@@ -93,6 +94,8 @@ export interface CandidateWindow {
   anchor_position: number
   anchor_time: string | number
   anchor_kind: 'low' | 'high'
+  anchor_source: 'calculated' | 'prediction'
+  anchor_confidence: number | null
   start: string | number
   end: string | number
   shared_window: boolean
@@ -139,6 +142,7 @@ export interface ErrorEventData {
 export interface SnapshotEventData {
   connection: LiveConnection
   deployment: LiveDeployment | null
+  prediction_threshold: number
   subscriptions: LiveSubscription[]
   counters: Record<string, number>
   latest_candles: CandleEventData[]
@@ -176,6 +180,11 @@ export const liveApi = {
     }),
   deactivateModel: () =>
     fetchJson<LiveStateResponse>('/api/live/model', { method: 'DELETE' }),
+  setPredictionThreshold: (threshold: number) =>
+    fetchJson<LiveStateResponse>('/api/live/prediction-threshold', {
+      method: 'PUT',
+      body: JSON.stringify({ threshold }),
+    }),
   subscriptions: () => fetchJson<LiveSubscription[]>('/api/live/subscriptions'),
   subscribe: (instrument: {
     symbol: string

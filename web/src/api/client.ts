@@ -390,11 +390,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(item),
     }),
-  updateWatchItem: (original: WatchItem, replacement: WatchItem) =>
-    fetchJson<WatchItem[]>('/api/watchlist', {
-      method: 'PUT',
-      body: JSON.stringify({ original, replacement }),
-    }),
   removeWatchItem: (item: WatchItem) => {
     const params = new URLSearchParams({
       timeframe: item.timeframe,

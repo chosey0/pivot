@@ -135,12 +135,16 @@ class FakeClient:
 class StubEngine:
     def __init__(self, timeframe: str = "min1") -> None:
         self.preset = PreprocessPreset(timeframe=Timeframe.from_code(timeframe))
+        self.prediction_threshold = 0.7
 
     def infer(self, symbol, frame):
         return None
 
     def warmup(self):
         return None
+
+    def set_prediction_threshold(self, threshold):
+        self.prediction_threshold = threshold
 
 
 class PredictingEngine(StubEngine):
@@ -207,6 +211,46 @@ def test_trade_from_tick_combines_exchange_time_with_received_kst_date():
     assert trade.exchange_ts == dt.datetime(2026, 7, 13, 9, 0, 1, tzinfo=KST)
     assert trade.received_at.astimezone(KST).date() == dt.date(2026, 7, 13)
     assert trade.price == Decimal("70000")
+
+
+def test_overseas_prediction_times_use_the_same_kst_encoding_as_chart():
+    service = LiveService(Path("unused"))
+    service._desired = {
+        "AAPL": LiveTarget("AAPL", "Apple", "overseas", "ND")
+    }
+    candidate = SimpleNamespace(
+        candidate=SimpleNamespace(
+            pairing_rule="adjacent_markers_v1",
+            anchor_position=10,
+            anchor_time=pd.Timestamp("2026-07-14 09:30:00"),
+            anchor_kind="low",
+            anchor_source="prediction",
+            anchor_confidence=0.9,
+            end_time=pd.Timestamp("2026-07-14 09:31:00"),
+            shared_window=True,
+        )
+    )
+    payload = service._prediction_payload(
+        LivePrediction(
+            deployment_id=1,
+            symbol="AAPL",
+            timeframe="min1",
+            closed_time=pd.Timestamp("2026-07-14 09:31:00"),
+            scores=[0.9, 0.05, 0.05],
+            selected_class=0,
+            candidates=[candidate],
+        )
+    )
+    timeframe = Timeframe.from_code("min1")
+
+    assert payload["time"] == live_module.display_time_value(
+        pd.Timestamp("2026-07-14 09:31:00"), timeframe, US_EASTERN
+    )
+    assert payload["candidate_windows"][0]["anchor_time"] == (
+        live_module.display_time_value(
+            pd.Timestamp("2026-07-14 09:30:00"), timeframe, US_EASTERN
+        )
+    )
 
 
 def test_overseas_trade_uses_us_exchange_date_and_timezone():
@@ -733,6 +777,42 @@ def test_minute_boundary_emits_closed_before_next_update(tmp_path: Path):
     asyncio.run(scenario())
 
 
+def test_browser_reconnect_does_not_interrupt_gateway_or_tick_aggregation(
+    tmp_path: Path,
+):
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"005930": LiveTarget("005930")}
+        service._sync_subscription_state()
+        service._connection = "connected"
+        session = object()
+        service._sessions["KRX"] = session
+        service._aggregators[("005930", "min1")] = CandleAggregator(
+            "005930",
+            Timeframe.from_code("min1"),
+            observing_since=dt.datetime(2026, 7, 13, 8, 59, tzinfo=KST),
+        )
+
+        first = await service.add_listener()
+        await service.remove_listener(first)
+
+        assert not service._listeners
+        assert service._sessions["KRX"] is session
+        assert service.state()["connection"]["status"] == "connected"
+
+        await service.handle_sdk_event(_tick("005930", "09:00:01", 1, "70000"))
+        await service.handle_sdk_event(_tick("005930", "09:01:01", 2, "70100"))
+
+        second = await service.add_listener()
+        snapshot = second.events[0]
+        assert snapshot["type"] == "snapshot"
+        assert snapshot["data"]["connection"]["status"] == "connected"
+        assert snapshot["data"]["latest_candles"]
+        assert service._sessions["KRX"] is session
+
+    asyncio.run(scenario())
+
+
 def test_partial_first_minute_is_suppressed_until_next_bucket(tmp_path: Path):
     async def scenario():
         service = LiveService(tmp_path)
@@ -902,6 +982,22 @@ def test_model_deactivation_clears_engine_predictions_and_inference_state(tmp_pa
         assert state["subscriptions"][0]["inference_status"] == "no_model"
         assert not service._predictions
         assert service._engine is None
+
+    asyncio.run(scenario())
+
+
+def test_prediction_threshold_keeps_recent_log_state(tmp_path: Path):
+    async def scenario():
+        service = LiveService(tmp_path)
+        engine = StubEngine()
+        service._engine = engine
+        service._predictions.append({"symbol": "005930"})
+
+        state = await service.set_prediction_threshold(0.825)
+
+        assert state["prediction_threshold"] == 0.825
+        assert engine.prediction_threshold == 0.825
+        assert list(service._predictions) == [{"symbol": "005930"}]
 
     asyncio.run(scenario())
 
