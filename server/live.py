@@ -267,6 +267,7 @@ class LiveService:
         self._market_state = "closed"
         self._last_reconcile_at: dt.datetime | None = None
         self._lock = asyncio.Lock()
+        self._rest_lock = asyncio.Lock()
         self._activation_lock = asyncio.Lock()
         self._inference_lock = asyncio.Lock()
         self.stats = {
@@ -427,9 +428,10 @@ class LiveService:
             await self._restart_gateway()
         else:
             await self._ensure_gateway()
-        await self._broadcast("subscription", self._subscription_event(symbol))
         if self._client is not None and self._engine is not None:
-            await self._reconcile_all()
+            if not await self._reconcile_symbol(symbol, self._engine):
+                self._last_reconcile_at = None
+        await self._broadcast("subscription", self._subscription_event(symbol))
         return self._subscription_state[symbol].copy()
 
     async def unsubscribe(self, symbol: str) -> None:
@@ -548,7 +550,8 @@ class LiveService:
             )
 
         if self._client is not None:
-            bars = await fetch(self._client)
+            async with self._rest_lock:
+                bars = await fetch(self._client)
         else:
             factory = self.client_factory or _kiwoom_client
             async with factory() as client:
@@ -1131,47 +1134,56 @@ class LiveService:
         engine = self._engine
         if self._client is None or engine is None:
             return
-        timeframe = engine.preset.timeframe
         for symbol in sorted(self._desired):
-            target = self._desired[symbol]
-            try:
+            await self._reconcile_symbol(symbol, engine)
+        self._last_reconcile_at = dt.datetime.now(dt.UTC)
+
+    async def _reconcile_symbol(
+        self, symbol: str, engine: LiveInferenceEngine
+    ) -> bool:
+        target = self._desired.get(symbol)
+        if self._client is None or target is None or engine is not self._engine:
+            return False
+        try:
+            async with self._rest_lock:
                 frame = await update_cache(
                     self._client,
                     symbol,
-                    timeframe,
+                    engine.preset.timeframe,
                     self.data_root,
                     region=target.region,
                     exchange=target.exchange,
                 )
-                if symbol not in self._desired or engine is not self._engine:
-                    continue
-                self.stats["reconciliations"] += 1
-                await self._infer(
-                    symbol,
-                    frame.tail(LIVE_HISTORY_LIMIT),
-                    engine=engine,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                if symbol not in self._desired or engine is not self._engine:
-                    continue
-                logger.error(
-                    "candle reconciliation failed for %s (%s)",
-                    symbol,
-                    type(exc).__name__,
-                )
-                self.stats["reconcile_errors"] += 1
-                await self._broadcast(
-                    "error",
-                    {
-                        "scope": "reconcile",
-                        "symbol": symbol,
-                        "recoverable": True,
-                        "message": "candle reconciliation failed",
-                    },
-                )
-        self._last_reconcile_at = dt.datetime.now(dt.UTC)
+            if symbol not in self._desired or engine is not self._engine:
+                return False
+            self.stats["reconciliations"] += 1
+            await self._infer(
+                symbol,
+                frame.tail(LIVE_HISTORY_LIMIT),
+                engine=engine,
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if symbol not in self._desired or engine is not self._engine:
+                return False
+            logger.error(
+                "candle reconciliation failed for %s (%s)",
+                symbol,
+                type(exc).__name__,
+            )
+            self.stats["reconcile_errors"] += 1
+            await self._broadcast(
+                "error",
+                {
+                    "scope": "reconcile",
+                    "symbol": symbol,
+                    "recoverable": True,
+                    "message": "candle reconciliation failed",
+                },
+            )
+            return False
 
     async def _set_connection(self, status: str, message: str) -> None:
         self._connection = status

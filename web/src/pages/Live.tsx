@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   type ChartResponse,
   type InstrumentRegion,
@@ -155,6 +155,9 @@ export function Live({ active }: { active: boolean }) {
   const [chartMessage, setChartMessage] = useState<string | null>(null)
   const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
   const [thresholdSaving, setThresholdSaving] = useState(false)
+  const historyCacheRef = useRef(
+    new Map<string, { snapshotNonce: number; data: LiveHistoryResponse }>(),
+  )
 
   const indicators = useIndicatorSettings({ onMessage: setChartMessage })
   const {
@@ -167,6 +170,9 @@ export function Live({ active }: { active: boolean }) {
     legendText,
   } = indicators
   const maWindowsKey = maWindows.join(',')
+  const historyCacheKey = selectedSymbol
+    ? `${selectedSymbol}:${chartTimeframe}:${maWindowsKey}`
+    : null
   const subscribedSymbols = useMemo(
     () => new Set(state.subscriptions.map((row) => row.symbol)),
     [state.subscriptions],
@@ -214,6 +220,15 @@ export function Live({ active }: { active: boolean }) {
       return
     }
     let stale = false
+    const cached = historyCacheKey ? historyCacheRef.current.get(historyCacheKey) : undefined
+    if (cached?.snapshotNonce === state.snapshotNonce) {
+      setChart(cached.data)
+      setSelectedOhlc(cached.data.candles.at(-1) ?? null)
+      setChartError(null)
+      setChartMessage(null)
+      setChartLoading(false)
+      return
+    }
     setChartLoading(true)
     setChartError(null)
     setChartMessage(null)
@@ -221,6 +236,12 @@ export function Live({ active }: { active: boolean }) {
       .history(selectedSymbol, chartTimeframe, maWindows)
       .then((next) => {
         if (stale) return
+        if (historyCacheKey) {
+          historyCacheRef.current.set(historyCacheKey, {
+            snapshotNonce: state.snapshotNonce,
+            data: next,
+          })
+        }
         setChart(next)
         setSelectedOhlc(next.candles.at(-1) ?? null)
       })
@@ -237,6 +258,7 @@ export function Live({ active }: { active: boolean }) {
     }
   }, [
     chartTimeframe,
+    historyCacheKey,
     maWindows,
     maWindowsKey,
     selectedSymbol,
@@ -247,7 +269,8 @@ export function Live({ active }: { active: boolean }) {
   const liveCandles = selectedSymbol
     ? state.candles[liveCandleKey(selectedSymbol, chartTimeframe)]
     : undefined
-  const historicalChart = chart?.timeframe === chartTimeframe ? chart : null
+  const historicalChart =
+    chart?.symbol === selectedSymbol && chart.timeframe === chartTimeframe ? chart : null
 
   const merged = useMemo(() => {
     const candleByTime = new Map<string | number, ChartResponse['candles'][number]>()
@@ -289,17 +312,33 @@ export function Live({ active }: { active: boolean }) {
       const older = await liveApi.history(selectedSymbol, chartTimeframe, maWindows, {
         before: first.time,
       })
-      setChart((current) =>
-        current?.symbol === older.symbol && current.timeframe === older.timeframe
-          ? mergeLiveHistory(current, older)
-          : current,
-      )
+      setChart((current) => {
+        if (current?.symbol !== older.symbol || current.timeframe !== older.timeframe) {
+          return current
+        }
+        const next = mergeLiveHistory(current, older)
+        if (historyCacheKey) {
+          historyCacheRef.current.set(historyCacheKey, {
+            snapshotNonce: state.snapshotNonce,
+            data: next,
+          })
+        }
+        return next
+      })
     } catch (e) {
       setChartError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoadingOlder(false)
     }
-  }, [chartTimeframe, historicalChart, loadingOlder, maWindows, selectedSymbol])
+  }, [
+    chartTimeframe,
+    historicalChart,
+    historyCacheKey,
+    loadingOlder,
+    maWindows,
+    selectedSymbol,
+    state.snapshotNonce,
+  ])
 
   useEffect(() => {
     setSelectedOhlc((current) => {
@@ -421,6 +460,9 @@ export function Live({ active }: { active: boolean }) {
         region: addRegion,
         exchange: addSuggestion.exchange,
       })
+      for (const key of historyCacheRef.current.keys()) {
+        if (key.startsWith(`${addSuggestion.symbol}:`)) historyCacheRef.current.delete(key)
+      }
       applySubscriptions(rows)
       setSelectedSymbol(addSuggestion.symbol)
       setAddQuery('')
@@ -440,6 +482,9 @@ export function Live({ active }: { active: boolean }) {
       setSubscribeError(null)
       try {
         const rows = await liveApi.unsubscribe(row.symbol)
+        for (const key of historyCacheRef.current.keys()) {
+          if (key.startsWith(`${row.symbol}:`)) historyCacheRef.current.delete(key)
+        }
         applySubscriptions(rows)
       } catch (e) {
         setSubscribeError(e instanceof Error ? e.message : String(e))

@@ -469,6 +469,7 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
         service._client = object()
         service._sessions = {"KRX": FakeSession()}
         service._gateway_task = asyncio.current_task()
+        service._desired = {"000660": LiveTarget("000660")}
         await service._install_engine(
             StubEngine(),
             {
@@ -496,6 +497,63 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
         assert service.stats["reconciliations"] == 1
 
     monkeypatch.setattr(live_module, "update_cache", update)
+    asyncio.run(scenario())
+
+
+def test_live_rest_calls_share_the_kiwoom_client_serially(tmp_path: Path, monkeypatch):
+    reconcile_started = asyncio.Event()
+    release_reconcile = asyncio.Event()
+    history_started = asyncio.Event()
+
+    async def update(*args, **kwargs):
+        reconcile_started.set()
+        await release_reconcile.wait()
+        return pd.DataFrame()
+
+    async def fetch(*args, **kwargs):
+        history_started.set()
+        return []
+
+    async def scenario():
+        service = LiveService(
+            tmp_path,
+            deployments=EmptyDeployments(),
+            runs=object(),
+            storage=object(),
+        )
+        service._client = object()
+        service._sessions = {"KRX": FakeSession()}
+        service._gateway_task = asyncio.current_task()
+        service._desired = {"000660": LiveTarget("000660")}
+        await service._install_engine(
+            StubEngine(),
+            {
+                "id": 1,
+                "run_id": 1,
+                "artifact_id": 1,
+                "run_name": "stub",
+                "timeframe": "min1",
+                "feature_columns": [],
+                "model": "stub",
+                "activated_at": None,
+            },
+        )
+
+        subscribing = asyncio.create_task(service.subscribe("005930"))
+        await reconcile_started.wait()
+        loading_history = asyncio.create_task(
+            service.chart_history("000660", Timeframe.from_code("min1"), ())
+        )
+        await asyncio.sleep(0)
+        assert not history_started.is_set()
+
+        release_reconcile.set()
+        await subscribing
+        await loading_history
+        assert history_started.is_set()
+
+    monkeypatch.setattr(live_module, "update_cache", update)
+    monkeypatch.setattr(live_module, "fetch_bars", fetch)
     asyncio.run(scenario())
 
 
