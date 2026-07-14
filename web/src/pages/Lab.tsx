@@ -147,6 +147,11 @@ export function Lab() {
     return name ? `${name} • ${selectedSymbol}` : selectedSymbol
   }, [selectedSymbol, watchlist])
 
+  const selectedItem = useMemo(
+    () => watchlist.find((item) => item.symbol === selectedSymbol) ?? null,
+    [selectedSymbol, watchlist],
+  )
+
   const highlightRange = useMemo<TimeRange | null>(
     () =>
       selectedSample
@@ -159,20 +164,19 @@ export function Lab() {
     api
       .watchlist()
       .then((items) => {
-        const domestic = items.filter((item) => item.region === 'domestic')
-        setWatchlist(domestic)
-        setSelectedSymbol((current) => current || domestic[0]?.symbol || '')
+        setWatchlist(items)
+        setSelectedSymbol((current) => current || items[0]?.symbol || '')
       })
       .catch((e: Error) => setError(e.message))
   }, [])
 
   useEffect(() => {
-    if (!selectedSymbol) return
+    if (!selectedItem) return
     const seq = ++requestSeqRef.current
     setLoading(true)
     const timer = setTimeout(async () => {
       try {
-        const next = await api.preprocessPreview(selectedSymbol, params)
+        const next = await api.preprocessPreview(selectedItem, params)
         if (seq !== requestSeqRef.current) return
         setPrevStats(lastStatsRef.current)
         lastStatsRef.current = next.stats
@@ -189,7 +193,7 @@ export function Lab() {
       }
     }, PREVIEW_DEBOUNCE_MS)
     return () => clearTimeout(timer)
-  }, [params, selectedSymbol])
+  }, [params, selectedItem])
 
   const selectSampleByTime = useCallback(
     (time: string | number) => {
@@ -316,7 +320,7 @@ export function Lab() {
               watchlist.map((item) => (
                 <div
                   className={item.symbol === selectedSymbol ? 'watch-row selected' : 'watch-row'}
-                  key={item.symbol}
+                  key={`${item.region}:${item.exchange}:${item.symbol}`}
                 >
                   <button
                     className="watch-main"
@@ -441,6 +445,7 @@ export function Lab() {
             ma={preview.ma}
             markers={chartMarkers}
             onTimeClick={selectSampleByTime}
+            priceDecimals={selectedItem?.region === 'overseas' ? 2 : 0}
             visibleIndicators={visibleIndicators}
             volumes={preview.volumes}
           />

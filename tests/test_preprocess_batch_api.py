@@ -34,12 +34,55 @@ def test_preview_markers_reference_incoming_sample_by_index(monkeypatch):
 
 
 def test_batch_request_rejects_path_like_symbol():
-    with pytest.raises(ValidationError, match="6-digit domestic stock codes"):
+    with pytest.raises(ValidationError, match="invalid domestic symbol"):
         preprocess.BatchRequest(
             preset_id=1,
             dataset_name="invalid-symbol",
             symbols=["../../outside"],
         )
+
+
+def test_preview_uses_overseas_cache_path(monkeypatch):
+    paths = []
+    monkeypatch.setattr(
+        preprocess,
+        "load_cache",
+        lambda path: paths.append(path) or make_candles(length=120),
+    )
+    preset = PreprocessPreset(
+        fractal=FractalConfig(n=5),
+        features=["Open", "High", "Low", "Close"],
+        labeling=LabelingConfig(ignore_rule="none"),
+    )
+
+    response = preprocess.preview(
+        preprocess.PreviewRequest(
+            symbol="AAPL",
+            region="overseas",
+            exchange="ND",
+            params=preset,
+        )
+    )
+
+    assert paths[0].as_posix().endswith(
+        "raw/kiwoom-overseas-nd/day/AAPL.parquet"
+    )
+    assert response["candles"][0]["time"] == "2025-01-02"
+    assert response["markers"][0]["time"] >= "2025-01-02"
+
+
+def test_batch_request_accepts_overseas_source():
+    request = preprocess.BatchRequest(
+        preset_id=1,
+        dataset_name="us-stocks",
+        symbols=["aapl"],
+        sources={
+            "AAPL": preprocess.InstrumentSource(region="overseas", exchange="nd")
+        },
+    )
+
+    assert request.symbols == ["AAPL"]
+    assert request.sources["AAPL"].exchange == "ND"
 
 
 def test_job_creation_failure_discards_building_dataset(monkeypatch):

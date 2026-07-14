@@ -13,6 +13,8 @@ from pivot.config import Timeframe
 
 TimeValue = str | int
 KST = ZoneInfo("Asia/Seoul")
+US_EASTERN = ZoneInfo("America/New_York")
+DAILY_MARKET_CLOSE_HOUR = 16
 
 
 def time_value(ts: pd.Timestamp, timeframe: Timeframe) -> TimeValue:
@@ -26,11 +28,14 @@ def display_frame(
     timeframe: Timeframe,
     source_timezone: ZoneInfo | None = None,
 ) -> pd.DataFrame:
-    if frame.empty or timeframe.type == "day" or source_timezone is None:
+    if frame.empty or source_timezone is None:
         return frame
     displayed = frame.copy()
     displayed.index = pd.DatetimeIndex(
-        [_convert_timezone(value, source_timezone, KST) for value in frame.index],
+        [
+            display_timestamp(value, timeframe, source_timezone)
+            for value in frame.index
+        ],
         name=frame.index.name,
     )
     return displayed
@@ -41,9 +46,26 @@ def display_time_value(
     timeframe: Timeframe,
     source_timezone: ZoneInfo | None = None,
 ) -> TimeValue:
-    if timeframe.type != "day" and source_timezone is not None:
-        value = _convert_timezone(value, source_timezone, KST)
+    if source_timezone is not None:
+        value = display_timestamp(value, timeframe, source_timezone)
     return time_value(value, timeframe)
+
+
+def display_timestamp(
+    value: pd.Timestamp,
+    timeframe: Timeframe,
+    source_timezone: ZoneInfo | None = None,
+) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if source_timezone is None:
+        return timestamp
+    if timeframe.type == "day":
+        # 일봉은 거래소 정규장 종료 시각이 속하는 KST 날짜로 표시한다.
+        timestamp = timestamp.normalize() + pd.Timedelta(
+            hours=DAILY_MARKET_CLOSE_HOUR
+        )
+        return _convert_timezone(timestamp, source_timezone, KST).normalize()
+    return _convert_timezone(timestamp, source_timezone, KST)
 
 
 def market_time(
@@ -51,8 +73,13 @@ def market_time(
     timeframe: Timeframe,
     market_timezone: ZoneInfo | None = None,
 ) -> pd.Timestamp | None:
-    if value is None or timeframe.type == "day" or market_timezone is None:
+    if value is None or market_timezone is None:
         return value
+    if timeframe.type == "day":
+        # display_timestamp의 역변환: KST 날짜가 시작되는 순간의 미국 거래일.
+        timestamp = pd.Timestamp(value).normalize()
+        localized = timestamp.tz_localize(KST)
+        return pd.Timestamp(localized.tz_convert(market_timezone).date())
     return _convert_timezone(value, KST, market_timezone)
 
 

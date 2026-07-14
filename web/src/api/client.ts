@@ -249,6 +249,7 @@ export interface DatasetRow {
     preset_name?: string
     preset_version?: number
     split?: { method: string; seed: number; ratios: Record<string, number> }
+    sources?: Record<string, { region: InstrumentRegion; exchange: string }>
   }
 }
 
@@ -416,10 +417,15 @@ export const api = {
     if (options.exchange) params.set('exchange', options.exchange)
     return fetchJson<ChartResponse>(`/api/chart/${encodeURIComponent(symbol)}?${params}`)
   },
-  preprocessPreview: (symbol: string, params: PreviewParams, signal?: AbortSignal) =>
+  preprocessPreview: (item: WatchItem, params: PreviewParams, signal?: AbortSignal) =>
     fetchJson<PreviewResponse>('/api/preprocess/preview', {
       method: 'POST',
-      body: JSON.stringify({ symbol, params }),
+      body: JSON.stringify({
+        symbol: item.symbol,
+        params,
+        region: item.region,
+        exchange: item.exchange,
+      }),
       signal,
     }),
   presets: (includeArchived = false) =>
@@ -440,13 +446,19 @@ export const api = {
     fetchJson<{ preset_id: number }>(`/api/presets/${presetId}/permanent`, {
       method: 'DELETE',
     }),
-  preprocessBatch: (presetId: number, datasetName: string, symbols: string[]) =>
+  preprocessBatch: (presetId: number, datasetName: string, items: WatchItem[]) =>
     fetchJson<BatchStartResponse>('/api/preprocess/batch', {
       method: 'POST',
       body: JSON.stringify({
         preset_id: presetId,
         dataset_name: datasetName,
-        symbols,
+        symbols: items.map((item) => item.symbol),
+        sources: Object.fromEntries(
+          items.map((item) => [
+            item.symbol,
+            { region: item.region, exchange: item.exchange },
+          ]),
+        ),
       }),
     }),
   job: (jobId: number) => fetchJson<JobRow>(`/api/jobs/${jobId}`),

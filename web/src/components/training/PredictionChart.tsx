@@ -9,6 +9,7 @@ import {
 } from 'lightweight-charts'
 import type { Candle } from '../../api/client'
 import type { PredictionPoint } from '../../api/training'
+import { chartPriceFormat, formatChartPrice, type PriceDecimals } from '../../lib/chartPrice'
 
 // 국내 관례: 상승 빨강 / 하락 파랑 (CandleChart와 동일)
 const UP_COLOR = '#e5484d'
@@ -21,6 +22,7 @@ interface Props {
   points: PredictionPoint[]
   selectedIndex: number | null
   onSelect: (point: PredictionPoint) => void
+  priceDecimals?: PriceDecimals
 }
 
 function timeToKey(time: Time): string | number {
@@ -48,7 +50,13 @@ function toMarker(point: PredictionPoint, selected: boolean): SeriesMarker<Time>
   return { time: point.time as Time, position: 'aboveBar', shape: 'circle', color, size, text }
 }
 
-export function PredictionChart({ candles, points, selectedIndex, onSelect }: Props) {
+export function PredictionChart({
+  candles,
+  points,
+  selectedIndex,
+  onSelect,
+  priceDecimals = 0,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const markersApiRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null)
   const pointsRef = useRef(points)
@@ -71,7 +79,7 @@ export function PredictionChart({ candles, points, selectedIndex, onSelect }: Pr
         horzLines: { color: 'rgba(107, 114, 128, 0.12)' },
       },
       localization: {
-        priceFormatter: (price: number) => Math.round(price).toLocaleString('ko-KR'),
+        priceFormatter: (price: number) => formatChartPrice(price, priceDecimals),
       },
       timeScale: { borderVisible: false },
       rightPriceScale: { borderVisible: false },
@@ -82,6 +90,7 @@ export function PredictionChart({ candles, points, selectedIndex, onSelect }: Pr
       borderVisible: false,
       wickUpColor: UP_COLOR,
       wickDownColor: DOWN_COLOR,
+      priceFormat: chartPriceFormat(priceDecimals),
     })
     series.setData(
       candles.map((candle) => ({
@@ -105,13 +114,13 @@ export function PredictionChart({ candles, points, selectedIndex, onSelect }: Pr
       chart.remove()
       markersApiRef.current = null
     }
-  }, [candles])
+  }, [candles, priceDecimals])
 
   useEffect(() => {
     markersApiRef.current?.setMarkers(
       points.map((point) => toMarker(point, point.sample_index === selectedIndex)),
     )
-  }, [points, selectedIndex, candles])
+  }, [points, selectedIndex, candles, priceDecimals])
 
   return <div className="pred-chart" ref={containerRef} />
 }

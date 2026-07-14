@@ -22,7 +22,7 @@ def test_overseas_intraday_display_round_trips_through_kst():
     assert market_time(decoded, timeframe, eastern) == source.index[0]
 
 
-def test_daily_session_date_is_not_shifted():
+def test_overseas_daily_session_uses_kst_close_date_and_round_trips():
     timeframe = Timeframe.from_code("day")
     source = pd.DataFrame(
         {"Close": [225.5]},
@@ -31,4 +31,7 @@ def test_daily_session_date_is_not_shifted():
 
     displayed = display_frame(source, timeframe, ZoneInfo("America/New_York"))
 
-    assert displayed.index.equals(source.index)
+    assert displayed.index[0] == pd.Timestamp("2026-07-15")
+    assert market_time(
+        displayed.index[0], timeframe, ZoneInfo("America/New_York")
+    ) == pd.Timestamp("2026-07-14")

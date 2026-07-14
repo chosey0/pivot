@@ -26,6 +26,13 @@ BROKER = "kiwoom"
 Region = Literal["domestic", "overseas"]
 OVERSEAS_EXCHANGES = {"NA", "ND", "NY"}
 OVERSEAS_CHART_PATH = "/api/us/chart"
+DateBoundary = datetime.date | datetime.datetime
+
+
+def _boundary_datetime(value: DateBoundary, *, end_of_day: bool = False) -> datetime.datetime:
+    if isinstance(value, datetime.datetime):
+        return value
+    return datetime.datetime.combine(value, datetime.time.max if end_of_day else datetime.time.min)
 
 
 class _OverseasRestAdapter:
@@ -171,8 +178,8 @@ async def update_cache(
     timeframe: Timeframe,
     data_root: Path,
     *,
-    start: datetime.date | None = None,
-    end: datetime.date | None = None,
+    start: DateBoundary | None = None,
+    end: DateBoundary | None = None,
     max_pages: int | None = None,
     region: Region = "domestic",
     exchange: str = "",
@@ -183,7 +190,7 @@ async def update_cache(
     마지막 봉 이후만 증분 조회한다. 단, 미국 일봉은 부분 캐시의 과거 이력을 복구하도록
     전체 구간을 다시 조회한다.
     """
-    if start and end and start > end:
+    if start and end and _boundary_datetime(start) > _boundary_datetime(end, end_of_day=True):
         raise ValueError("start date must be on or before end date")
 
     path = cache_path(data_root, cache_broker(region, exchange), timeframe.code, symbol)
@@ -192,7 +199,9 @@ async def update_cache(
     start_date = None
     if start is not None:
         if timeframe.type == "day":
-            start_date = start.isoformat()
+            start_date = _boundary_datetime(start).date().isoformat()
+        elif isinstance(start, datetime.datetime):
+            start_date = start.strftime("%Y-%m-%d %H%M%S")
         else:
             start_date = f"{start.isoformat()} 000000"
     elif (
@@ -212,16 +221,16 @@ async def update_cache(
         symbol,
         timeframe,
         start_date=start_date,
-        end_date=end,
+        end_date=_boundary_datetime(end).date() if end is not None else None,
         max_pages=max_pages,
         region=region,
         exchange=exchange,
     )
     frame = bars_to_frame(bars)
     if start is not None and not frame.empty:
-        frame = frame.loc[frame.index >= pd.Timestamp(start)]
+        frame = frame.loc[frame.index >= pd.Timestamp(_boundary_datetime(start))]
     if end is not None and not frame.empty:
-        end_ts = pd.Timestamp(datetime.datetime.combine(end, datetime.time.max))
+        end_ts = pd.Timestamp(_boundary_datetime(end, end_of_day=True))
         frame = frame.loc[frame.index <= end_ts]
     if frame.empty:
         return existing if existing is not None else frame

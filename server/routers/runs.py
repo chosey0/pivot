@@ -38,7 +38,7 @@ from server.deps import (
     run_repo,
 )
 from server.jobs import start_process, stream_job_events
-from server.serialize import time_value
+from server.serialize import US_EASTERN, display_time_value
 from server.training_worker import execute
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -55,13 +55,19 @@ class EvaluateRequest(BaseModel):
     split: Literal["validation", "test"]
 
 
-def _prediction_time(value: str | int | float, timeframe: str) -> str | int:
+def _prediction_time(
+    value: str | int | float, timeframe: str, *, overseas: bool = False
+) -> str | int:
     parsed = (
         pd.to_datetime(value, unit="s")
         if isinstance(value, int | float)
         else pd.Timestamp(value)
     )
-    return time_value(parsed, Timeframe.from_code(timeframe))
+    return display_time_value(
+        parsed,
+        Timeframe.from_code(timeframe),
+        US_EASTERN if overseas else None,
+    )
 
 
 @router.get("")
@@ -256,7 +262,12 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
         collate_fn=collate_samples,
     )
     result = evaluate_model(checkpoint.model, loader, torch.device("cpu"))
-    timeframe = datasets.get(run["dataset_id"])["timeframe"]
+    dataset = datasets.get(run["dataset_id"])
+    timeframe = dataset["timeframe"]
+    source = dataset.get("preset_snapshot", {}).get("sources", {}).get(
+        request.symbol, {}
+    )
+    overseas = source.get("region") == "overseas"
     return {
         "run_id": run_id,
         "dataset_id": run["dataset_id"],
@@ -266,7 +277,9 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
         "points": [
             {
                 **{key: value for key, value in point.items() if key != "symbol"},
-                "time": _prediction_time(point["time"], timeframe),
+                "time": _prediction_time(
+                    point["time"], timeframe, overseas=overseas
+                ),
             }
             for point in result["points"]
         ],

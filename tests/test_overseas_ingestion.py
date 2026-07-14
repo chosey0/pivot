@@ -18,6 +18,8 @@ from pivot.ingestion.fetch import (
     update_cache,
 )
 from pivot.ingestion.cache import cache_path
+from server.routers.ingest import IngestRequest, _warmup_start
+from server.serialize import US_EASTERN, market_time
 from server.routers.watchlist import WatchItem
 
 
@@ -165,3 +167,85 @@ def test_overseas_daily_refresh_backfills_a_partial_cache(tmp_path, monkeypatch)
 
     assert calls[0]["start_date"] is None
     assert list(frame.index) == [pd.Timestamp("2020-01-02"), pd.Timestamp("2026-07-01")]
+
+
+def test_intraday_cache_uses_second_precision_boundaries(tmp_path, monkeypatch):
+    calls = []
+
+    async def fake_fetch_bars(*args, **kwargs):
+        calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                timestamp=f"20260714090{minute}00",
+                open=100,
+                high=101,
+                low=99,
+                close=100.5,
+                volume=200,
+                amount=20100,
+            )
+            for minute in range(3)
+        ]
+
+    monkeypatch.setattr("pivot.ingestion.fetch.fetch_bars", fake_fetch_bars)
+    frame = asyncio.run(
+        update_cache(
+            object(),
+            "005930",
+            Timeframe.from_code("min1"),
+            tmp_path,
+            start=datetime.datetime(2026, 7, 14, 9, 0, 30),
+            end=datetime.datetime(2026, 7, 14, 9, 1, 30),
+        )
+    )
+
+    assert calls[0]["start_date"] == "2026-07-14 090030"
+    assert calls[0]["end_date"] == datetime.date(2026, 7, 14)
+    assert list(frame.index) == [pd.Timestamp("2026-07-14 09:01:00")]
+
+
+def test_ingest_request_accepts_intraday_boundaries():
+    request = IngestRequest(
+        symbols=["005930"],
+        timeframe="min1",
+        start="2026-07-14T09:00:01",
+        end="2026-07-14T09:01:02",
+    )
+
+    assert request.start == datetime.datetime(2026, 7, 14, 9, 0, 1)
+    assert request.end == datetime.datetime(2026, 7, 14, 9, 1, 2)
+
+
+def test_overseas_collection_boundaries_convert_from_kst_to_market_time():
+    timeframe = Timeframe.from_code("min1")
+
+    assert market_time(
+        pd.Timestamp("2026-07-14 22:30:00"), timeframe, US_EASTERN
+    ) == pd.Timestamp("2026-07-14 09:30:00")
+
+
+def test_overseas_daily_collection_date_maps_to_kst_close_date():
+    assert market_time(
+        pd.Timestamp("2026-07-15"), Timeframe.from_code("day"), US_EASTERN
+    ) == pd.Timestamp("2026-07-14")
+
+
+@pytest.mark.parametrize(
+    ("timeframe", "expected"),
+    [
+        ("min1", datetime.datetime(2026, 7, 14, 7, 0)),
+        ("min5", datetime.datetime(2026, 7, 13, 23, 0)),
+    ],
+)
+def test_minute_collection_includes_120_bar_ma_warmup(timeframe, expected):
+    assert _warmup_start(
+        datetime.datetime(2026, 7, 14, 9, 0),
+        Timeframe.from_code(timeframe),
+    ) == expected
+
+
+def test_day_and_tick_collection_do_not_add_minute_warmup():
+    start = datetime.datetime(2026, 7, 14, 9, 0)
+
+    assert _warmup_start(start, Timeframe.from_code("day")) == start
+    assert _warmup_start(start, Timeframe.from_code("tick30")) == start

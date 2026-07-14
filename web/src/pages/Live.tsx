@@ -89,7 +89,7 @@ function mergeLiveHistory(
   return { ...chart, fractal_markers: [...fractalMarkers.values()] }
 }
 
-export function Live() {
+export function Live({ active }: { active: boolean }) {
   const { state, socketStatus, applyState, applySubscriptions, dismissError } = useLiveSocket()
   const [stateError, setStateError] = useState<string | null>(null)
   const [addRegion, setAddRegion] = useState<InstrumentRegion>('domestic')
@@ -359,6 +359,8 @@ export function Live() {
   const provisional = liveCandles?.provisional ?? null
   const symbolPredictions = state.predictions.filter((row) => row.symbol === selectedSymbol)
 
+  if (!active) return null
+
   return (
     <>
       <aside className="side-panel live-side">
@@ -559,7 +561,7 @@ export function Live() {
           hasContent={merged.candles.length > 0}
           legend={
             displayedOhlc ? (
-              <div className="chart-legend">
+              <div className="chart-legend chart-legend-compact">
                 <div className="ohlc-row">
                   <span className="ohlc-item">
                     <strong>{formatEventTime(displayedOhlc.time)}</strong>
@@ -664,6 +666,7 @@ export function Live() {
               markers={markers}
               onLoadMoreOlder={loadOlderChart}
               onOhlcChange={setSelectedOhlc}
+              priceDecimals={selectedSubscription?.region === 'overseas' ? 2 : 0}
               visibleIndicators={visibleIndicators}
               volumes={merged.volumes}
             />

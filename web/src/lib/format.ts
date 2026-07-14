@@ -12,6 +12,18 @@ export function formatDateTime(value?: string) {
   return value.replace('T', ' ').slice(0, 19)
 }
 
+export function kstDateValue(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value)
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
 export function formatPrice(value: number, currency: 'KRW' | 'USD' = 'KRW') {
   return currency === 'USD' ? `$${USD_FORMATTER.format(value)}` : `${KRW_FORMATTER.format(value)}원`
 }

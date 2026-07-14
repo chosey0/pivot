@@ -43,6 +43,7 @@ from pivot.storage.runs import RunRepository
 from pivot.storage.supabase import StorageObjectClient
 from pivot.training.checkpoint import load_verified_checkpoint
 from server.serialize import (
+    US_EASTERN,
     chart_payload,
     display_frame,
     display_time_value,
@@ -56,7 +57,6 @@ CLIENT_QUEUE_SIZE = 256
 LIVE_DISPLAY_TIMEFRAMES = ("day", "min1")
 LIVE_MINUTE_PAGE_DAYS = 7
 LIVE_DAY_PAGE_DAYS = 365
-US_EASTERN = ZoneInfo("America/New_York")
 OVERSEAS_SYMBOL_RE = re.compile(r"^[A-Z0-9.-]{1,20}$")
 logger = logging.getLogger(__name__)
 
@@ -1330,7 +1330,9 @@ def _live_time_value(
     """실시간 aware 시각을 기존 차트의 KST 벽시계 인코딩으로 맞춘다."""
     timestamp = pd.Timestamp(value)
     if timestamp.tzinfo is not None:
-        timestamp = timestamp.tz_convert(KST).tz_localize(None)
+        source_timezone = timestamp.tzinfo
+        timestamp = timestamp.tz_localize(None)
+        return display_time_value(timestamp, timeframe, source_timezone)
     return time_value(timestamp, timeframe)
 
 

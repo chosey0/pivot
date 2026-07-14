@@ -20,6 +20,7 @@ const TABS: { id: TabId; label: string }[] = [
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('watchlist')
+  const [liveVisited, setLiveVisited] = useState(false)
   const [subtitle, setSubtitle] = useState<string | null>(null)
 
   return (
@@ -34,7 +35,10 @@ function App() {
             <button
               className={tab.id === activeTab ? 'tab active' : 'tab'}
               key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => {
+                setActiveTab(tab.id)
+                if (tab.id === 'live') setLiveVisited(true)
+              }}
               type="button"
             >
               {tab.label}
@@ -50,7 +54,7 @@ function App() {
         {activeTab === 'datasets' && <Datasets />}
         {activeTab === 'diagnostics' && <Diagnostics />}
         {activeTab === 'training' && <Training />}
-        {activeTab === 'live' && <Live />}
+        {(liveVisited || activeTab === 'live') && <Live active={activeTab === 'live'} />}
       </main>
     </div>
   )

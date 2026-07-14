@@ -84,17 +84,25 @@ class SupabaseDomesticMasterClient:
         return total
 
     def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
-        normalized = query.strip()
+        return self._search_rpc("search_domestic_master", query, limit=limit)
+
+    def _search_rpc(self, rpc: str, query: str, *, limit: int) -> list[dict[str, Any]]:
+        normalized = " ".join(query.split())
         if not normalized:
             return []
-        response = httpx.post(
-            f"{self.config.url}/rest/v1/rpc/search_domestic_master",
-            headers=self._headers,
-            json={"query": normalized, "match_limit": limit},
-            timeout=self.timeout,
-        )
-        _raise_for_supabase(response)
-        return response.json()
+
+        candidates = (normalized, "".join(normalized.split()))
+        for candidate in dict.fromkeys(candidates):
+            response = httpx.post(
+                f"{self.config.url}/rest/v1/rpc/{rpc}",
+                headers=self._headers,
+                json={"query": candidate, "match_limit": limit},
+                timeout=self.timeout,
+            )
+            _raise_for_supabase(response)
+            if rows := response.json():
+                return rows
+        return []
 
 
 class SupabaseOverseasMasterClient(SupabaseDomesticMasterClient):
@@ -131,17 +139,7 @@ class SupabaseOverseasMasterClient(SupabaseDomesticMasterClient):
         return total
 
     def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
-        normalized = query.strip()
-        if not normalized:
-            return []
-        response = httpx.post(
-            f"{self.config.url}/rest/v1/rpc/search_overseas_master",
-            headers=self._headers,
-            json={"query": normalized, "match_limit": limit},
-            timeout=self.timeout,
-        )
-        _raise_for_supabase(response)
-        return response.json()
+        return self._search_rpc("search_overseas_master", query, limit=limit)
 
     def active_count(self) -> int:
         response = httpx.get(

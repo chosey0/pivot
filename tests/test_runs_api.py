@@ -93,3 +93,14 @@ def test_stop_running_job_is_worker_cooperative(monkeypatch):
 )
 def test_prediction_time_matches_chart_contract(value, timeframe, expected):
     assert api._prediction_time(value, timeframe) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "timeframe", "expected"),
+    [
+        ("2026-07-14T00:00:00", "day", "2026-07-15"),
+        ("2026-07-14T09:30:00", "min1", 1_784_068_200),
+    ],
+)
+def test_overseas_prediction_time_matches_kst_chart(value, timeframe, expected):
+    assert api._prediction_time(value, timeframe, overseas=True) == expected

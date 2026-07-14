@@ -19,6 +19,7 @@ import {
   type Time,
 } from 'lightweight-charts'
 import type { Candle, LinePoint, VolumePoint } from '../../api/client'
+import { chartPriceFormat, formatChartPrice, type PriceDecimals } from '../../lib/chartPrice'
 
 // 국내 관례: 상승 빨강 / 하락 파랑
 const UP_COLOR = '#e5484d'
@@ -63,6 +64,7 @@ interface Props {
   canLoadMoreOlder?: boolean
   isLoadingOlder?: boolean
   fitContentKey?: string
+  priceDecimals?: PriceDecimals
 }
 
 /** lightweight-charts 내부 시간값(BusinessDay 객체 등)을 API 시간값으로 되돌린다. */
@@ -86,11 +88,6 @@ function formatTimeLabel(time: Time): string {
     )
   }
   return String(timeToKey(time))
-}
-
-/** 원화 가격축: 소수점 없이 천 단위 구분 표기 (예: 1,000,000). */
-function formatKrwPrice(price: number): string {
-  return Math.round(price).toLocaleString('ko-KR')
 }
 
 function compareTimes(a: string | number, b: string | number): number {
@@ -224,6 +221,7 @@ export function CandleChart({
   canLoadMoreOlder = false,
   isLoadingOlder = false,
   fitContentKey = '',
+  priceDecimals = 0,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -264,7 +262,7 @@ export function CandleChart({
       },
       localization: {
         timeFormatter: formatTimeLabel,
-        priceFormatter: formatKrwPrice,
+        priceFormatter: (price: number) => formatChartPrice(price, 0),
       },
       timeScale: { borderVisible: false },
       rightPriceScale: { borderVisible: false },
@@ -275,6 +273,7 @@ export function CandleChart({
       borderVisible: false,
       wickUpColor: UP_COLOR,
       wickDownColor: DOWN_COLOR,
+      priceFormat: chartPriceFormat(0),
     })
     chartRef.current = chart
     seriesRef.current = series
@@ -323,6 +322,18 @@ export function CandleChart({
   }, [])
 
   useEffect(() => {
+    chartRef.current?.applyOptions({
+      localization: {
+        priceFormatter: (price: number) => formatChartPrice(price, priceDecimals),
+      },
+    })
+    seriesRef.current?.applyOptions({ priceFormat: chartPriceFormat(priceDecimals) })
+    for (const series of Object.values(maSeriesRef.current)) {
+      series.applyOptions({ priceFormat: chartPriceFormat(priceDecimals) })
+    }
+  }, [priceDecimals])
+
+  useEffect(() => {
     const chart = chartRef.current
     if (!seriesRef.current || !chart) return
 
@@ -343,6 +354,7 @@ export function CandleChart({
           lineWidth: indicator.lineWidth,
           priceLineVisible: false,
           lastValueVisible: false,
+          priceFormat: chartPriceFormat(priceDecimals),
         })
       } else {
         maSeriesRef.current[window].applyOptions({
@@ -429,7 +441,7 @@ export function CandleChart({
       })
     }
     dataLengthRef.current = candleData.length
-  }, [candles, volumes, ma, visibleIndicators, fitContentKey])
+  }, [candles, volumes, ma, visibleIndicators, fitContentKey, priceDecimals])
 
   useEffect(() => {
     markersApiRef.current?.setMarkers(markers.map(toSeriesMarker))

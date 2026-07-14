@@ -5,6 +5,7 @@ import {
   LineSeries,
   type UTCTimestamp,
 } from 'lightweight-charts'
+import { chartPriceFormat, formatChartPrice, type PriceDecimals } from '../../lib/chartPrice'
 
 // 샘플 피처에 Time이 없으므로(백로그 A2) x축은 봉 순번이다 — 시간축은 숨긴다
 const BASE_COLUMNS = ['Open', 'High', 'Low', 'Close']
@@ -14,10 +15,11 @@ const LINE_COLORS = ['#009c62', '#e31b35', '#ff8a00', '#8a26b2', '#0ea5e9', '#64
 interface Props {
   columns: string[]
   features: number[][]
+  priceDecimals?: PriceDecimals
 }
 
 /** 샘플 브라우저용 축소판 차트 — 원본 피처 시퀀스를 정적으로 그린다 (docs/04 §5). */
-export function MiniSampleChart({ columns, features }: Props) {
+export function MiniSampleChart({ columns, features, priceDecimals = 0 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const hasOhlc = BASE_COLUMNS.every((name) => columns.includes(name))
   const lineColumns = columns.filter(
@@ -39,8 +41,7 @@ export function MiniSampleChart({ columns, features }: Props) {
       timeScale: { visible: false },
       rightPriceScale: { borderVisible: false },
       localization: {
-        priceFormatter: (value: number) =>
-          value.toLocaleString('ko-KR', { maximumFractionDigits: 2 }),
+        priceFormatter: (value: number) => formatChartPrice(value, priceDecimals),
       },
       handleScroll: false,
       handleScale: false,
@@ -58,6 +59,7 @@ export function MiniSampleChart({ columns, features }: Props) {
         wickDownColor: '#3b82f6',
         priceLineVisible: false,
         lastValueVisible: false,
+        priceFormat: chartPriceFormat(priceDecimals),
       })
       candles.setData(
         features.map((row, position) => ({
@@ -81,6 +83,7 @@ export function MiniSampleChart({ columns, features }: Props) {
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
+        priceFormat: chartPriceFormat(priceDecimals),
       })
       const index = columnIndex.get(name)!
       series.setData(
@@ -90,7 +93,7 @@ export function MiniSampleChart({ columns, features }: Props) {
 
     chart.timeScale().fitContent()
     return () => chart.remove()
-  }, [columns, features])
+  }, [columns, features, priceDecimals])
 
   return (
     <div className="mini-chart-panel">

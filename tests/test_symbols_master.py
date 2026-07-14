@@ -1,6 +1,11 @@
 from brokers.kis.models.symbol import SymbolRecord
 
 from pivot.symbols.master import _is_common_stock, load_us_symbol_master
+from pivot.symbols.supabase import (
+    SupabaseConfig,
+    SupabaseDomesticMasterClient,
+    SupabaseOverseasMasterClient,
+)
 from server.routers.symbols import search_symbols
 
 
@@ -112,3 +117,51 @@ def test_overseas_symbol_search_returns_exchange_for_watchlist(monkeypatch):
         "score": 1.0,
         "exchange": "ND",
     }
+
+
+def test_symbol_search_retries_without_internal_whitespace(monkeypatch):
+    queries = []
+
+    class Response:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.rows
+
+    def post(*args, **kwargs):
+        query = kwargs["json"]["query"]
+        queries.append(query)
+        return Response([] if query == "삼성 전자" else [{"symbol": "005930"}])
+
+    monkeypatch.setattr("pivot.symbols.supabase.httpx.post", post)
+    client = SupabaseDomesticMasterClient(SupabaseConfig("https://example.test", "key"))
+
+    assert client.search("  삼성   전자  ") == [{"symbol": "005930"}]
+    assert queries == ["삼성 전자", "삼성전자"]
+
+
+def test_symbol_search_keeps_meaningful_whitespace_when_first_query_matches(monkeypatch):
+    queries = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [{"symbol": "AAPL"}]
+
+    def post(*args, **kwargs):
+        queries.append(kwargs["json"]["query"])
+        return Response()
+
+    monkeypatch.setattr("pivot.symbols.supabase.httpx.post", post)
+    client = SupabaseOverseasMasterClient(
+        SupabaseConfig("https://example.test", "key", table="overseas_master")
+    )
+
+    assert client.search("Apple Inc") == [{"symbol": "AAPL"}]
+    assert queries == ["Apple Inc"]

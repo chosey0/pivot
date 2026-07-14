@@ -43,6 +43,9 @@ function chartBefore(points: PredictionPoint[], timeframe: string) {
 /** 예측 검수 — 종목/split을 골라 실제 프랙탈 라벨 대비 모델 예측을 차트로 확인한다. */
 export function PredictionPanel({ run }: { run: RunSummary }) {
   const [symbols, setSymbols] = useState<DatasetSymbolRow[]>([])
+  const [sources, setSources] = useState<
+    Record<string, { region: 'domestic' | 'overseas'; exchange: string }>
+  >({})
   const [symbolsError, setSymbolsError] = useState<string | null>(null)
   const [split, setSplit] = useState<EvaluationSplit>('validation')
   const [symbol, setSymbol] = useState<string | null>(null)
@@ -60,6 +63,7 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
       .then((detail) => {
         if (stale) return
         setSymbols(detail.symbols)
+        setSources(detail.preset_snapshot.sources ?? {})
         setSymbolsError(null)
       })
       .catch((e: Error) => {
@@ -90,9 +94,12 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
     setSelected(null)
     try {
       const result = await trainingApi.evaluate(run.id, symbol, split)
+      const source = sources[symbol]
       const chart = await api.chart(symbol, result.timeframe as TimeframeCode, [], {
         limit: MAX_PREDICTION_CHART_BARS,
         before: chartBefore(result.points, result.timeframe),
+        region: source?.region ?? 'domestic',
+        exchange: source?.exchange ?? '',
       })
       setEvaluation(result)
       setCandles(chart.candles)
@@ -194,6 +201,7 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
                 candles={candles}
                 onSelect={setSelected}
                 points={visiblePoints}
+                priceDecimals={sources[symbol ?? '']?.region === 'overseas' ? 2 : 0}
                 selectedIndex={selected?.sample_index ?? null}
               />
             </div>

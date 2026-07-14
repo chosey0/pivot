@@ -1,19 +1,23 @@
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
-from zoneinfo import ZoneInfo
 
 from pivot.config import Timeframe
 from pivot.ingestion.cache import cache_path, load_cache_window
 from pivot.ingestion.fetch import Region, cache_broker
 from pivot.ingestion.indicators import DEFAULT_WINDOWS, add_moving_averages
 from server.deps import DATA_ROOT
-from server.serialize import chart_payload, display_frame, market_time
+from server.serialize import (
+    US_EASTERN,
+    chart_payload,
+    display_frame,
+    display_time_value,
+    market_time,
+)
 
 router = APIRouter(prefix="/api/chart", tags=["chart"])
 
 DEFAULT_INTRADAY_LIMIT = 5_000
 MAX_CHART_LIMIT = 20_000
-US_EASTERN = ZoneInfo("America/New_York")
 
 
 def _parse_ma_windows(value: str | None) -> tuple[int, ...]:
@@ -89,6 +93,10 @@ def chart(
         "symbol": symbol,
         "timeframe": tf.code,
         "has_more": has_more,
-        "next_before": None if not has_more else df.index[0].isoformat(),
+        "next_before": (
+            None
+            if not has_more
+            else str(display_time_value(df.index[0], tf, source_timezone))
+        ),
         **chart_payload(displayed, tf, ma_windows),
     }

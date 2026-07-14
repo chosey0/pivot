@@ -73,7 +73,11 @@ export function Datasets() {
   const sampleListRef = useRef<HTMLDivElement | null>(null)
 
   // 샘플 브라우저 상태 — position은 라벨 필터 적용 후 목록에서의 순번
-  const [browse, setBrowse] = useState<{ datasetId: number; name: string } | null>(null)
+  const [browse, setBrowse] = useState<{
+    datasetId: number
+    name: string
+    sources: DatasetRow['preset_snapshot']['sources']
+  } | null>(null)
   const [labelFilter, setLabelFilter] = useState<number | null>(null)
   const [pageOffset, setPageOffset] = useState(0)
   const [page, setPage] = useState<SampleListResponse | null>(null)
@@ -121,9 +125,8 @@ export function Datasets() {
     api
       .watchlist()
       .then((items) => {
-        const domestic = items.filter((item) => item.region === 'domestic')
-        setWatchlist(domestic)
-        setSelectedSymbols(domestic.map((item) => item.symbol))
+        setWatchlist(items)
+        setSelectedSymbols(items.map((item) => item.symbol))
       })
       .catch((e: Error) => setError(e.message))
     return () => eventSourceRef.current?.close()
@@ -237,7 +240,7 @@ export function Datasets() {
       const { job_id } = await api.preprocessBatch(
         selectedPresetId,
         datasetName.trim(),
-        selectedSymbols,
+        watchlist.filter((item) => selectedSymbols.includes(item.symbol)),
       )
       const started = await api.job(job_id)
       setJob(started)
@@ -280,7 +283,11 @@ export function Datasets() {
   // ── 샘플 브라우저 ──────────────────────────────────────────────
 
   function openBrowser(dataset: DatasetRow) {
-    setBrowse({ datasetId: dataset.id, name: dataset.name })
+    setBrowse({
+      datasetId: dataset.id,
+      name: dataset.name,
+      sources: dataset.preset_snapshot.sources,
+    })
     setLabelFilter(null)
     setPageOffset(0)
     setPage(null)
@@ -550,7 +557,10 @@ export function Datasets() {
                   <p className="empty">종목 & 데이터 탭에서 종목을 먼저 추가하세요.</p>
                 ) : (
                   watchlist.map((item) => (
-                    <label className="inline-check" key={item.symbol}>
+                    <label
+                      className="inline-check"
+                      key={`${item.region}:${item.exchange}:${item.symbol}`}
+                    >
                       <input
                         checked={selectedSymbols.includes(item.symbol)}
                         onChange={() => toggleSymbol(item.symbol)}
@@ -844,6 +854,9 @@ export function Datasets() {
                       <MiniSampleChart
                         columns={selectedSample.feature_columns}
                         features={selectedSample.features}
+                        priceDecimals={
+                          browse.sources?.[selectedSample.symbol]?.region === 'overseas' ? 2 : 0
+                        }
                       />
                       <div className="sample-features">
                         <table>

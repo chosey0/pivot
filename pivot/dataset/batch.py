@@ -95,6 +95,7 @@ def build_snapshot(
     split_conf: dict,
     *,
     preset: PreprocessPreset | None = None,
+    sources: dict[str, dict] | None = None,
 ) -> dict:
     """datasets.preset_snapshot 봉투 — 프리셋 전체 + split 규칙 (docs/06 §2)."""
     return {
@@ -105,6 +106,7 @@ def build_snapshot(
         # 이전 버전 JSON에 없는 호환 기본값도 명시해 재현 가능한 스냅샷을 만든다.
         "preset": preset.model_dump(mode="json") if preset else preset_row["preset"],
         "split": split_conf,
+        "sources": sources or {},
     }
 
 
@@ -119,6 +121,7 @@ def run_batch(
     symbols: list[str],
     data_root: Path,
     broker: str,
+    brokers: dict[str, str] | None = None,
 ) -> None:
     """생성 완료된 job/dataset 행을 받아 종목별 전처리→shard 업로드를 수행한다."""
     emit = _EventEmitter(jobs, job_id)
@@ -166,7 +169,7 @@ def run_batch(
                     symbol=symbol,
                     preset=preset,
                     data_root=data_root,
-                    broker=broker,
+                    broker=(brokers or {}).get(symbol, broker),
                     is_cancelled=cancelled,
                 )
             except BatchCancelledError:

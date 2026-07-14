@@ -689,6 +689,36 @@ button:disabled {
   font-size: 12px;
 }
 
+.chart-legend-compact {
+  top: 7px;
+  left: 8px;
+  gap: 2px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.chart-legend-compact .ohlc-row {
+  gap: 6px;
+  font-size: 11px;
+}
+
+.chart-legend-compact .ohlc-item,
+.chart-legend-compact .legend-row,
+.chart-legend-compact .legend-chip {
+  gap: 3px;
+}
+
+.chart-legend-compact .legend-chip button,
+.chart-legend-compact .legend-mini-button {
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+}
+
+.chart-legend-compact .legend-chip strong {
+  font-size: 11px;
+}
+
 .ohlc-row,
 .ohlc-item,
 .legend-row,

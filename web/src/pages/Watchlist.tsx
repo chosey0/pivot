@@ -14,7 +14,14 @@ import { IndicatorSettingsPanel } from '../components/indicators/IndicatorSettin
 import { useIndicatorSettings } from '../components/indicators/useIndicatorSettings'
 import { SymbolSearchBox } from '../components/symbols/SymbolSearchBox'
 import { mergeChartPages } from '../lib/chart'
-import { changeTone, formatDateTime, formatPercent, formatPrice, percentChange } from '../lib/format'
+import {
+  changeTone,
+  formatDateTime,
+  formatPercent,
+  formatPrice,
+  kstDateValue,
+  percentChange,
+} from '../lib/format'
 import { chartLimitFor, MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
 
 function isMissingCacheError(error: unknown) {
@@ -30,7 +37,7 @@ interface WatchlistProps {
 }
 
 export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = kstDateValue()
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
   const [statuses, setStatuses] = useState<Record<string, CacheStatus | null>>({})
   const [chart, setChart] = useState<ChartResponse | null>(null)
@@ -66,6 +73,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     () => toTimeframeCode(timeframeKind, timeframeUnit),
     [timeframeKind, timeframeUnit],
   )
+  const rangeInputType = timeframeKind === 'day' ? 'date' : 'datetime-local'
   const maWindowsKey = maWindows.join(',')
   const selectedSymbolLabel = useMemo(() => {
     if (!selectedSymbol) return ''
@@ -96,6 +104,18 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       }
     })
   }, [displayedOhlc, displayedOhlcPreviousClose])
+
+  function selectTimeframeKind(next: 'day' | 'minute' | 'tick', unit: number) {
+    setTimeframeKind(next)
+    setTimeframeUnit(unit)
+    setStartDate((current) =>
+      next === 'day' ? current.slice(0, 10) : `${current.slice(0, 10)}T00:00:00`,
+    )
+    setEndDate((current) =>
+      next === 'day' ? current.slice(0, 10) : `${current.slice(0, 10)}T23:59:59`,
+    )
+  }
+
   const refreshWatchlist = useCallback(async () => {
     const items = await api.watchlist()
     setWatchlist(items)
@@ -292,30 +312,21 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
           <div className="segmented">
             <button
               className={timeframeKind === 'day' ? 'selected' : ''}
-              onClick={() => {
-                setTimeframeKind('day')
-                setTimeframeUnit(1)
-              }}
+              onClick={() => selectTimeframeKind('day', 1)}
               type="button"
             >
               일봉
             </button>
             <button
               className={timeframeKind === 'minute' ? 'selected' : ''}
-              onClick={() => {
-                setTimeframeKind('minute')
-                setTimeframeUnit(1)
-              }}
+              onClick={() => selectTimeframeKind('minute', 1)}
               type="button"
             >
               분봉
             </button>
             <button
               className={timeframeKind === 'tick' ? 'selected' : ''}
-              onClick={() => {
-                setTimeframeKind('tick')
-                setTimeframeUnit(30)
-              }}
+              onClick={() => selectTimeframeKind('tick', 30)}
               type="button"
             >
               틱봉
@@ -352,29 +363,31 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
           </div>
           <div className="range-grid">
             <label className="field">
-              시작일
+              {timeframeKind === 'day' ? '시작일' : '시작 시각'}
               <input
                 disabled={!rangeEnabled}
                 max={endDate}
                 onChange={(event) => setStartDate(event.target.value)}
-                type="date"
+                step={timeframeKind === 'day' ? undefined : 1}
+                type={rangeInputType}
                 value={startDate}
               />
             </label>
             <label className="field">
-              종료일
+              {timeframeKind === 'day' ? '종료일' : '종료 시각'}
               <input
                 disabled={!rangeEnabled}
                 min={startDate}
                 onChange={(event) => setEndDate(event.target.value)}
-                type="date"
+                step={timeframeKind === 'day' ? undefined : 1}
+                type={rangeInputType}
                 value={endDate}
               />
             </label>
           </div>
           <p className="hint">
-            미지정 시 기존 캐시의 마지막 봉 이후를 증분 수집합니다. 지정 시 해당 기간을 조회해
-            캐시에 병합합니다.
+            날짜와 시각은 대한민국 시간(KST) 기준입니다. 미지정 시 기존 캐시의 마지막 봉 이후를
+            증분 수집하고, 지정 시 해당 기간을 조회해 캐시에 병합합니다.
           </p>
         </section>
 
@@ -511,7 +524,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
         hasContent={Boolean(chart)}
         legend={
           chart ? (
-            <div className="chart-legend">
+            <div className="chart-legend chart-legend-compact">
               <div className="ohlc-row">
                 {ohlcItems.map((item) => (
                   <span className="ohlc-item" key={item.label}>
@@ -599,6 +612,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
             ma={chart.ma}
             onLoadMoreOlder={loadOlderChart}
             onOhlcChange={setSelectedOhlc}
+            priceDecimals={selectedItem?.region === 'overseas' ? 2 : 0}
             visibleIndicators={visibleIndicators}
             volumes={chart.volumes}
           />
