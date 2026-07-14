@@ -267,7 +267,7 @@ export function CandleChart({
         timeFormatter: formatTimeLabel,
         priceFormatter: (price: number) => formatChartPrice(price, 0),
       },
-      timeScale: { borderVisible: false },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true },
       rightPriceScale: { borderVisible: false },
     })
     const series = chart.addSeries(CandlestickSeries, {
