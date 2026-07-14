@@ -127,7 +127,7 @@ export function Live() {
     api
       .watchlist()
       .then((items) => {
-        if (!stale) setWatchlist(items)
+        if (!stale) setWatchlist(items.filter((item) => item.region === 'domestic'))
       })
       .catch(() => undefined) // 관심종목은 구독 추가 보조 UI라 실패해도 페이지는 동작한다
     return () => {

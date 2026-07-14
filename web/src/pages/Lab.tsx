@@ -159,8 +159,9 @@ export function Lab() {
     api
       .watchlist()
       .then((items) => {
-        setWatchlist(items)
-        setSelectedSymbol((current) => current || items[0]?.symbol || '')
+        const domestic = items.filter((item) => item.region === 'domestic')
+        setWatchlist(domestic)
+        setSelectedSymbol((current) => current || domestic[0]?.symbol || '')
       })
       .catch((e: Error) => setError(e.message))
   }, [])

@@ -130,6 +130,19 @@ class SupabaseOverseasMasterClient(SupabaseDomesticMasterClient):
         _raise_for_supabase(response)
         return total
 
+    def search(self, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        normalized = query.strip()
+        if not normalized:
+            return []
+        response = httpx.post(
+            f"{self.config.url}/rest/v1/rpc/search_overseas_master",
+            headers=self._headers,
+            json={"query": normalized, "match_limit": limit},
+            timeout=self.timeout,
+        )
+        _raise_for_supabase(response)
+        return response.json()
+
     def active_count(self) -> int:
         response = httpx.get(
             f"{self.config.url}/rest/v1/{self.config.table}",
@@ -157,7 +170,7 @@ def _error_detail(response: httpx.Response) -> str:
     code = payload.get("code")
     message = payload.get("message", "")
     if code == "PGRST202":
-        return "search RPC is missing; apply supabase/migrations/20260710_domestic_master.sql first"
+        return "search RPC is missing; apply pending Supabase migrations first"
     if code == "42P01":
-        return "domestic_master table is missing; apply supabase/migrations/20260710_domestic_master.sql first"
+        return "symbol master table is missing; apply pending Supabase migrations first"
     return str(message or payload)

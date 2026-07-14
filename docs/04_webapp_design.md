@@ -34,16 +34,20 @@
 ### 1.1 종목 & 데이터 (Watchlist)
 
 - 종목 검색(심볼 마스터) → 관심종목 추가/제거
+  - 종목 추가 폼에서 국내/해외 시장을 선택한다. 해외는 NASDAQ/NYSE/AMEX 거래소를
+    선택하며 검색 결과가 거래소를 채운다.
   - 국내 종목마스터는 Supabase `public.domestic_master`에 저장한다.
   - 원천은 `broker-modules`의 `brokers.kis.symbols` KOSPI/KOSDAQ master이며, 우선 범위는 보통주다.
   - 검색은 Postgres `pg_trgm` 기반 RPC `search_domestic_master(query, match_limit)`로 수행한다.
   - 미국 종목마스터는 같은 SDK의 NASDAQ/NYSE/AMEX 전체 master를 `public.overseas_master`에 저장한다.
-    기본키는 `(market, symbol)`이며 원천 `raw` JSON은 저장하지 않는다. 현재 국내 관심종목 UI와는
-    연결하지 않고 `scripts/update-overseas-master.sh`로 전체 스냅샷을 갱신한다.
+    기본키는 `(market, symbol)`이며 원천 `raw` JSON은 저장하지 않는다.
+    `search_overseas_master(query, match_limit)`로 검색하고 `scripts/update-overseas-master.sh`로
+    전체 스냅샷을 갱신한다.
   - 종목코드/종목명 입력 중 가장 유사한 후보를 드롭다운으로 표시하고, 방향키/Enter로 선택한다.
 - **타임프레임 선택 수집**: 일봉 / N분봉 / N틱봉 중 선택해 수집
   - 타입(일/분/틱) + 단위 드롭다운 (분: 1,3,5,10,15,30,45,60 / 틱: 1,3,5,10,30 — 기본값 1)
   - 같은 종목이라도 타임프레임별로 캐시가 분리됨 (`data/raw/{broker}/{timeframe}/{symbol}.parquet`)
+  - 국내는 `kiwoom`, 해외는 `kiwoom-overseas-{nd|ny|na}` broker 경로를 사용한다.
 - 관심종목 테이블: 종목명/코드, **타임프레임별 캐시 상태**(수집 기간, 봉 수, 마지막 갱신), 수집/갱신 버튼
 - 수집 기간 선택: 시작일/종료일을 직접 지정할 수 있다. 미지정 시 기존 캐시 기준 증분 수집,
   지정 시 해당 기간을 조회해 기존 parquet 캐시에 병합
@@ -61,6 +65,9 @@
     MA 초기 NaN 구간 경고를 표시한다.
 - 전체 갱신 버튼 (rate limit 고려해 순차 실행, 진행률 표시)
 - 보조 기능: "거래대금 상위 N 종목 일괄 추가"
+
+M1의 해외 지원 범위는 관심종목 검색·수집·캐시·차트다. 전처리 실험실, 데이터셋,
+데이터 진단, 실시간 탭은 현재 국내 종목 식별자/구독 계약을 유지하므로 국내 관심종목만 표시한다.
 
 ### 1.2 전처리 실험실 (Lab) — 핵심 화면
 

@@ -19,7 +19,7 @@ pivot/                        # 저장소 루트
 │   │   ├── indicators.py     #   이평선 직접 계산 (ma_source: self | daily)
 │   │   └── cache.py          #   parquet 캐시 입출력 (증분 갱신)
 │   ├── env.py                #   저장소 루트 .env 로더 (프로세스 환경변수 우선)
-│   ├── symbols/              #   KIS 국내/미국 종목마스터 정규화 + Supabase 동기화/국내 검색
+│   ├── symbols/              #   KIS 국내/미국 종목마스터 정규화 + Supabase 동기화/퍼지 검색
 │   ├── storage/              #   Supabase 학습 데이터 저장소 경계 — docs/06 계약 소유
 │   │   ├── supabase.py       #   PostgREST(메타데이터)·Storage(객체) 클라이언트 분리
 │   │   ├── presets.py        #   training_presets repository (버전 증가·archive·검증)

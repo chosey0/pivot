@@ -3,6 +3,7 @@ import {
   api,
   type CacheStatus,
   type ChartResponse,
+  type InstrumentRegion,
   type SymbolSuggestion,
   type TimeframeCode,
   type WatchItem,
@@ -38,6 +39,8 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   const [timeframeUnit, setTimeframeUnit] = useState(1)
   const [symbolInput, setSymbolInput] = useState('005930')
   const [nameInput, setNameInput] = useState('삼성전자')
+  const [region, setRegion] = useState<InstrumentRegion>('domestic')
+  const [exchange, setExchange] = useState('ND')
   const [symbolSuggestions, setSymbolSuggestions] = useState<SymbolSuggestion[]>([])
   const [symbolSuggestionOpen, setSymbolSuggestionOpen] = useState(false)
   const [symbolSuggestionIndex, setSymbolSuggestionIndex] = useState(0)
@@ -75,6 +78,8 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     const name = watchlist.find((item) => item.symbol === selectedSymbol)?.name
     return name ? `${name} • ${selectedSymbol}` : selectedSymbol
   }, [selectedSymbol, watchlist])
+  const selectedItem = watchlist.find((item) => item.symbol === selectedSymbol) ?? null
+  const selectedCurrency = selectedItem?.region === 'overseas' ? 'USD' : 'KRW'
   const displayedOhlc = selectedOhlc ?? chart?.candles[chart.candles.length - 1] ?? null
   const displayedOhlcPreviousClose = useMemo(() => {
     if (!chart || !displayedOhlc) return null
@@ -114,18 +119,21 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       setStatuses({})
       return
     }
-    const next = await api.ingestStatus(
-      items.map((item) => item.symbol),
-      nextTimeframe,
+    const rows = await Promise.all(
+      items.map(async (item) => {
+        const result = await api.ingestStatus([item.symbol], nextTimeframe, item)
+        return [item.symbol, result[item.symbol] ?? null] as const
+      }),
     )
-    setStatuses(next)
+    setStatuses(Object.fromEntries(rows))
   }, [])
 
   const loadChart = useCallback(async (
-    symbol: string,
+    item: WatchItem,
     nextTimeframe: TimeframeCode,
     nextMaWindows: number[],
   ) => {
+    const { symbol } = item
     if (!symbol) return
     setSelectedSymbol(symbol)
     setLoading(true)
@@ -133,6 +141,8 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     try {
       const next = await api.chart(symbol, nextTimeframe, nextMaWindows, {
         limit: chartLimitFor(nextTimeframe),
+        region: item.region,
+        exchange: item.exchange,
       })
       setChart(next)
       setSelectedOhlc(next.candles.at(-1) ?? null)
@@ -151,15 +161,17 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   }, [])
 
   const loadOlderChart = useCallback(async () => {
-    if (!chart || !selectedSymbol || !chart.has_more || loadingOlder) return
+    if (!chart || !selectedItem || !chart.has_more || loadingOlder) return
     const first = chart.candles[0]
     if (!first) return
     setLoadingOlder(true)
     setError(null)
     try {
-      const older = await api.chart(selectedSymbol, timeframe, maWindows, {
+      const older = await api.chart(selectedItem.symbol, timeframe, maWindows, {
         limit: chartLimitFor(timeframe),
         before: first.time,
+        region: selectedItem.region,
+        exchange: selectedItem.exchange,
       })
       setChart((current) => (current ? mergeChartPages(current, older) : older))
     } catch (e) {
@@ -169,7 +181,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     } finally {
       setLoadingOlder(false)
     }
-  }, [chart, loadingOlder, maWindows, selectedSymbol, timeframe])
+  }, [chart, loadingOlder, maWindows, selectedItem, timeframe])
 
   useEffect(() => {
     refreshWatchlist()
@@ -179,8 +191,8 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   useEffect(() => {
     refreshStatus(watchlist, timeframe)
       .catch((e: Error) => setError(e.message))
-    if (selectedSymbol) loadChart(selectedSymbol, timeframe, maWindows)
-  }, [loadChart, maWindows, maWindowsKey, refreshStatus, selectedSymbol, timeframe, watchlist])
+    if (selectedItem) loadChart(selectedItem, timeframe, maWindows)
+  }, [loadChart, maWindows, maWindowsKey, refreshStatus, selectedItem, timeframe, watchlist])
 
   useEffect(() => {
     setSelectedOhlc((current) => {
@@ -210,7 +222,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     const controller = new AbortController()
     const timer = window.setTimeout(() => {
       setSymbolSearchLoading(true)
-      api.symbolSearch(symbolSearchQuery, controller.signal)
+      api.symbolSearch(symbolSearchQuery, region, controller.signal)
         .then((items) => {
           setSymbolSuggestions(items)
           setSymbolSuggestionIndex(0)
@@ -225,11 +237,12 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [symbolSearchQuery, symbolSearchTouched])
+  }, [region, symbolSearchQuery, symbolSearchTouched])
 
   function selectSymbolSuggestion(item: SymbolSuggestion) {
     setSymbolInput(item.symbol)
     setNameInput(item.name)
+    if (item.exchange) setExchange(item.exchange)
     setSymbolSuggestionOpen(false)
     setSymbolSuggestions([])
   }
@@ -254,12 +267,17 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
 
   async function addWatchItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const symbol = symbolInput.trim()
+    const symbol = symbolInput.trim().toUpperCase()
     if (!symbol) return
     setLoading(true)
     setError(null)
     try {
-      const items = await api.addWatchItem({ symbol, name: nameInput.trim() })
+      const items = await api.addWatchItem({
+        symbol,
+        name: nameInput.trim(),
+        region,
+        exchange: region === 'overseas' ? exchange : '',
+      })
       setWatchlist(items)
       setSelectedSymbol(symbol)
       setSymbolSuggestionOpen(false)
@@ -295,7 +313,8 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     }
   }
 
-  async function ingest(symbol: string) {
+  async function ingest(item: WatchItem) {
+    const { symbol } = item
     setLoading(true)
     setError(null)
     const rangeText = rangeEnabled ? ` (${startDate} ~ ${endDate})` : ''
@@ -307,12 +326,16 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       const response = await api.ingest(
         [symbol],
         timeframe,
-        rangeEnabled ? { start: startDate, end: endDate } : {},
+        {
+          ...(rangeEnabled ? { start: startDate, end: endDate } : {}),
+          region: item.region,
+          exchange: item.exchange,
+        },
       )
       const result = response.results[symbol]
       if (!result?.ok) throw new Error(result?.error ?? '수집 실패')
       await refreshStatus(watchlist, timeframe)
-      await loadChart(symbol, timeframe, maWindows)
+      await loadChart(item, timeframe, maWindows)
       setMessage(`${symbol} ${timeframe}${rangeText} 수집 완료: ${result.bars ?? 0}봉`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -419,13 +442,43 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
 
         <section className="control-section">
           <h2>종목 추가</h2>
+          <div className="range-grid">
+            <label className="field">
+              시장
+              <select
+                onChange={(event) => {
+                  const next = event.target.value as InstrumentRegion
+                  setRegion(next)
+                  setSymbolInput(next === 'domestic' ? '005930' : '')
+                  setNameInput(next === 'domestic' ? '삼성전자' : '')
+                  setSymbolSuggestions([])
+                  setSymbolSuggestionOpen(false)
+                  setSymbolSearchTouched(false)
+                }}
+                value={region}
+              >
+                <option value="domestic">국내</option>
+                <option value="overseas">해외</option>
+              </select>
+            </label>
+            {region === 'overseas' ? (
+              <label className="field">
+                거래소
+                <select onChange={(event) => setExchange(event.target.value)} value={exchange}>
+                  <option value="ND">NASDAQ</option>
+                  <option value="NY">NYSE</option>
+                  <option value="NA">AMEX</option>
+                </select>
+              </label>
+            ) : null}
+          </div>
           <div className="symbol-search-box">
             <form className="add-form" onSubmit={addWatchItem}>
               <label className="field">
                 종목코드
                 <input
                   autoComplete="off"
-                  maxLength={12}
+                  maxLength={20}
                   onChange={(event) => {
                     setSymbolSearchField('symbol')
                     setSymbolSearchTouched(true)
@@ -437,7 +490,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                     setSymbolSuggestionOpen(symbolSuggestions.length > 0)
                   }}
                   onKeyDown={handleSymbolSuggestKeyDown}
-                  placeholder="005930"
+                  placeholder={region === 'domestic' ? '005930' : 'AAPL'}
                   value={symbolInput}
                 />
               </label>
@@ -456,7 +509,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                     setSymbolSuggestionOpen(symbolSuggestions.length > 0)
                   }}
                   onKeyDown={handleSymbolSuggestKeyDown}
-                  placeholder="삼성전자"
+                  placeholder={region === 'domestic' ? '삼성전자' : 'Apple'}
                   value={nameInput}
                 />
               </label>
@@ -476,7 +529,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                           ? 'symbol-suggestion active'
                           : 'symbol-suggestion'
                       }
-                      key={item.symbol}
+                      key={`${item.market}:${item.symbol}`}
                       onMouseDown={(event) => {
                         event.preventDefault()
                         selectSymbolSuggestion(item)
@@ -521,11 +574,13 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                   >
                     <button
                       className="watch-main"
-                      onClick={() => loadChart(item.symbol, timeframe, maWindows)}
+                      onClick={() => loadChart(item, timeframe, maWindows)}
                       type="button"
                     >
                       <strong>{item.name || item.symbol}</strong>
-                      <span>{item.symbol}</span>
+                      <span>
+                        {item.symbol} · {item.region === 'overseas' ? item.exchange : 'KRX'}
+                      </span>
                       <small>
                         {status
                           ? `${status.bars.toLocaleString()}봉 · ${formatDateTime(status.last)}`
@@ -533,7 +588,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                       </small>
                     </button>
                     <div className="row-actions">
-                      <button disabled={loading} onClick={() => ingest(item.symbol)} type="button">
+                      <button disabled={loading} onClick={() => ingest(item)} type="button">
                         수집
                       </button>
                       <button
@@ -563,11 +618,11 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
             >
               + 보조지표
             </button>
-            {selectedSymbol && (
+            {selectedItem && (
               <button
                 className="ghost"
                 disabled={loading}
-                onClick={() => loadChart(selectedSymbol, timeframe, maWindows)}
+                onClick={() => loadChart(selectedItem, timeframe, maWindows)}
                 type="button"
               >
                 차트 새로고침
@@ -585,7 +640,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                 {ohlcItems.map((item) => (
                   <span className="ohlc-item" key={item.label}>
                     <strong>{item.label}</strong>
-                    <span>{formatPrice(item.value)}</span>
+                    <span>{formatPrice(item.value, selectedCurrency)}</span>
                     {item.change === null ? null : (
                       <span className={`ohlc-change ${item.tone}`}>
                         ({formatPercent(item.change)})

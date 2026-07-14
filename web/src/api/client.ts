@@ -29,13 +29,18 @@ export interface ChartResponse {
 export interface WatchItem {
   symbol: string
   name: string
+  region: InstrumentRegion
+  exchange: string
 }
+
+export type InstrumentRegion = 'domestic' | 'overseas'
 
 export interface SymbolSuggestion {
   symbol: string
   name: string
   market: string
   score: number
+  exchange: string
 }
 
 export interface CacheStatus {
@@ -59,11 +64,15 @@ export interface IngestResponse {
 export interface IngestOptions {
   start?: string
   end?: string
+  region?: InstrumentRegion
+  exchange?: string
 }
 
 export interface ChartOptions {
   limit?: number
   before?: string | number
+  region?: InstrumentRegion
+  exchange?: string
 }
 
 export interface PreviewMarker {
@@ -355,8 +364,8 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
 export const api = {
   dummyChart: () => fetchJson<ChartResponse>('/api/chart/dummy'),
   watchlist: () => fetchJson<WatchItem[]>('/api/watchlist'),
-  symbolSearch: (query: string, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ q: query, limit: '10' })
+  symbolSearch: (query: string, region: InstrumentRegion, signal?: AbortSignal) => {
+    const params = new URLSearchParams({ q: query, limit: '10', region })
     return fetchJson<SymbolSuggestion[]>(`/api/symbols/search?${params}`, { signal })
   },
   addWatchItem: (item: WatchItem) =>
@@ -376,12 +385,20 @@ export const api = {
         timeframe,
         start: options.start || null,
         end: options.end || null,
+        region: options.region || 'domestic',
+        exchange: options.exchange || '',
       }),
     }),
-  ingestStatus: (symbols: string[], timeframe: TimeframeCode) => {
+  ingestStatus: (
+    symbols: string[],
+    timeframe: TimeframeCode,
+    options: Pick<IngestOptions, 'region' | 'exchange'> = {},
+  ) => {
     const params = new URLSearchParams({
       symbols: symbols.join(','),
       timeframe,
+      region: options.region || 'domestic',
+      exchange: options.exchange || '',
     })
     return fetchJson<Record<string, CacheStatus | null>>(`/api/ingest/status?${params}`)
   },
@@ -395,6 +412,8 @@ export const api = {
     if (maWindows.length > 0) params.set('ma', maWindows.join(','))
     if (options.limit) params.set('limit', String(options.limit))
     if (options.before !== undefined) params.set('before', String(options.before))
+    params.set('region', options.region || 'domestic')
+    if (options.exchange) params.set('exchange', options.exchange)
     return fetchJson<ChartResponse>(`/api/chart/${encodeURIComponent(symbol)}?${params}`)
   },
   preprocessPreview: (symbol: string, params: PreviewParams, signal?: AbortSignal) =>

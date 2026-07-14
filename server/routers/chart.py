@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from pivot.config import Timeframe
 from pivot.ingestion.cache import cache_path, load_cache_window
-from pivot.ingestion.fetch import BROKER
+from pivot.ingestion.fetch import Region, cache_broker
 from pivot.ingestion.indicators import DEFAULT_WINDOWS, add_moving_averages
 from server.deps import DATA_ROOT
 from server.serialize import chart_payload
@@ -57,13 +57,15 @@ def chart(
     ma: str | None = Query(None, description="comma-separated moving average windows"),
     limit: int | None = Query(None, ge=100, le=MAX_CHART_LIMIT),
     before: str | None = Query(None, description="exclusive upper bound: yyyy-mm-dd or unix seconds"),
+    region: Region = "domestic",
+    exchange: str = "",
 ) -> dict:
     tf = Timeframe.from_code(timeframe)
     ma_windows = _parse_ma_windows(ma)
     chart_limit = _default_limit(tf, limit)
     lookback = max(ma_windows, default=1) - 1
     df, has_more = load_cache_window(
-        cache_path(DATA_ROOT, BROKER, tf.code, symbol),
+        cache_path(DATA_ROOT, cache_broker(region, exchange), tf.code, symbol),
         before=_parse_before(before, tf),
         limit=chart_limit,
         lookback=lookback,

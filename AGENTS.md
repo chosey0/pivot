@@ -16,10 +16,11 @@ spec, and we reimplement it with known defects fixed.
 
 ## Current status
 
-**M1 (data ingestion + real chart) done**: broker-modules Kiwoom day/min/tick candles,
-watchlist JSON storage, parquet cache/status, `/api/chart` real candles with MA/volume,
-Vite/React Watchlist UI, and Supabase domestic plus NASDAQ/NYSE/AMEX symbol masters are
-implemented and verified.
+**M1 (data ingestion + real chart) done**: broker-modules Kiwoom domestic/US day/min/tick
+candles, market-aware watchlist JSON storage, exchange-separated parquet cache/status,
+`/api/chart` real candles with MA/volume, Vite/React Watchlist UI, and Supabase domestic plus
+NASDAQ/NYSE/AMEX symbol masters/search are implemented. Overseas preprocessing/training/live
+remain out of scope until their symbol identity and subscription contracts are extended.
 
 **M2 (preprocessing lab) core done**: `pivot/labeling/fractal.py` (Williams fractal,
 pandas-center-rolling alignment fixed by tests, lag `(n-1)//2`, labels 0/1/2, filters),

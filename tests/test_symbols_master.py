@@ -1,6 +1,7 @@
 from brokers.kis.models.symbol import SymbolRecord
 
 from pivot.symbols.master import _is_common_stock, load_us_symbol_master
+from server.routers.symbols import search_symbols
 
 
 def test_common_stock_filter_keeps_plain_domestic_stock():
@@ -82,3 +83,32 @@ def test_us_master_normalizes_without_raw(monkeypatch):
     assert row["symbol"] == "AAPL"
     assert row["active"] is True
     assert "raw" not in row
+
+
+def test_overseas_symbol_search_returns_exchange_for_watchlist(monkeypatch):
+    class SearchStub:
+        def search(self, query, *, limit):
+            assert (query, limit) == ("AAPL", 10)
+            return [
+                {
+                    "symbol": "AAPL",
+                    "name": "애플",
+                    "market": "NASDAQ",
+                    "exchange": "ND",
+                    "score": 1,
+                }
+            ]
+
+    monkeypatch.setattr(
+        "server.routers.symbols.SupabaseOverseasMasterClient", SearchStub
+    )
+
+    result = search_symbols("AAPL", limit=10, region="overseas")
+
+    assert result[0].model_dump() == {
+        "symbol": "AAPL",
+        "name": "애플",
+        "market": "NASDAQ",
+        "score": 1.0,
+        "exchange": "ND",
+    }

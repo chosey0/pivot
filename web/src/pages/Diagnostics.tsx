@@ -56,8 +56,9 @@ export function Diagnostics() {
     api
       .watchlist()
       .then((items) => {
-        setWatchlist(items)
-        setSelectedSymbols(items.map((item) => item.symbol))
+        const domestic = items.filter((item) => item.region === 'domestic')
+        setWatchlist(domestic)
+        setSelectedSymbols(domestic.map((item) => item.symbol))
       })
       .catch((e: Error) => setError(e.message))
     api

@@ -2,14 +2,18 @@
 const KRW_FORMATTER = new Intl.NumberFormat('ko-KR', {
   maximumFractionDigits: 0,
 })
+const USD_FORMATTER = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+})
 
 export function formatDateTime(value?: string) {
   if (!value) return '-'
   return value.replace('T', ' ').slice(0, 19)
 }
 
-export function formatPrice(value: number) {
-  return `${KRW_FORMATTER.format(value)}원`
+export function formatPrice(value: number, currency: 'KRW' | 'USD' = 'KRW') {
+  return currency === 'USD' ? `$${USD_FORMATTER.format(value)}` : `${KRW_FORMATTER.format(value)}원`
 }
 
 export function percentChange(value: number, previousClose: number | null) {

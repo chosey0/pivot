@@ -1,7 +1,11 @@
 import json
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from pivot.ingestion.fetch import OVERSEAS_EXCHANGES
+from pivot.symbols.master import DOMESTIC_SYMBOL_RE
 
 from server.deps import META_DIR
 
@@ -13,12 +17,29 @@ WATCHLIST_PATH = META_DIR / "watchlist.json"
 class WatchItem(BaseModel):
     symbol: str
     name: str = ""
+    region: Literal["domestic", "overseas"] = "domestic"
+    exchange: str = ""
+
+    @model_validator(mode="after")
+    def validate_instrument(self):
+        self.symbol = self.symbol.strip().upper()
+        self.exchange = self.exchange.strip().upper()
+        if self.region == "domestic":
+            if not DOMESTIC_SYMBOL_RE.fullmatch(self.symbol):
+                raise ValueError("domestic symbol must contain six digits")
+            self.exchange = ""
+        elif self.exchange not in OVERSEAS_EXCHANGES:
+            raise ValueError("overseas exchange must be one of: NA, ND, NY")
+        return self
 
 
 def _load() -> list[dict]:
     if not WATCHLIST_PATH.exists():
         return []
-    return json.loads(WATCHLIST_PATH.read_text(encoding="utf-8"))
+    return [
+        WatchItem.model_validate(item).model_dump()
+        for item in json.loads(WATCHLIST_PATH.read_text(encoding="utf-8"))
+    ]
 
 
 def _save(items: list[dict]) -> None:
