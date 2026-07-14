@@ -180,7 +180,8 @@ async def update_cache(
     """캐시 갱신.
 
     기간이 명시되면 해당 구간을 조회해 캐시에 병합한다. 기간이 없으면 기존 캐시의
-    마지막 봉 이후만 증분 조회하고, 캐시가 없으면 가능한 전체 구간을 조회한다.
+    마지막 봉 이후만 증분 조회한다. 단, 미국 일봉은 부분 캐시의 과거 이력을 복구하도록
+    전체 구간을 다시 조회한다.
     """
     if start and end and start > end:
         raise ValueError("start date must be on or before end date")
@@ -194,7 +195,11 @@ async def update_cache(
             start_date = start.isoformat()
         else:
             start_date = f"{start.isoformat()} 000000"
-    elif existing is not None and not existing.empty:
+    elif (
+        existing is not None
+        and not existing.empty
+        and not (region == "overseas" and timeframe.type == "day")
+    ):
         last: pd.Timestamp = existing.index[-1]
         if timeframe.type == "day":
             start_date = last.date().isoformat()

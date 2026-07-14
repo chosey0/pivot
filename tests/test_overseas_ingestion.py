@@ -2,6 +2,7 @@ import asyncio
 import datetime
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from brokers.kiwoom._internal.http import HttpResponse
@@ -14,7 +15,9 @@ from pivot.ingestion.fetch import (
     _normalize_overseas_time,
     cache_broker,
     fetch_bars,
+    update_cache,
 )
+from pivot.ingestion.cache import cache_path
 from server.routers.watchlist import WatchItem
 
 
@@ -116,3 +119,49 @@ def test_overseas_extended_hour_rolls_into_the_next_calendar_day():
 
     assert row["cntr_tm"] == "20260711034300"
     assert row["cntr_tm_original"] == "20260710274300"
+
+
+def test_overseas_daily_refresh_backfills_a_partial_cache(tmp_path, monkeypatch):
+    path = cache_path(tmp_path, "kiwoom-overseas-nd", "day", "AAPL")
+    path.parent.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "Open": [200.0],
+            "High": [201.0],
+            "Low": [199.0],
+            "Close": [200.5],
+            "Volume": [100],
+            "Amount": [20050.0],
+        },
+        index=pd.DatetimeIndex(["2026-07-01"], name="Time"),
+    ).to_parquet(path)
+    calls = []
+
+    async def fake_fetch_bars(*args, **kwargs):
+        calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                timestamp="20200102",
+                open=100,
+                high=101,
+                low=99,
+                close=100.5,
+                volume=200,
+                amount=20100,
+            )
+        ]
+
+    monkeypatch.setattr("pivot.ingestion.fetch.fetch_bars", fake_fetch_bars)
+    frame = asyncio.run(
+        update_cache(
+            object(),
+            "AAPL",
+            Timeframe.from_code("day"),
+            tmp_path,
+            region="overseas",
+            exchange="ND",
+        )
+    )
+
+    assert calls[0]["start_date"] is None
+    assert list(frame.index) == [pd.Timestamp("2020-01-02"), pd.Timestamp("2026-07-01")]
