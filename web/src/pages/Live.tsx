@@ -149,12 +149,19 @@ export function Live() {
     })
   }, [state.subscriptions])
 
+  // 구독이 끊긴 종목의 history는 서버가 422로 막는다. 해제 직후 snapshot이 먼저 도착하면
+  // 선택 종목 보정 전에 이 effect가 돌 수 있어, 구독 여부를 직접 확인한다.
+  const selectionSubscribed =
+    selectedSymbol !== null && state.subscriptions.some((row) => row.symbol === selectedSymbol)
+
   // 과거 봉은 Live 전용 Kiwoom REST 조회로 읽는다. 재연결 snapshot마다 재조회해
   // 단절 동안의 마감 봉을 delta 재생 없이 복구한다 (docs/08 §6.2).
   useEffect(() => {
-    if (!selectedSymbol) {
+    if (!selectedSymbol || !selectionSubscribed) {
       setChart(null)
       setSelectedOhlc(null)
+      setChartError(null)
+      setChartLoading(false)
       return
     }
     let stale = false
@@ -179,7 +186,14 @@ export function Live() {
     return () => {
       stale = true
     }
-  }, [chartTimeframe, maWindows, maWindowsKey, selectedSymbol, state.snapshotNonce])
+  }, [
+    chartTimeframe,
+    maWindows,
+    maWindowsKey,
+    selectedSymbol,
+    selectionSubscribed,
+    state.snapshotNonce,
+  ])
 
   const liveCandles = selectedSymbol
     ? state.candles[liveCandleKey(selectedSymbol, chartTimeframe)]

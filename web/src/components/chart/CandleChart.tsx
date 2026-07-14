@@ -56,7 +56,8 @@ interface Props {
   visibleIndicators?: VisibleIndicators
   markers?: ChartMarker[]
   highlightRange?: TimeRange | null
-  onOhlcChange?: (point: OhlcPoint) => void
+  /** 커서가 봉을 벗어나면 null. 호출자는 이때 마지막 봉으로 되돌린다. */
+  onOhlcChange?: (point: OhlcPoint | null) => void
   onTimeClick?: (time: string | number) => void
   onLoadMoreOlder?: () => void
   canLoadMoreOlder?: boolean
@@ -283,7 +284,10 @@ export function CandleChart({
     highlightRef.current = highlight
     chart.subscribeCrosshairMove((param) => {
       const point = param.seriesData.get(series)
-      if (!point || !('open' in point)) return
+      if (!point || !('open' in point)) {
+        onOhlcChangeRef.current?.(null)
+        return
+      }
       onOhlcChangeRef.current?.({
         time: point.time as string | number,
         open: point.open,
