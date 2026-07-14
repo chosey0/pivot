@@ -58,8 +58,15 @@ export interface LiveStateResponse {
   connection: LiveConnection
   deployment: LiveDeployment | null
   prediction_threshold: number
+  manual_anchors: ManualAnchor[]
   subscriptions: LiveSubscription[]
   counters: Record<string, number>
+}
+
+export interface ManualAnchor {
+  symbol: string
+  timeframe: string
+  time: string | number
 }
 
 /** 실시간 집계 봉. 차트 API Candle과 달리 거래량을 함께 싣는다. */
@@ -93,8 +100,8 @@ export interface CandidateWindow {
   pairing_rule: SamplePairing
   anchor_position: number
   anchor_time: string | number
-  anchor_kind: 'low' | 'high'
-  anchor_source: 'calculated' | 'prediction'
+  anchor_kind: 'low' | 'high' | 'manual'
+  anchor_source: 'calculated' | 'prediction' | 'manual'
   anchor_confidence: number | null
   start: string | number
   end: string | number
@@ -143,6 +150,7 @@ export interface SnapshotEventData {
   connection: LiveConnection
   deployment: LiveDeployment | null
   prediction_threshold: number
+  manual_anchors: ManualAnchor[]
   subscriptions: LiveSubscription[]
   counters: Record<string, number>
   latest_candles: CandleEventData[]
@@ -184,6 +192,15 @@ export const liveApi = {
     fetchJson<LiveStateResponse>('/api/live/prediction-threshold', {
       method: 'PUT',
       body: JSON.stringify({ threshold }),
+    }),
+  setManualAnchor: (symbol: string, timeframe: TimeframeCode, time: string | number) =>
+    fetchJson<LiveStateResponse>(`/api/live/anchors/${encodeURIComponent(symbol)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ timeframe, time }),
+    }),
+  clearManualAnchor: (symbol: string) =>
+    fetchJson<LiveStateResponse>(`/api/live/anchors/${encodeURIComponent(symbol)}`, {
+      method: 'DELETE',
     }),
   subscriptions: () => fetchJson<LiveSubscription[]>('/api/live/subscriptions'),
   subscribe: (instrument: {

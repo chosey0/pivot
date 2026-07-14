@@ -40,9 +40,9 @@ export interface OhlcPoint {
 // 프랙탈 라벨 마커. label 규약: 0=저점, 1=고점, 2=무시 (docs/04 §5)
 export interface ChartMarker {
   time: string | number
-  kind: 'low' | 'high'
+  kind: 'low' | 'high' | 'manual'
   label: 0 | 1 | 2
-  source?: 'calculated' | 'prediction'
+  source?: 'calculated' | 'prediction' | 'manual'
   confidence?: number
 }
 
@@ -137,6 +137,15 @@ function toLineData(points: LinePoint[], validTimes: Set<string | number>): Line
 
 function toSeriesMarker(marker: ChartMarker): SeriesMarker<Time> {
   const time = marker.time as Time
+  if (marker.source === 'manual') {
+    return {
+      time,
+      position: 'belowBar',
+      shape: 'square',
+      color: '#7c3aed',
+      text: '시작 앵커',
+    }
+  }
   if (marker.source === 'prediction') {
     const confidence =
       marker.confidence === undefined ? '' : ` ${Math.round(marker.confidence * 100)}%`

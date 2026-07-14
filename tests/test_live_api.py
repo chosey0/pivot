@@ -10,6 +10,7 @@ from server.live import LiveService, LiveTarget
 class FakeLiveService:
     def __init__(self) -> None:
         self.rows = []
+        self.manual_anchors = []
 
     def state(self):
         return {
@@ -22,6 +23,7 @@ class FakeLiveService:
             },
             "deployment": None,
             "prediction_threshold": 0.7,
+            "manual_anchors": self.manual_anchors,
             "subscriptions": self.rows,
             "counters": {},
         }
@@ -53,6 +55,18 @@ class FakeLiveService:
         result = self.state()
         result["prediction_threshold"] = threshold
         return result
+
+    async def set_manual_anchor(self, symbol, timeframe, time):
+        self.manual_anchors = [
+            {"symbol": symbol, "timeframe": timeframe.code, "time": int(time.timestamp())}
+        ]
+        return self.state()
+
+    async def clear_manual_anchor(self, symbol):
+        self.manual_anchors = [
+            row for row in self.manual_anchors if row["symbol"] != symbol
+        ]
+        return self.state()
 
     def subscriptions(self):
         return self.rows
@@ -104,6 +118,11 @@ def test_live_http_mutations_return_ui_contract_state():
             "/api/live/prediction-threshold", json={"threshold": 0.825}
         )
         subscribed = client.post("/api/live/subscriptions", json={"symbol": "005930"})
+        anchor = client.put(
+            "/api/live/anchors/005930",
+            json={"timeframe": "min1", "time": 1784073600},
+        )
+        automatic = client.delete("/api/live/anchors/005930")
         removed = client.delete("/api/live/subscriptions/005930")
 
     assert state.status_code == 200
@@ -111,6 +130,7 @@ def test_live_http_mutations_return_ui_contract_state():
         "connection",
         "deployment",
         "prediction_threshold",
+        "manual_anchors",
         "subscriptions",
         "counters",
     }
@@ -130,6 +150,10 @@ def test_live_http_mutations_return_ui_contract_state():
     }
     assert deactivated.json()["deployment"] is None
     assert threshold.json()["prediction_threshold"] == 0.825
+    assert anchor.json()["manual_anchors"] == [
+        {"symbol": "005930", "timeframe": "min1", "time": 1784073600}
+    ]
+    assert automatic.json()["manual_anchors"] == []
     assert subscribed.json()[0]["inference_status"] == "no_model"
     assert subscribed.json()[0]["region"] == "domestic"
     assert removed.json() == []
@@ -221,6 +245,7 @@ def test_live_websocket_starts_with_snapshot(tmp_path):
         "connection",
         "deployment",
         "prediction_threshold",
+        "manual_anchors",
         "subscriptions",
         "counters",
         "latest_candles",

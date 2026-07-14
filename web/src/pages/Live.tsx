@@ -155,6 +155,8 @@ export function Live({ active }: { active: boolean }) {
   const [chartMessage, setChartMessage] = useState<string | null>(null)
   const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
   const [thresholdSaving, setThresholdSaving] = useState(false)
+  const [anchorPicking, setAnchorPicking] = useState(false)
+  const [anchorSaving, setAnchorSaving] = useState(false)
   const historyCacheRef = useRef(
     new Map<string, { snapshotNonce: number; data: LiveHistoryResponse }>(),
   )
@@ -269,6 +271,9 @@ export function Live({ active }: { active: boolean }) {
   const liveCandles = selectedSymbol
     ? state.candles[liveCandleKey(selectedSymbol, chartTimeframe)]
     : undefined
+  const selectedManualAnchor = state.manualAnchors.find(
+    (row) => row.symbol === selectedSymbol && row.timeframe === chartTimeframe,
+  )
   const historicalChart =
     chart?.symbol === selectedSymbol && chart.timeframe === chartTimeframe ? chart : null
 
@@ -384,7 +389,7 @@ export function Live({ active }: { active: boolean }) {
       const marker = {
         time: candleTime,
         kind: row.anchor_kind,
-        label: row.anchor_kind === 'low' ? 0 : 1,
+        label: row.anchor_kind === 'low' ? 0 : row.anchor_kind === 'high' ? 1 : 2,
         source: row.anchor_source,
         confidence: row.anchor_confidence ?? undefined,
       } satisfies ChartMarker
@@ -400,6 +405,17 @@ export function Live({ active }: { active: boolean }) {
         time: candleTime,
         source: 'calculated',
       })
+    }
+    if (selectedManualAnchor) {
+      const candleTime = times.get(timeKey(selectedManualAnchor.time))
+      if (candleTime !== undefined) {
+        calculated.set(`${timeKey(candleTime)}:manual`, {
+          time: candleTime,
+          kind: 'manual',
+          label: 2,
+          source: 'manual',
+        })
+      }
     }
     for (const row of predictions) {
       const candleTime = times.get(timeKey(row.time))
@@ -430,6 +446,7 @@ export function Live({ active }: { active: boolean }) {
     merged.candles,
     predictionThreshold,
     selectedSymbol,
+    selectedManualAnchor,
     state.predictions,
   ])
   const visiblePredictionCount = markers.filter((marker) => marker.source === 'prediction').length
@@ -448,6 +465,41 @@ export function Live({ active }: { active: boolean }) {
     },
     [applyState],
   )
+
+  useEffect(() => setAnchorPicking(false), [chartTimeframe, selectedSymbol])
+
+  const applyManualAnchor = useCallback(
+    async (time: string | number) => {
+      if (!anchorPicking || !selectedSymbol) return
+      setAnchorSaving(true)
+      setChartError(null)
+      try {
+        applyState(await liveApi.setManualAnchor(selectedSymbol, chartTimeframe, time))
+        setAnchorPicking(false)
+        setChartMessage(`시작 앵커를 ${formatEventTime(time)}로 지정했습니다.`)
+      } catch (error) {
+        setChartError(error instanceof Error ? error.message : String(error))
+      } finally {
+        setAnchorSaving(false)
+      }
+    },
+    [anchorPicking, applyState, chartTimeframe, selectedSymbol],
+  )
+
+  const clearManualAnchor = useCallback(async () => {
+    if (!selectedSymbol) return
+    setAnchorSaving(true)
+    setChartError(null)
+    try {
+      applyState(await liveApi.clearManualAnchor(selectedSymbol))
+      setAnchorPicking(false)
+      setChartMessage('자동 앵커 선택으로 돌아갔습니다.')
+    } catch (error) {
+      setChartError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setAnchorSaving(false)
+    }
+  }, [applyState, selectedSymbol])
 
   const subscribe = useCallback(async () => {
     if (!addSuggestion) return
@@ -694,6 +746,32 @@ export function Live({ active }: { active: boolean }) {
                 threshold={predictionThreshold}
               />
               <button
+                className={`indicator-button live-anchor-button${anchorPicking ? ' selected' : ''}`}
+                disabled={
+                  anchorSaving ||
+                  !selectedSymbol ||
+                  state.deployment?.timeframe !== chartTimeframe
+                }
+                onClick={() => setAnchorPicking((current) => !current)}
+                type="button"
+              >
+                {anchorPicking
+                  ? '캔들을 선택하세요'
+                  : selectedManualAnchor
+                    ? '앵커 변경'
+                    : '시작 앵커 지정'}
+              </button>
+              {selectedManualAnchor ? (
+                <button
+                  className="indicator-button"
+                  disabled={anchorSaving}
+                  onClick={clearManualAnchor}
+                  type="button"
+                >
+                  자동 앵커
+                </button>
+              ) : null}
+              <button
                 className="indicator-button"
                 onClick={indicators.openIndicatorPanel}
                 type="button"
@@ -779,6 +857,12 @@ export function Live({ active }: { active: boolean }) {
                     </span>
                   </div>
                 ) : null}
+                {selectedManualAnchor ? (
+                  <div className="legend-row live-manual-anchor-legend">
+                    <span>■ 시작 앵커</span>
+                    <strong>{formatEventTime(selectedManualAnchor.time)}</strong>
+                  </div>
+                ) : null}
               </div>
             ) : null
           }
@@ -820,6 +904,7 @@ export function Live({ active }: { active: boolean }) {
               markers={markers}
               onLoadMoreOlder={loadOlderChart}
               onOhlcChange={setSelectedOhlc}
+              onTimeClick={anchorPicking ? applyManualAnchor : undefined}
               priceDecimals={selectedSubscription?.region === 'overseas' ? 2 : 0}
               visibleIndicators={visibleIndicators}
               volumes={merged.volumes}

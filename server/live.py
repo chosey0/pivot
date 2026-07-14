@@ -376,6 +376,42 @@ class LiveService:
         await self._broadcast_snapshot()
         return self.state()
 
+    async def set_manual_anchor(
+        self, symbol: str, timeframe: Timeframe, time: pd.Timestamp
+    ) -> dict:
+        symbol = str(symbol).strip().upper()
+        async with self._activation_lock:
+            engine = self._engine
+            target = self._desired.get(symbol)
+            if engine is None:
+                raise LiveServiceError("no active live model")
+            if target is None:
+                raise KeyError(symbol)
+            if timeframe.code != engine.preset.timeframe.code:
+                raise ValueError("manual anchor timeframe must match the active model")
+            source_timezone = target.timezone if target.region == "overseas" else None
+            anchor_time = market_time(time, timeframe, source_timezone)
+            if anchor_time is None:
+                raise ValueError("manual anchor time is required")
+            frame = await asyncio.to_thread(self._history, symbol, timeframe)
+            async with self._inference_lock:
+                await asyncio.to_thread(
+                    engine.set_manual_anchor, symbol, anchor_time, frame
+                )
+        await self._broadcast_snapshot()
+        return self.state()
+
+    async def clear_manual_anchor(self, symbol: str) -> dict:
+        symbol = str(symbol).strip().upper()
+        async with self._activation_lock:
+            if symbol not in self._desired:
+                raise KeyError(symbol)
+            async with self._inference_lock:
+                if self._engine is not None:
+                    self._engine.clear_manual_anchor(symbol)
+        await self._broadcast_snapshot()
+        return self.state()
+
     async def deactivate_model(self) -> dict:
         async with self._activation_lock:
             deployments, _, _ = self._repositories()
@@ -463,6 +499,9 @@ class LiveService:
             ):
                 for key in [key for key in mapping if key[0] == symbol]:
                     mapping.pop(key, None)
+        async with self._inference_lock:
+            if self._engine is not None:
+                self._engine.clear_manual_anchor(symbol)
         await self._broadcast_snapshot()
         if not self._desired and self._gateway_task is not None:
             self._gateway_task.cancel()
@@ -629,6 +668,7 @@ class LiveService:
             },
             "deployment": self._deployment.copy() if self._deployment else None,
             "prediction_threshold": self._prediction_threshold,
+            "manual_anchors": self._manual_anchor_state(),
             "subscriptions": self.subscriptions(),
             "counters": counters,
         }
@@ -667,6 +707,25 @@ class LiveService:
         return [
             self._subscription_state[symbol].copy() for symbol in sorted(self._desired)
         ]
+
+    def _manual_anchor_state(self) -> list[dict]:
+        if self._engine is None:
+            return []
+        timeframe = self._engine.preset.timeframe
+        rows = []
+        for symbol, time in sorted(self._engine.manual_anchors().items()):
+            target = self._desired.get(symbol)
+            if target is None:
+                continue
+            source_timezone = target.timezone if target.region == "overseas" else None
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe.code,
+                    "time": display_time_value(time, timeframe, source_timezone),
+                }
+            )
+        return rows
 
     async def add_listener(self, *, maxsize: int = CLIENT_QUEUE_SIZE) -> LiveListener:
         listener = LiveListener(maxsize=maxsize)

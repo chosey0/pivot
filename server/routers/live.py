@@ -7,6 +7,7 @@ from fastapi import Query
 from pydantic import BaseModel, Field
 
 from pivot.config import Timeframe
+from pivot.realtime.infer import LiveWarmupError
 from server.routers.chart import _parse_before, _parse_ma_windows
 from server.live import ListenerClosed, LiveService, LiveServiceError
 
@@ -27,6 +28,11 @@ class SubscribeRequest(BaseModel):
 
 class PredictionThresholdRequest(BaseModel):
     threshold: float = Field(ge=0, le=1)
+
+
+class ManualAnchorRequest(BaseModel):
+    timeframe: str
+    time: str | int
 
 
 def _service(request: Request) -> LiveService:
@@ -64,6 +70,32 @@ async def set_prediction_threshold(
     payload: PredictionThresholdRequest, request: Request
 ) -> dict:
     return await _service(request).set_prediction_threshold(payload.threshold)
+
+
+@router.put("/api/live/anchors/{symbol}")
+async def set_manual_anchor(
+    symbol: str, payload: ManualAnchorRequest, request: Request
+) -> dict:
+    try:
+        timeframe = Timeframe.from_code(payload.timeframe)
+        time = _parse_before(str(payload.time), timeframe)
+        if time is None:
+            raise ValueError("manual anchor time is required")
+        return await _service(request).set_manual_anchor(symbol, timeframe, time)
+    except KeyError as exc:
+        raise HTTPException(404, f"{symbol} is not subscribed") from exc
+    except (LiveWarmupError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except LiveServiceError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.delete("/api/live/anchors/{symbol}")
+async def clear_manual_anchor(symbol: str, request: Request) -> dict:
+    try:
+        return await _service(request).clear_manual_anchor(symbol)
+    except KeyError as exc:
+        raise HTTPException(404, f"{symbol} is not subscribed") from exc
 
 
 @router.get("/api/live/subscriptions")

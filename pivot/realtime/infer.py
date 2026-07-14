@@ -84,6 +84,7 @@ class LiveInferenceEngine:
         self.prediction_threshold = 0.7
         self._prediction_history: dict[str, deque[PredictionAnchor]] = {}
         self._prediction_anchors: dict[str, dict[str, PredictionAnchor]] = {}
+        self._manual_anchors: dict[str, pd.Timestamp] = {}
         self._seen: set[tuple[str, str, pd.Timestamp, int]] = set()
         self._seen_order: deque[tuple[str, str, pd.Timestamp, int]] = deque()
 
@@ -99,6 +100,7 @@ class LiveInferenceEngine:
             self.preset,
             self.checkpoint.feature_columns,
             prediction_anchors=self._prediction_anchors.get(symbol),
+            manual_anchor=self._manual_anchors.get(symbol),
         )
         predictions = infer_candidates(
             self.checkpoint, candidates, device=self.device
@@ -135,6 +137,24 @@ class LiveInferenceEngine:
         self.prediction_threshold = threshold
         for symbol in self._prediction_history:
             self._rebuild_prediction_anchors(symbol)
+
+    def set_manual_anchor(
+        self, symbol: str, time: pd.Timestamp, frame: pd.DataFrame
+    ) -> None:
+        timestamp = pd.Timestamp(time)
+        build_candidate_windows(
+            frame,
+            self.preset,
+            self.checkpoint.feature_columns,
+            manual_anchor=timestamp,
+        )
+        self._manual_anchors[symbol] = timestamp
+
+    def clear_manual_anchor(self, symbol: str) -> None:
+        self._manual_anchors.pop(symbol, None)
+
+    def manual_anchors(self) -> dict[str, pd.Timestamp]:
+        return self._manual_anchors.copy()
 
     def _rebuild_prediction_anchors(self, symbol: str) -> None:
         anchors: dict[str, PredictionAnchor] = {}
@@ -186,6 +206,7 @@ def build_candidate_windows(
     feature_columns: list[str],
     *,
     prediction_anchors: dict[str, PredictionAnchor] | None = None,
+    manual_anchor: pd.Timestamp | None = None,
 ) -> list[CandidateWindow]:
     if list(feature_columns) != list(preset.features):
         raise ValueError("checkpoint feature columns do not match the preset snapshot")
@@ -197,6 +218,23 @@ def build_candidate_windows(
         raise LiveWarmupError("not enough confirmed fractal history")
     end = len(result.frame) - 1
     points = result.points[result.points["position"] < end]
+    if manual_anchor is not None:
+        position = int(result.frame.index.get_indexer([pd.Timestamp(manual_anchor)])[0])
+        if position < 0:
+            raise LiveWarmupError("manual anchor is outside retained history")
+        if position >= end:
+            raise LiveWarmupError("manual anchor must precede the current bar")
+        return [
+            _candidate(
+                result.frame,
+                (position, "manual", "manual", None),
+                end,
+                feature_columns,
+                None,
+                True,
+                preset.labeling.sample_pairing,
+            )
+        ]
     if points.empty and not prediction_anchors:
         raise LiveWarmupError("no confirmed anchor before the current bar")
 
@@ -217,6 +255,7 @@ def build_candidate_windows(
                 feature_columns,
                 None,
                 True,
+                preset.labeling.sample_pairing,
             )
         ]
 
@@ -235,6 +274,7 @@ def build_candidate_windows(
                 feature_columns,
                 target_label,
                 False,
+                preset.labeling.sample_pairing,
             )
         )
     return candidates
@@ -294,13 +334,14 @@ def _candidate(
     feature_columns: list[str],
     target_label: int | None,
     shared: bool,
+    pairing_rule: str,
 ) -> CandidateWindow:
     start, anchor_kind, anchor_source, anchor_confidence = anchor
     values = frame[feature_columns].iloc[start : end + 1].to_numpy(dtype=np.float64)
     if not np.isfinite(values).all():
         raise LiveWarmupError("candidate features contain NaN or infinite values")
     return CandidateWindow(
-        pairing_rule="adjacent_markers_v1" if shared else "latest_opposite_v1",
+        pairing_rule=pairing_rule,
         anchor_position=start,
         anchor_time=pd.Timestamp(frame.index[start]),
         anchor_kind=anchor_kind,

@@ -132,9 +132,18 @@ export function PredictionLog({ predictions }: { predictions: PredictionEventDat
                 <div>
                   <dt>anchor</dt>
                   <dd>
-                    {window.anchor_kind === 'low' ? '저점' : '고점'} ·{' '}
+                    {window.anchor_kind === 'manual'
+                      ? '수동 시작'
+                      : window.anchor_kind === 'low'
+                        ? '저점'
+                        : '고점'}{' '}
+                    ·{' '}
                     {formatEventTime(window.anchor_time)} (#{window.anchor_position}) ·{' '}
-                    {window.anchor_source === 'prediction' ? '모델 판정' : '계산 프랙탈'}
+                    {window.anchor_source === 'manual'
+                      ? '사용자 지정'
+                      : window.anchor_source === 'prediction'
+                        ? '모델 판정'
+                        : '계산 프랙탈'}
                     {window.anchor_confidence == null
                       ? ''
                       : ` ${(window.anchor_confidence * 100).toFixed(1)}%`}

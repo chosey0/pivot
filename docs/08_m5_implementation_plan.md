@@ -136,6 +136,11 @@ Kiwoom WebSocket KRX 0B / US FE
   다음 추론부터 같은 종류의 계산 프랙탈보다 최신이면 후보 anchor로 사용한다. class `2`는
   차트 포인트나 anchor가 되지 않는다. 임계값 변경 시 최근 판정 로그는 유지하고, 엔진이 보유한
   종목별 판정 이력에서 새 기준을 통과하는 최신 저점·고점을 다시 선택해 표시와 anchor 기준을 맞춘다.
+- 사용자는 활성 모델 timeframe 차트에서 임의의 과거 마감 봉을 종목별 수동 시작 anchor로 지정할 수
+  있다. 수동 anchor가 있으면 자동 계산·예측 anchor보다 우선하며 pairing 종류와 무관하게
+  `수동 anchor .. 현재 마감 봉` 단일 shared window를 구성한다. 선택 시각은 현재 추론 history의
+  retained bar와 정확히 일치하고 현재 마감 봉보다 이전이어야 한다. 자동 모드로 해제하면 기존 pairing
+  규칙을 즉시 복원하며, 모델 교체·비활성화 또는 종목 구독 해제 시 수동 anchor를 초기화한다.
 
 현재 cls3 데이터셋은 실제 프랙탈 지점만 샘플링하며 “프랙탈 아님” 음성 샘플을 포함하지 않는다.
 따라서 M5의 출력은 **현재 봉이 프랙탈일 절대 확률이 아니라, 프랙탈 후보 시퀀스라는 조건에서의
@@ -152,6 +157,8 @@ Kiwoom WebSocket KRX 0B / US FE
 | PUT | `/api/live/model` | `{run_id, artifact_id?}`. 활성화 후 갱신된 state 전체 반환 |
 | DELETE | `/api/live/model` | 현재 활성 deployment를 비활성화하고 갱신된 state 전체 반환 |
 | PUT | `/api/live/prediction-threshold` | `{threshold}` (`0..1`). 예측 anchor를 초기화하고 갱신된 state 전체 반환 |
+| PUT | `/api/live/anchors/{symbol}` | `{timeframe,time}`. 검증된 종목별 수동 시작 anchor를 설정하고 갱신된 state 전체 반환 |
+| DELETE | `/api/live/anchors/{symbol}` | 수동 시작 anchor를 해제하고 자동 pairing으로 복귀한 state 전체 반환 |
 | GET | `/api/live/subscriptions` | 저장된 구독 종목과 종목별 상태 |
 | POST | `/api/live/subscriptions` | `{symbol,name,region,exchange}`. 구독 후 갱신된 구독 목록 반환 |
 | DELETE | `/api/live/subscriptions/{symbol}` | 해제 후 갱신된 구독 목록 반환 |
@@ -161,7 +168,8 @@ Kiwoom WebSocket KRX 0B / US FE
 모델과 구독은 유지한다. 활성 모델이 없으면 구독은 저장할 수 있지만 추론 상태는 `no_model`이다.
 모델 비활성화는 활성 deployment 이력을 삭제하지 않고 `active=false`로 전환한 뒤 메모리 추론 엔진과
 최근 예측을 해제한다. 이후 API 재시작에서도 해당 모델을 복원하지 않는다.
-`connection`은 `status/message/last_tick_at/last_heartbeat_at/market_state`, deployment는
+`connection`은 `status/message/last_tick_at/last_heartbeat_at/market_state`, `manual_anchors`는
+`symbol/timeframe/time`만 포함한다. deployment는
 공개 run·dataset·artifact id, model/timeframe/features/pairing만 포함한다. 구독 행은
 `symbol/name/region/exchange`, 전송 상태
 `pending|subscribed|error`와 추론 상태 `no_model|warmup|ready`를 분리한다. `counters`는 invalid,
@@ -274,6 +282,9 @@ sequence가 증가하는 delta를 보낸다.
 기본 70%이며 `scores[selected_class]`가 임계값 이상인 판정만 차트에 표시한다. class 0/1
 표시 포인트는 다음 추론의 예측 anchor로 승격하고 class 2는 로그에만 남긴다. 임계값 입력은 `%`
 단위의 숫자·소수점 text field이며 적용 시 서버 확률값으로 변환한다.
+차트의 `시작 앵커 지정` 모드는 다음 클릭 캔들을 종목별 수동 입력 시작점으로 설정하고 보라색
+`시작 앵커` 마커를 표시한다. `자동 앵커`를 누르면 checkpoint pairing의 계산·예측 anchor 선택으로
+돌아간다. 활성 모델과 다른 표시 timeframe에서는 수동 anchor 지정을 비활성화한다.
 실시간 구독 추가는 관심종목 목록에 의존하지 않고 국내·미국 종목마스터 퍼지 검색을 직접 사용한다.
 자동완성에서 선택된 종목코드와 이름, 지역, 거래소를 구독 API로 전달한다. 국내 0B는 KST,
 미국 FE는 America/New_York에서 집계하고 미국 REST/WS 분봉은 차트 응답에서 KST로 통일한다.

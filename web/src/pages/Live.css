@@ -483,6 +483,16 @@
   opacity: 0.5;
 }
 
+.live-anchor-button.selected {
+  border-color: #7c3aed;
+  background: #f5f3ff;
+  color: #6d28d9;
+}
+
+.live-manual-anchor-legend span {
+  color: #7c3aed;
+}
+
 .live-provisional-badge {
   padding: 0 6px;
   border-radius: 999px;

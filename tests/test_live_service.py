@@ -136,6 +136,7 @@ class StubEngine:
     def __init__(self, timeframe: str = "min1") -> None:
         self.preset = PreprocessPreset(timeframe=Timeframe.from_code(timeframe))
         self.prediction_threshold = 0.7
+        self.manual = {}
 
     def infer(self, symbol, frame):
         return None
@@ -145,6 +146,15 @@ class StubEngine:
 
     def set_prediction_threshold(self, threshold):
         self.prediction_threshold = threshold
+
+    def set_manual_anchor(self, symbol, time, frame):
+        self.manual[symbol] = pd.Timestamp(time)
+
+    def clear_manual_anchor(self, symbol):
+        self.manual.pop(symbol, None)
+
+    def manual_anchors(self):
+        return self.manual.copy()
 
 
 class PredictingEngine(StubEngine):
@@ -1056,6 +1066,42 @@ def test_prediction_threshold_keeps_recent_log_state(tmp_path: Path):
         assert state["prediction_threshold"] == 0.825
         assert engine.prediction_threshold == 0.825
         assert list(service._predictions) == [{"symbol": "005930"}]
+
+    asyncio.run(scenario())
+
+
+def test_manual_anchor_is_exposed_in_state_and_can_be_cleared(tmp_path: Path):
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"005930": LiveTarget("005930")}
+        service._sync_subscription_state()
+        engine = StubEngine()
+        await service._install_engine(engine, {"id": 1})
+        frame = pd.DataFrame(
+            {"Close": [100.0, 101.0]},
+            index=pd.DatetimeIndex(
+                ["2026-07-15 09:00:00", "2026-07-15 09:01:00"], name="Time"
+            ),
+        )
+        service._history = lambda *args: frame
+
+        state = await service.set_manual_anchor(
+            "005930",
+            Timeframe.from_code("min1"),
+            pd.Timestamp("2026-07-15 09:00:00"),
+        )
+
+        assert engine.manual["005930"] == pd.Timestamp("2026-07-15 09:00:00")
+        assert state["manual_anchors"] == [
+            {
+                "symbol": "005930",
+                "timeframe": "min1",
+                "time": int(pd.Timestamp("2026-07-15 09:00:00").timestamp()),
+            }
+        ]
+
+        cleared = await service.clear_manual_anchor("005930")
+        assert cleared["manual_anchors"] == []
 
     asyncio.run(scenario())
 

@@ -20,6 +20,7 @@ from pivot.models import build_model
 from pivot.realtime.infer import (
     CandidatePrediction,
     LiveInferenceEngine,
+    LiveWarmupError,
     build_candidate_windows,
     infer_candidates,
     preset_from_checkpoint,
@@ -100,6 +101,54 @@ def test_legacy_candidates_use_latest_low_and_high_anchors():
     by_label = {candidate.target_label: candidate for candidate in candidates}
     assert by_label[1].anchor_position == latest["low"]
     assert by_label[0].anchor_position == latest["high"]
+
+
+@pytest.mark.parametrize("pairing", ["adjacent_markers_v1", "latest_opposite_v1"])
+def test_manual_anchor_overrides_automatic_pairing(pairing):
+    frame = make_candles(length=240)
+    config = preset(pairing)
+    result = run_preprocess(frame, config)
+    anchor_time = result.frame.index[-20]
+
+    candidates = build_candidate_windows(
+        frame,
+        config,
+        config.features,
+        manual_anchor=anchor_time,
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.pairing_rule == pairing
+    assert candidate.anchor_time == anchor_time
+    assert candidate.anchor_kind == "manual"
+    assert candidate.anchor_source == "manual"
+    assert candidate.shared_window is True
+    np.testing.assert_array_equal(
+        candidate.features,
+        result.frame[config.features].iloc[-20:].to_numpy(),
+    )
+
+
+def test_manual_anchor_must_be_a_retained_bar_before_the_current_bar():
+    frame = make_candles(length=240)
+    config = preset()
+    result = run_preprocess(frame, config)
+
+    with pytest.raises(LiveWarmupError, match="precede"):
+        build_candidate_windows(
+            frame,
+            config,
+            config.features,
+            manual_anchor=result.frame.index[-1],
+        )
+    with pytest.raises(LiveWarmupError, match="outside"):
+        build_candidate_windows(
+            frame,
+            config,
+            config.features,
+            manual_anchor=result.frame.index[0] - np.timedelta64(1, "D"),
+        )
 
 
 @pytest.mark.parametrize(

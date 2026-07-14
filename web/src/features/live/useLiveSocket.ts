@@ -9,6 +9,7 @@ import {
   type LiveConnection,
   type LiveDeployment,
   type LiveEvent,
+  type ManualAnchor,
   type LiveStateResponse,
   type LiveSubscription,
   type PredictionEventData,
@@ -35,6 +36,7 @@ export interface LiveSocketState {
   connection: LiveConnection
   deployment: LiveDeployment | null
   predictionThreshold: number
+  manualAnchors: ManualAnchor[]
   subscriptions: LiveSubscription[]
   candles: Record<string, SymbolCandles>
   predictions: PredictionEventData[]
@@ -124,6 +126,7 @@ function initialState(): LiveSocketState {
     connection: EMPTY_CONNECTION,
     deployment: null,
     predictionThreshold: 0.7,
+    manualAnchors: [],
     subscriptions: [],
     candles: {},
     predictions: loadStoredPredictions(),
@@ -213,6 +216,7 @@ function applyEvent(state: LiveSocketState, event: LiveEvent): LiveSocketState {
         connection: { ...EMPTY_CONNECTION, ...data.connection },
         deployment: data.deployment ?? null,
         predictionThreshold: data.prediction_threshold ?? 0.7,
+        manualAnchors: data.manual_anchors ?? [],
         subscriptions,
         candles,
         predictions: mergePredictions(
@@ -295,6 +299,7 @@ function reducer(state: LiveSocketState, action: Action): LiveSocketState {
         connection: { ...state.connection, ...action.state.connection },
         deployment: action.state.deployment,
         predictionThreshold: action.state.prediction_threshold ?? 0.7,
+        manualAnchors: action.state.manual_anchors ?? [],
         subscriptions: action.state.subscriptions,
       }
     case 'apply_subscriptions': {
