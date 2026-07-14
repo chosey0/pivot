@@ -1,17 +1,19 @@
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
+from zoneinfo import ZoneInfo
 
 from pivot.config import Timeframe
 from pivot.ingestion.cache import cache_path, load_cache_window
 from pivot.ingestion.fetch import Region, cache_broker
 from pivot.ingestion.indicators import DEFAULT_WINDOWS, add_moving_averages
 from server.deps import DATA_ROOT
-from server.serialize import chart_payload
+from server.serialize import chart_payload, display_frame, market_time
 
 router = APIRouter(prefix="/api/chart", tags=["chart"])
 
 DEFAULT_INTRADAY_LIMIT = 5_000
 MAX_CHART_LIMIT = 20_000
+US_EASTERN = ZoneInfo("America/New_York")
 
 
 def _parse_ma_windows(value: str | None) -> tuple[int, ...]:
@@ -56,7 +58,9 @@ def chart(
     timeframe: str = "day",
     ma: str | None = Query(None, description="comma-separated moving average windows"),
     limit: int | None = Query(None, ge=100, le=MAX_CHART_LIMIT),
-    before: str | None = Query(None, description="exclusive upper bound: yyyy-mm-dd or unix seconds"),
+    before: str | None = Query(
+        None, description="exclusive upper bound: yyyy-mm-dd or unix seconds"
+    ),
     region: Region = "domestic",
     exchange: str = "",
 ) -> dict:
@@ -64,23 +68,27 @@ def chart(
     ma_windows = _parse_ma_windows(ma)
     chart_limit = _default_limit(tf, limit)
     lookback = max(ma_windows, default=1) - 1
+    source_timezone = US_EASTERN if region == "overseas" else None
     df, has_more = load_cache_window(
         cache_path(DATA_ROOT, cache_broker(region, exchange), tf.code, symbol),
-        before=_parse_before(before, tf),
+        before=market_time(_parse_before(before, tf), tf, source_timezone),
         limit=chart_limit,
         lookback=lookback,
         columns=["Open", "High", "Low", "Close", "Volume"],
     )
     if df is None or df.empty:
-        raise HTTPException(404, f"no cached data for {symbol} ({tf.code}) — run ingest first")
+        raise HTTPException(
+            404, f"no cached data for {symbol} ({tf.code}) — run ingest first"
+        )
 
     df = add_moving_averages(df, windows=ma_windows)
     if chart_limit is not None:
         df = df.tail(chart_limit)
+    displayed = display_frame(df, tf, source_timezone)
     return {
         "symbol": symbol,
         "timeframe": tf.code,
         "has_more": has_more,
         "next_before": None if not has_more else df.index[0].isoformat(),
-        **chart_payload(df, tf, ma_windows),
+        **chart_payload(displayed, tf, ma_windows),
     }

@@ -11,7 +11,15 @@ from pivot.config import PreprocessPreset, Timeframe
 from pivot.realtime.aggregate import CandleAggregator
 from pivot.realtime.infer import LivePrediction
 from server import live as live_module
-from server.live import KST, LiveListener, LiveService, SubscriptionStore, trade_from_tick
+from server.live import (
+    KST,
+    LiveListener,
+    LiveService,
+    LiveTarget,
+    SubscriptionStore,
+    US_EASTERN,
+    trade_from_tick,
+)
 
 
 class EmptyDeployments:
@@ -69,8 +77,10 @@ class DeployableRuns:
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    def __init__(self, market: str = "KRX") -> None:
+        self.market = market
         self.subscribed: list[str] = []
+        self.us_subscribed: list[tuple[str, str]] = []
         self.unsubscribed: list[str] = []
         self.events: asyncio.Queue = asyncio.Queue()
         self.closed = False
@@ -87,7 +97,10 @@ class FakeSession:
     async def subscribe_trades(self, symbol: str):
         self.subscribed.append(symbol)
 
-    async def unsubscribe(self, symbol: str):
+    async def subscribe_us_trades(self, symbol: str, *, exchange: str):
+        self.us_subscribed.append((symbol, exchange))
+
+    async def unsubscribe(self, symbol: str, **kwargs):
         self.unsubscribed.append(symbol)
 
     async def stream(self):
@@ -96,8 +109,13 @@ class FakeSession:
 
 
 class FakeClient:
-    def __init__(self, session: FakeSession) -> None:
-        self.realtime = SimpleNamespace(session=lambda: session)
+    def __init__(self, sessions: FakeSession | dict[str, FakeSession]) -> None:
+        self.sessions = (
+            sessions if isinstance(sessions, dict) else {sessions.market: sessions}
+        )
+        self.realtime = SimpleNamespace(
+            session=lambda market="KRX": self.sessions[market]
+        )
 
     async def __aenter__(self):
         return self
@@ -158,10 +176,18 @@ def _tick(symbol: str, exchange_ts: str, seq: int, price: str = "70000"):
 
 def test_subscription_store_is_sorted_atomic_and_validates_symbols(tmp_path: Path):
     store = SubscriptionStore(tmp_path / "meta" / "live_subscriptions.json")
-    store.save({"005930", "000660"})
+    store.save(
+        {
+            "005930": LiveTarget("005930", "삼성전자"),
+            "000660": LiveTarget("000660", "SK하이닉스"),
+        }
+    )
 
-    assert store.load() == {"000660", "005930"}
+    assert set(store.load()) == {"000660", "005930"}
+    assert store.load()["005930"].name == "삼성전자"
     assert not store.path.with_suffix(".tmp").exists()
+    store.path.write_text('["005930"]', encoding="utf-8")
+    assert store.load()["005930"].region == "domestic"
     store.path.write_text('["bad"]', encoding="utf-8")
     with pytest.raises(ValueError, match="six digits"):
         store.load()
@@ -175,10 +201,29 @@ def test_trade_from_tick_combines_exchange_time_with_received_kst_date():
     assert trade.price == Decimal("70000")
 
 
+def test_overseas_trade_uses_us_exchange_date_and_timezone():
+    target = LiveTarget("AAPL", "Apple", "overseas", "ND")
+    trade = trade_from_tick(
+        SimpleNamespace(
+            tr_id="FE",
+            symbol="AAPL",
+            exchange_ts="09:30:01",
+            received_at="2026-07-14T13:30:01+00:00",
+            received_seq=1,
+            price=Decimal("225.50"),
+            volume=3,
+        ),
+        target,
+    )
+
+    assert trade.exchange_ts == dt.datetime(2026, 7, 14, 9, 30, 1, tzinfo=US_EASTERN)
+    assert trade.timezone == US_EASTERN
+
+
 def test_gateway_restores_and_mutates_subscriptions_on_one_session(tmp_path: Path):
     async def scenario():
         store = SubscriptionStore(tmp_path / "live.json")
-        store.save({"005930"})
+        store.save({"005930": LiveTarget("005930")})
         session = FakeSession()
         created = 0
 
@@ -206,19 +251,85 @@ def test_gateway_restores_and_mutates_subscriptions_on_one_session(tmp_path: Pat
             assert created == 1
             assert session.subscribed == ["005930", "000660"]
             assert session.unsubscribed == ["005930"]
-            assert store.load() == {"000660"}
+            assert set(store.load()) == {"000660"}
             subscription_events = [
                 event for event in listener.events if event["type"] == "subscription"
             ]
             assert subscription_events
             assert all(
-                set(event["data"]) == {"symbol", "status", "error"}
+                set(event["data"])
+                == {
+                    "symbol",
+                    "name",
+                    "region",
+                    "exchange",
+                    "status",
+                    "inference_status",
+                    "error",
+                    "last_tick_at",
+                }
                 for event in subscription_events
             )
         finally:
             await service.close()
 
         assert session.closed
+
+    asyncio.run(scenario())
+
+
+def test_gateway_opens_market_specific_sessions_for_domestic_and_us(tmp_path: Path):
+    async def scenario():
+        store = SubscriptionStore(tmp_path / "live.json")
+        store.save(
+            {
+                "005930": LiveTarget("005930", "삼성전자"),
+                "AAPL": LiveTarget("AAPL", "Apple", "overseas", "ND"),
+            }
+        )
+        sessions = {"KRX": FakeSession("KRX"), "US": FakeSession("US")}
+        service = LiveService(
+            tmp_path,
+            deployments=EmptyDeployments(),
+            runs=object(),
+            storage=object(),
+            client_factory=lambda: FakeClient(sessions),
+            subscription_path=store.path,
+            heartbeat_interval=60,
+        )
+
+        await service.start()
+        try:
+            await _eventually(
+                lambda: (
+                    sessions["KRX"].subscribed == ["005930"]
+                    and sessions["US"].us_subscribed == [("AAPL", "ND")]
+                )
+            )
+            assert service.subscriptions() == [
+                {
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "region": "domestic",
+                    "exchange": "",
+                    "status": "subscribed",
+                    "inference_status": "no_model",
+                    "error": None,
+                    "last_tick_at": None,
+                },
+                {
+                    "symbol": "AAPL",
+                    "name": "Apple",
+                    "region": "overseas",
+                    "exchange": "ND",
+                    "status": "subscribed",
+                    "inference_status": "no_model",
+                    "error": None,
+                    "last_tick_at": None,
+                },
+            ]
+        finally:
+            await service.close()
 
     asyncio.run(scenario())
 
@@ -237,7 +348,7 @@ def test_close_releases_session_before_cancelling_gateway(tmp_path: Path):
                 raise
 
         service = LiveService(tmp_path)
-        service._session = session
+        service._sessions = {"KRX": session}
         service._gateway_task = asyncio.create_task(gateway())
         await asyncio.sleep(0)
 
@@ -256,8 +367,8 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
 ):
     reconciled = []
 
-    async def update(client, symbol, timeframe, data_root):
-        reconciled.append((symbol, timeframe.code, data_root))
+    async def update(client, symbol, timeframe, data_root, **kwargs):
+        reconciled.append((symbol, timeframe.code, data_root, kwargs))
         return pd.DataFrame(
             {
                 "Open": [100.0],
@@ -278,7 +389,7 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
             storage=object(),
         )
         service._client = object()
-        service._session = FakeSession()
+        service._sessions = {"KRX": FakeSession()}
         service._gateway_task = asyncio.current_task()
         await service._install_engine(
             StubEngine(),
@@ -296,7 +407,14 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
 
         await service.subscribe("005930")
 
-        assert reconciled == [("005930", "min1", tmp_path)]
+        assert reconciled == [
+            (
+                "005930",
+                "min1",
+                tmp_path,
+                {"region": "domestic", "exchange": ""},
+            )
+        ]
         assert service.stats["reconciliations"] == 1
 
     monkeypatch.setattr(live_module, "update_cache", update)
@@ -331,7 +449,7 @@ def test_live_minute_history_fetches_kiwoom_and_returns_only_today(
 
     async def scenario():
         service = LiveService(tmp_path)
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._client = object()
 
         result = await service.chart_history(
@@ -354,6 +472,71 @@ def test_live_minute_history_fetches_kiwoom_and_returns_only_today(
     assert calls[0][3]["end_date"] == today
 
 
+def test_overseas_minute_history_and_live_candle_are_displayed_in_kst(
+    tmp_path: Path, monkeypatch
+):
+    market_time = dt.datetime.now(US_EASTERN).replace(
+        second=0, microsecond=0
+    ) - dt.timedelta(minutes=1)
+    calls = []
+
+    async def fetch(client, symbol, timeframe, **kwargs):
+        calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                timestamp=(market_time - dt.timedelta(days=1)).strftime("%Y%m%d%H%M%S"),
+                open=Decimal("220.00"),
+                high=Decimal("221.00"),
+                low=Decimal("219.50"),
+                close=Decimal("220.50"),
+                volume=80,
+                amount=Decimal("17640"),
+            ),
+            SimpleNamespace(
+                timestamp=market_time.strftime("%Y%m%d%H%M%S"),
+                open=Decimal("225.00"),
+                high=Decimal("226.00"),
+                low=Decimal("224.50"),
+                close=Decimal("225.50"),
+                volume=100,
+                amount=Decimal("22550"),
+            ),
+        ]
+
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"AAPL": LiveTarget("AAPL", "Apple", "overseas", "ND")}
+        service._sync_subscription_state()
+        service._client = object()
+
+        history = await service.chart_history("AAPL", Timeframe.from_code("min1"), ())
+        expected_kst = pd.Timestamp(market_time).tz_convert(KST).tz_localize(None)
+        expected_time = int(expected_kst.timestamp())
+        assert history["candles"][0]["time"] == expected_time
+        assert history["next_before"] == str(expected_time)
+
+        await service.handle_sdk_event(
+            SimpleNamespace(
+                tr_id="FE",
+                symbol="AAPL",
+                exchange_ts=market_time.time().isoformat(),
+                received_at=market_time.astimezone(dt.UTC).isoformat(),
+                received_seq=1,
+                price=Decimal("226.00"),
+                volume=2,
+            )
+        )
+        assert (
+            service._latest_candles[("AAPL", "min1")]["candle"]["time"] == expected_time
+        )
+
+    monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    asyncio.run(scenario())
+
+    assert calls[0]["region"] == "overseas"
+    assert calls[0]["exchange"] == "ND"
+
+
 def test_live_day_history_seeds_today_before_realtime_updates(
     tmp_path: Path, monkeypatch
 ):
@@ -374,7 +557,7 @@ def test_live_day_history_seeds_today_before_realtime_updates(
 
     async def scenario():
         service = LiveService(tmp_path)
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._client = object()
 
         history = await service.chart_history(
@@ -437,7 +620,7 @@ def test_live_history_uses_active_training_preset_for_fractal_markers(
 
     async def scenario():
         service = LiveService(tmp_path)
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._client = object()
         service._engine = StubEngine()
         service._engine.preset = PreprocessPreset(
@@ -445,9 +628,7 @@ def test_live_history_uses_active_training_preset_for_fractal_markers(
             fractal={"n": 3, "tie_policy": "plateau_last"},
         )
 
-        result = await service.chart_history(
-            "005930", Timeframe.from_code("min1"), ()
-        )
+        result = await service.chart_history("005930", Timeframe.from_code("min1"), ())
 
         assert [(row["kind"], row["label"]) for row in result["fractal_markers"]] == [
             ("high", 1),
@@ -466,7 +647,7 @@ def test_minute_boundary_emits_closed_before_next_update(tmp_path: Path):
             runs=object(),
             storage=object(),
         )
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._sync_subscription_state()
         await service._install_engine(
             StubEngine(),
@@ -517,7 +698,7 @@ def test_minute_boundary_emits_closed_before_next_update(tmp_path: Path):
 def test_partial_first_minute_is_suppressed_until_next_bucket(tmp_path: Path):
     async def scenario():
         service = LiveService(tmp_path)
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._sync_subscription_state()
         listener = await service.add_listener()
 
@@ -569,7 +750,7 @@ def test_recorded_ticks_replay_deterministically_without_duplicate_prediction(
             runs=object(),
             storage=object(),
         )
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._sync_subscription_state()
         await service._install_engine(
             PredictingEngine(),
@@ -659,7 +840,9 @@ def test_model_activation_validates_before_pointer_swap_and_returns_public_state
     asyncio.run(scenario())
 
 
-def test_reconcile_is_idempotent_for_unchanged_last_closed_bar(tmp_path: Path, monkeypatch):
+def test_reconcile_is_idempotent_for_unchanged_last_closed_bar(
+    tmp_path: Path, monkeypatch
+):
     async def scenario():
         service = LiveService(
             tmp_path,
@@ -667,7 +850,7 @@ def test_reconcile_is_idempotent_for_unchanged_last_closed_bar(tmp_path: Path, m
             runs=object(),
             storage=object(),
         )
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._sync_subscription_state()
         await service._install_engine(
             PredictingEngine(),
@@ -708,7 +891,9 @@ def test_reconcile_is_idempotent_for_unchanged_last_closed_bar(tmp_path: Path, m
     asyncio.run(scenario())
 
 
-def test_reconcile_does_not_emit_after_symbol_is_unsubscribed(tmp_path: Path, monkeypatch):
+def test_reconcile_does_not_emit_after_symbol_is_unsubscribed(
+    tmp_path: Path, monkeypatch
+):
     holder = {}
 
     async def scenario():
@@ -719,7 +904,7 @@ def test_reconcile_does_not_emit_after_symbol_is_unsubscribed(tmp_path: Path, mo
             storage=object(),
         )
         holder["service"] = service
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._sync_subscription_state()
         await service._install_engine(
             PredictingEngine(),
@@ -776,7 +961,7 @@ def test_reconcile_does_not_emit_after_model_swap(tmp_path: Path, monkeypatch):
             storage=object(),
         )
         holder["service"] = service
-        service._desired = {"005930"}
+        service._desired = {"005930": LiveTarget("005930")}
         service._sync_subscription_state()
         await service._install_engine(
             PredictingEngine(),

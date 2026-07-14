@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from server.routers.live import live_events, router
-from server.live import LiveService
+from server.live import LiveService, LiveTarget
 
 
 class FakeLiveService:
@@ -48,13 +48,12 @@ class FakeLiveService:
     def subscriptions(self):
         return self.rows
 
-    async def subscribe(self, symbol):
-        if len(symbol) != 6 or not symbol.isdigit():
-            raise ValueError("domestic symbol must contain six digits")
+    async def subscribe(self, symbol, *, name="", region="domestic", exchange=""):
+        target = LiveTarget(symbol, name, region, exchange)
         self.rows.append(
             {
-                "symbol": symbol,
-                "name": None,
+                **target.payload(),
+                "name": target.name or None,
                 "status": "pending",
                 "inference_status": "no_model",
                 "error": None,
@@ -90,12 +89,8 @@ def _client() -> TestClient:
 def test_live_http_mutations_return_ui_contract_state():
     with _client() as client:
         state = client.get("/api/live/state")
-        activated = client.put(
-            "/api/live/model", json={"run_id": 4, "artifact_id": 7}
-        )
-        subscribed = client.post(
-            "/api/live/subscriptions", json={"symbol": "005930"}
-        )
+        activated = client.put("/api/live/model", json={"run_id": 4, "artifact_id": 7})
+        subscribed = client.post("/api/live/subscriptions", json={"symbol": "005930"})
         removed = client.delete("/api/live/subscriptions/005930")
 
     assert state.status_code == 200
@@ -120,7 +115,33 @@ def test_live_http_mutations_return_ui_contract_state():
         "activated_at": "2026-07-13T00:00:00+00:00",
     }
     assert subscribed.json()[0]["inference_status"] == "no_model"
+    assert subscribed.json()[0]["region"] == "domestic"
     assert removed.json() == []
+
+
+def test_live_http_subscribes_overseas_symbol_with_market_metadata():
+    with _client() as client:
+        response = client.post(
+            "/api/live/subscriptions",
+            json={
+                "symbol": "AAPL",
+                "name": "Apple",
+                "region": "overseas",
+                "exchange": "ND",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()[0] == {
+        "symbol": "AAPL",
+        "name": "Apple",
+        "region": "overseas",
+        "exchange": "ND",
+        "status": "pending",
+        "inference_status": "no_model",
+        "error": None,
+        "last_tick_at": None,
+    }
 
 
 def test_live_http_validates_symbol_and_missing_subscription():

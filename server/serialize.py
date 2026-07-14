@@ -5,18 +5,67 @@
 """
 
 import math
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from pivot.config import Timeframe
 
 TimeValue = str | int
+KST = ZoneInfo("Asia/Seoul")
 
 
 def time_value(ts: pd.Timestamp, timeframe: Timeframe) -> TimeValue:
     if timeframe.type == "day":
         return ts.date().isoformat()
     return int(ts.timestamp())
+
+
+def display_frame(
+    frame: pd.DataFrame,
+    timeframe: Timeframe,
+    source_timezone: ZoneInfo | None = None,
+) -> pd.DataFrame:
+    if frame.empty or timeframe.type == "day" or source_timezone is None:
+        return frame
+    displayed = frame.copy()
+    displayed.index = pd.DatetimeIndex(
+        [_convert_timezone(value, source_timezone, KST) for value in frame.index],
+        name=frame.index.name,
+    )
+    return displayed
+
+
+def display_time_value(
+    value: pd.Timestamp,
+    timeframe: Timeframe,
+    source_timezone: ZoneInfo | None = None,
+) -> TimeValue:
+    if timeframe.type != "day" and source_timezone is not None:
+        value = _convert_timezone(value, source_timezone, KST)
+    return time_value(value, timeframe)
+
+
+def market_time(
+    value: pd.Timestamp | None,
+    timeframe: Timeframe,
+    market_timezone: ZoneInfo | None = None,
+) -> pd.Timestamp | None:
+    if value is None or timeframe.type == "day" or market_timezone is None:
+        return value
+    return _convert_timezone(value, KST, market_timezone)
+
+
+def _convert_timezone(
+    value: pd.Timestamp, source: ZoneInfo, destination: ZoneInfo
+) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    localized = (
+        timestamp.tz_localize(source)
+        if timestamp.tzinfo is None
+        else timestamp.tz_convert(source)
+    )
+    return localized.tz_convert(destination).tz_localize(None)
 
 
 def chart_payload(

@@ -2,6 +2,7 @@ import {
   fetchJson,
   type ChartOptions,
   type ChartResponse,
+  type InstrumentRegion,
   type SamplePairing,
   type TimeframeCode,
 } from './client'
@@ -45,6 +46,8 @@ export type LiveInferenceStatus = 'no_model' | 'warmup' | 'ready'
 export interface LiveSubscription {
   symbol: string
   name: string | null
+  region: InstrumentRegion
+  exchange: string
   status: LiveSubscriptionStatus
   inference_status: LiveInferenceStatus
   error: string | null
@@ -118,11 +121,7 @@ export interface ConnectionEventData {
   message: string | null
 }
 
-export interface SubscriptionEventData {
-  symbol: string
-  status: LiveSubscriptionStatus
-  error: string | null
-}
+export type SubscriptionEventData = LiveSubscription
 
 export interface HeartbeatEventData {
   server_time: string
@@ -176,10 +175,15 @@ export const liveApi = {
       ),
     }),
   subscriptions: () => fetchJson<LiveSubscription[]>('/api/live/subscriptions'),
-  subscribe: (symbol: string) =>
+  subscribe: (instrument: {
+    symbol: string
+    name: string
+    region: InstrumentRegion
+    exchange: string
+  }) =>
     fetchJson<LiveSubscription[]>('/api/live/subscriptions', {
       method: 'POST',
-      body: JSON.stringify({ symbol }),
+      body: JSON.stringify(instrument),
     }),
   unsubscribe: (symbol: string) =>
     fetchJson<LiveSubscription[]>(

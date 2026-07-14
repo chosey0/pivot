@@ -76,7 +76,8 @@ predictions) and the smoke run/artifact was removed afterward.
 
 **M5 (live inference) core + UI integrated; in-market verification pending**: broker-neutral
 day/min/tick aggregation, verified shared checkpoint loading, snapshot-driven candidate
-inference, the FastAPI lifespan Kiwoom `0B` singleton gateway, bounded browser fan-out, local
+inference, the FastAPI lifespan Kiwoom domestic `0B` / US `FE` market-session gateway,
+bounded browser fan-out, local
 subscription restore, REST reconciliation, live HTTP/WebSocket routes, transactional
 single-active Supabase deployment metadata, and the React Live tab are integrated. Recorded
 tick tests cover deterministic aggregation/inference/recovery and the web lint/build pass. The
@@ -113,7 +114,7 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
 
 - **Backend**: FastAPI, Python **3.12+**, managed with **uv**. Data fetched through
   [broker-modules](https://github.com/chosey0/broker-modules) (async SDK; Kiwoom for
-  domestic candles and Kiwoom WebSocket `0B` for live trades). Credentials via env vars only —
+  domestic/US candles and Kiwoom WebSocket domestic `0B` / US `FE` live trades). Credentials via env vars only —
   never commit keys.
 - **Frontend**: React + TypeScript + Vite. Charts use **lightweight-charts v5**
   (`chart.addSeries(CandlestickSeries)`, markers via `createSeriesMarkers`) — do not use

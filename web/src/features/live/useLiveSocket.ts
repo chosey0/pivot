@@ -114,20 +114,10 @@ function upsertSubscription(
 ): LiveSubscription[] {
   const existing = rows.find((row) => row.symbol === data.symbol)
   if (!existing) {
-    return [
-      ...rows,
-      {
-        symbol: data.symbol,
-        name: null,
-        status: data.status,
-        inference_status: 'no_model',
-        error: data.error,
-        last_tick_at: null,
-      },
-    ]
+    return [...rows, data]
   }
   return rows.map((row) =>
-    row.symbol === data.symbol ? { ...row, status: data.status, error: data.error } : row,
+    row.symbol === data.symbol ? data : row,
   )
 }
 

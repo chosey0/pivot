@@ -163,7 +163,20 @@
 
 .live-add-row {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+
+.live-add-row select {
+  flex: none;
+  height: 34px;
+  padding: 7px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #111827;
+  color-scheme: light;
+  font-size: 12px;
 }
 
 .live-add-row .symbol-search-box {
@@ -177,7 +190,15 @@
   padding: 7px 8px;
   border: 1px solid #d1d5db;
   border-radius: 6px;
+  background: #ffffff;
+  color: #111827;
+  color-scheme: light;
   font-size: 12px;
+}
+
+.live-add-row .symbol-search-box > input::placeholder {
+  color: #6b7280;
+  opacity: 1;
 }
 
 .live-sub-list {

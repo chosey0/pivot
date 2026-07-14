@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { type ChartResponse, type TimeframeCode } from '../api/client'
+import {
+  type ChartResponse,
+  type InstrumentRegion,
+  type SymbolSuggestion,
+  type TimeframeCode,
+} from '../api/client'
 import {
   liveApi,
   type LiveConnectionStatus,
@@ -60,6 +65,11 @@ const INFERENCE_TEXT: Record<LiveSubscription['inference_status'], string> = {
   ready: '추론 중',
 }
 
+const MARKET_TEXT: Record<InstrumentRegion, string> = {
+  domestic: '국내',
+  overseas: '해외',
+}
+
 function compareTimes(a: string | number, b: string | number): number {
   if (typeof a === 'number' && typeof b === 'number') return a - b
   return String(a).localeCompare(String(b))
@@ -82,8 +92,10 @@ function mergeLiveHistory(
 export function Live() {
   const { state, socketStatus, applyState, applySubscriptions, dismissError } = useLiveSocket()
   const [stateError, setStateError] = useState<string | null>(null)
+  const [addRegion, setAddRegion] = useState<InstrumentRegion>('domestic')
   const [addQuery, setAddQuery] = useState('')
   const [addSymbol, setAddSymbol] = useState('')
+  const [addSuggestion, setAddSuggestion] = useState<SymbolSuggestion | null>(null)
   const [mutating, setMutating] = useState(false)
   const [subscribeError, setSubscribeError] = useState<string | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
@@ -287,21 +299,27 @@ export function Live() {
   }, [chartTimeframe, historicalChart, merged.candles, selectedSymbol, state.predictions])
 
   const subscribe = useCallback(async () => {
-    if (!addSymbol) return
+    if (!addSuggestion) return
     setMutating(true)
     setSubscribeError(null)
     try {
-      const rows = await liveApi.subscribe(addSymbol)
+      const rows = await liveApi.subscribe({
+        symbol: addSuggestion.symbol,
+        name: addSuggestion.name,
+        region: addRegion,
+        exchange: addSuggestion.exchange,
+      })
       applySubscriptions(rows)
-      setSelectedSymbol(addSymbol)
+      setSelectedSymbol(addSuggestion.symbol)
       setAddQuery('')
       setAddSymbol('')
+      setAddSuggestion(null)
     } catch (e) {
       setSubscribeError(e instanceof Error ? e.message : String(e))
     } finally {
       setMutating(false)
     }
-  }, [addSymbol, applySubscriptions])
+  }, [addRegion, addSuggestion, applySubscriptions])
 
   const unsubscribe = useCallback(
     async (row: LiveSubscription) => {
@@ -322,6 +340,7 @@ export function Live() {
 
   const selectedSubscription =
     state.subscriptions.find((row) => row.symbol === selectedSymbol) ?? null
+  const selectedCurrency = selectedSubscription?.region === 'overseas' ? 'USD' : 'KRW'
   const selectedWarmup = selectedSymbol ? state.warmups[selectedSymbol] : undefined
   const provisional = liveCandles?.provisional ?? null
   const symbolPredictions = state.predictions.filter((row) => row.symbol === selectedSymbol)
@@ -383,6 +402,21 @@ export function Live() {
             <p className="hint">활성 모델이 없어 모든 종목의 추론 상태가 no_model입니다.</p>
           ) : null}
           <div className="live-add-row">
+            <select
+              aria-label="시장"
+              disabled={mutating}
+              onChange={(event) => {
+                setAddRegion(event.target.value as InstrumentRegion)
+                setAddQuery('')
+                setAddSymbol('')
+                setAddSuggestion(null)
+                setSubscribeError(null)
+              }}
+              value={addRegion}
+            >
+              <option value="domestic">국내</option>
+              <option value="overseas">해외</option>
+            </select>
             <SymbolSearchBox
               disabled={mutating}
               excludeSymbols={subscribedSymbols}
@@ -390,20 +424,22 @@ export function Live() {
               onQueryChange={(query) => {
                 setAddQuery(query)
                 setAddSymbol('')
+                setAddSuggestion(null)
                 setSubscribeError(null)
               }}
               onSelect={(item) => {
-                setAddQuery(`${item.name} · ${item.symbol}`)
+                setAddQuery(`${item.name} · ${item.symbol} · ${item.exchange}`)
                 setAddSymbol(item.symbol)
+                setAddSuggestion(item)
               }}
-              placeholder="종목명 또는 코드"
+              placeholder={addRegion === 'domestic' ? '삼성전자 또는 005930' : 'Apple 또는 AAPL'}
               query={addQuery}
-              region="domestic"
+              region={addRegion}
               selectedSymbol={addSymbol}
             />
             <button
               className="primary"
-              disabled={!addSymbol || mutating}
+              disabled={!addSuggestion || mutating}
               onClick={subscribe}
               type="button"
             >
@@ -441,7 +477,8 @@ export function Live() {
                         </span>
                       </div>
                       <span className="live-sub-meta">
-                        {row.symbol}
+                        {row.symbol} · {MARKET_TEXT[row.region]}
+                        {row.exchange ? ` · ${row.exchange}` : ''}
                         {row.last_tick_at ? ` · 체결 ${formatDateTime(row.last_tick_at)}` : ''}
                       </span>
                       {warmup ? (
@@ -519,7 +556,7 @@ export function Live() {
                   {ohlcItems.map((item) => (
                     <span className="ohlc-item" key={item.label}>
                       <strong>{item.label}</strong>
-                      <span>{formatPrice(item.value)}</span>
+                      <span>{formatPrice(item.value, selectedCurrency)}</span>
                       {item.change === null ? null : (
                         <span className={`ohlc-change ${item.tone}`}>
                           ({formatPercent(item.change)})

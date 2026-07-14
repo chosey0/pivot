@@ -7,11 +7,13 @@ import contextlib
 import datetime as dt
 import json
 import logging
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import torch
@@ -19,17 +21,34 @@ import torch
 from pivot.config import Timeframe
 from pivot.dataset.build import run_preprocess
 from pivot.ingestion.cache import cache_path, load_cache_window
-from pivot.ingestion.fetch import BROKER, fetch_bars, update_cache
+from pivot.ingestion.fetch import (
+    OVERSEAS_EXCHANGES,
+    Region,
+    cache_broker,
+    fetch_bars,
+    update_cache,
+)
 from pivot.ingestion.indicators import add_moving_averages
 from pivot.ingestion.schema import bars_to_frame
-from pivot.realtime.aggregate import Candle, CandleAggregator, CandleClosed, CandleUpdated
+from pivot.realtime.aggregate import (
+    Candle,
+    CandleAggregator,
+    CandleClosed,
+    CandleUpdated,
+)
 from pivot.realtime.aggregate import KST, RealtimeTrade
 from pivot.realtime.infer import LiveInferenceEngine, LivePrediction, LiveWarmupError
 from pivot.storage.deployments import DeploymentRepository
 from pivot.storage.runs import RunRepository
 from pivot.storage.supabase import StorageObjectClient
 from pivot.training.checkpoint import load_verified_checkpoint
-from server.serialize import chart_payload, time_value
+from server.serialize import (
+    chart_payload,
+    display_frame,
+    display_time_value,
+    market_time,
+    time_value,
+)
 
 LIVE_HISTORY_LIMIT = 5_000
 RECENT_PREDICTIONS = 200
@@ -37,6 +56,8 @@ CLIENT_QUEUE_SIZE = 256
 LIVE_DISPLAY_TIMEFRAMES = ("day", "min1")
 LIVE_MINUTE_PAGE_DAYS = 7
 LIVE_DAY_PAGE_DAYS = 365
+US_EASTERN = ZoneInfo("America/New_York")
+OVERSEAS_SYMBOL_RE = re.compile(r"^[A-Z0-9.-]{1,20}$")
 logger = logging.getLogger(__name__)
 
 
@@ -48,23 +69,75 @@ class ListenerClosed(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class LiveTarget:
+    symbol: str
+    name: str = ""
+    region: Region = "domestic"
+    exchange: str = ""
+
+    def __post_init__(self) -> None:
+        symbol = str(self.symbol).strip().upper()
+        name = str(self.name).strip()
+        region = str(self.region).strip().lower()
+        exchange = str(self.exchange).strip().upper()
+        if region not in {"domestic", "overseas"}:
+            raise ValueError("region must be domestic or overseas")
+        if region == "domestic":
+            symbol = _symbol(symbol, "domestic")
+            exchange = ""
+        else:
+            symbol = _symbol(symbol, "overseas")
+            if exchange not in OVERSEAS_EXCHANGES:
+                raise ValueError("overseas exchange must be one of: NA, ND, NY")
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "region", region)
+        object.__setattr__(self, "exchange", exchange)
+
+    @property
+    def market(self) -> str:
+        return "US" if self.region == "overseas" else "KRX"
+
+    @property
+    def timezone(self) -> ZoneInfo:
+        return US_EASTERN if self.region == "overseas" else KST
+
+    def payload(self) -> dict[str, str]:
+        return {
+            "symbol": self.symbol,
+            "name": self.name,
+            "region": self.region,
+            "exchange": self.exchange,
+        }
+
+
 class SubscriptionStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def load(self) -> set[str]:
+    def load(self) -> dict[str, LiveTarget]:
         if not self.path.exists():
-            return set()
+            return {}
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(payload, list):
             raise ValueError("live subscriptions must be a JSON list")
-        return {_symbol(value) for value in payload}
+        targets = [
+            LiveTarget(symbol=value) if isinstance(value, str) else LiveTarget(**value)
+            for value in payload
+        ]
+        # ponytail: symbol keys assume one primary US listing; use composite IDs if dual listings appear.
+        return {target.symbol: target for target in targets}
 
-    def save(self, symbols: set[str]) -> None:
+    def save(self, targets: dict[str, LiveTarget]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(
-            json.dumps(sorted(symbols), ensure_ascii=True, indent=2),
+            json.dumps(
+                [targets[symbol].payload() for symbol in sorted(targets)],
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
         temporary.replace(self.path)
@@ -161,7 +234,7 @@ class LiveService:
         self.stale_after = stale_after
         self.heartbeat_interval = heartbeat_interval
 
-        self._desired: set[str] = set()
+        self._desired: dict[str, LiveTarget] = {}
         self._subscription_state: dict[str, dict] = {}
         self._aggregators: dict[tuple[str, str], CandleAggregator] = {}
         self._closed_overlay: dict[tuple[str, str], deque[Candle]] = {}
@@ -171,7 +244,7 @@ class LiveService:
         self._engine: LiveInferenceEngine | None = None
         self._deployment: dict | None = None
         self._client: Any = None
-        self._session: Any = None
+        self._sessions: dict[str, Any] = {}
         self._gateway_task: asyncio.Task | None = None
         self._bootstrap_task: asyncio.Task | None = None
         self._maintenance_task: asyncio.Task | None = None
@@ -202,9 +275,7 @@ class LiveService:
         try:
             self._desired = self.subscription_store.load()
         except Exception as exc:
-            logger.error(
-                "cannot load live subscriptions (%s)", type(exc).__name__
-            )
+            logger.error("cannot load live subscriptions (%s)", type(exc).__name__)
             self._connection_message = "cannot load saved subscriptions"
         self._sync_subscription_state()
         self._bootstrap_task = asyncio.create_task(self._bootstrap())
@@ -219,8 +290,7 @@ class LiveService:
         for listener in list(self._listeners):
             await listener.close()
 
-        session = self._session
-        if session is not None:
+        for session in list(self._sessions.values()):
             try:
                 await session.close()
             except Exception as exc:
@@ -245,13 +315,11 @@ class LiveService:
         self._gateway_task = None
         self._bootstrap_task = None
         self._maintenance_task = None
-        self._session = None
+        self._sessions.clear()
         self._client = None
         self._connection = "closed"
 
-    async def activate_model(
-        self, run_id: int, artifact_id: int | None = None
-    ) -> dict:
+    async def activate_model(self, run_id: int, artifact_id: int | None = None) -> dict:
         async with self._activation_lock:
             deployments, runs, storage = self._repositories()
             run = await asyncio.to_thread(runs.get, run_id)
@@ -282,20 +350,28 @@ class LiveService:
             await self._broadcast_snapshot()
             return self.state()
 
-    async def subscribe(self, symbol: str) -> dict:
-        symbol = _symbol(symbol)
+    async def subscribe(
+        self,
+        symbol: str,
+        *,
+        name: str = "",
+        region: Region = "domestic",
+        exchange: str = "",
+    ) -> dict:
+        target = LiveTarget(symbol=symbol, name=name, region=region, exchange=exchange)
+        symbol = target.symbol
         async with self._lock:
             if symbol in self._desired:
                 return self._subscription_state[symbol].copy()
-            self._desired.add(symbol)
+            self._desired[symbol] = target
             self.subscription_store.save(self._desired)
             self._subscription_state[symbol] = self._new_subscription_state(symbol)
-            session = self._session
+            session = self._sessions.get(target.market)
         if session is not None:
             try:
-                await session.subscribe_trades(symbol)
+                await self._subscribe_session(session, target)
                 self._set_subscription_status(symbol, "subscribed")
-                self._reset_aggregators(symbol, dt.datetime.now(KST))
+                self._reset_aggregators(symbol, dt.datetime.now(dt.UTC))
             except Exception as exc:
                 logger.error(
                     "cannot subscribe live symbol %s (%s)",
@@ -304,21 +380,25 @@ class LiveService:
                 )
                 self._set_subscription_status(symbol, "error", "subscription failed")
                 raise LiveServiceError(f"cannot subscribe {symbol}") from exc
-        await self._ensure_gateway()
+        elif self._gateway_task is not None and not self._gateway_task.done():
+            await self._restart_gateway()
+        else:
+            await self._ensure_gateway()
         await self._broadcast("subscription", self._subscription_event(symbol))
         if self._client is not None and self._engine is not None:
             await self._reconcile_all()
         return self._subscription_state[symbol].copy()
 
     async def unsubscribe(self, symbol: str) -> None:
-        symbol = _symbol(symbol)
+        symbol = str(symbol).strip().upper()
         async with self._lock:
             if symbol not in self._desired:
                 raise KeyError(symbol)
-            session = self._session
+            target = self._desired[symbol]
+            session = self._sessions.get(target.market)
         if session is not None:
             try:
-                await session.unsubscribe(symbol)
+                await self._unsubscribe_session(session, target)
             except Exception as exc:
                 logger.error(
                     "cannot unsubscribe live symbol %s (%s)",
@@ -328,7 +408,7 @@ class LiveService:
                 self._set_subscription_status(symbol, "error", "unsubscribe failed")
                 raise LiveServiceError(f"cannot unsubscribe {symbol}") from exc
         async with self._lock:
-            self._desired.remove(symbol)
+            self._desired.pop(symbol)
             self.subscription_store.save(self._desired)
             self._subscription_state.pop(symbol, None)
             for mapping in (
@@ -344,6 +424,8 @@ class LiveService:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._gateway_task
             await self._set_connection("closed", "")
+        elif target.market not in {item.market for item in self._desired.values()}:
+            await self._restart_gateway()
 
     async def chart_history(
         self,
@@ -353,16 +435,20 @@ class LiveService:
         *,
         before: pd.Timestamp | None = None,
     ) -> dict:
-        symbol = _symbol(symbol)
+        symbol = str(symbol).strip().upper()
         if timeframe.code not in LIVE_DISPLAY_TIMEFRAMES:
             raise ValueError("live chart timeframe must be day or min1")
         if symbol not in self._desired:
             raise ValueError(f"{symbol} is not subscribed")
+        target = self._desired[symbol]
+        source_timezone = target.timezone if target.region == "overseas" else None
+        market_before = market_time(before, timeframe, source_timezone)
+        market_now = dt.datetime.now(target.timezone).replace(tzinfo=None)
 
         end = (
-            before - pd.Timedelta(microseconds=1)
-            if before is not None
-            else pd.Timestamp(dt.datetime.now(KST).replace(tzinfo=None))
+            market_before - pd.Timedelta(microseconds=1)
+            if market_before is not None
+            else pd.Timestamp(market_now)
         )
         if timeframe.type == "minute" and before is None:
             display_start = end.normalize()
@@ -381,7 +467,9 @@ class LiveService:
             else None
         )
         training_windows = (
-            [preset.fractal.n, *preset.required_ma_windows] if preset is not None else []
+            [preset.fractal.n, *preset.required_ma_windows]
+            if preset is not None
+            else []
         )
         max_window = max([*ma_windows, *training_windows], default=1)
         lookback_days = (
@@ -402,7 +490,7 @@ class LiveService:
         )
         fetch_end = min(
             end.normalize() + pd.Timedelta(days=future_days),
-            pd.Timestamp(dt.datetime.now(KST).replace(tzinfo=None)),
+            pd.Timestamp(market_now),
         )
 
         async def fetch(client) -> list:
@@ -412,6 +500,8 @@ class LiveService:
                 timeframe,
                 start_date=start_date,
                 end_date=fetch_end.date(),
+                region=target.region,
+                exchange=target.exchange,
             )
 
         if self._client is not None:
@@ -437,20 +527,31 @@ class LiveService:
             visible_times = set(page.index)
             fractal_markers = [
                 {
-                    "time": time_value(pd.Timestamp(time), timeframe),
+                    "time": display_time_value(
+                        pd.Timestamp(time), timeframe, source_timezone
+                    ),
                     "kind": str(row.kind),
                     "label": int(row.label),
                 }
                 for time, row in result.points.iterrows()
                 if time in visible_times
             ]
+        display_page = display_frame(page, timeframe, source_timezone)
         return {
             "symbol": symbol,
             "timeframe": timeframe.code,
             "has_more": has_more,
-            "next_before": None if page.empty or not has_more else page.index[0].isoformat(),
+            "next_before": (
+                None
+                if page.empty or not has_more
+                else str(
+                    display_time_value(
+                        pd.Timestamp(page.index[0]), timeframe, source_timezone
+                    )
+                )
+            ),
             "fractal_markers": fractal_markers,
-            **chart_payload(page, timeframe, ma_windows),
+            **chart_payload(display_page, timeframe, ma_windows),
         }
 
     def state(self) -> dict:
@@ -514,7 +615,9 @@ class LiveService:
         }
 
     def subscriptions(self) -> list[dict]:
-        return [self._subscription_state[symbol].copy() for symbol in sorted(self._desired)]
+        return [
+            self._subscription_state[symbol].copy() for symbol in sorted(self._desired)
+        ]
 
     async def add_listener(self, *, maxsize: int = CLIENT_QUEUE_SIZE) -> LiveListener:
         listener = LiveListener(maxsize=maxsize)
@@ -527,10 +630,15 @@ class LiveService:
         await listener.close()
 
     async def handle_sdk_event(self, event: Any) -> None:
-        if getattr(event, "tr_id", None) != "0B":
+        tr_id = getattr(event, "tr_id", None)
+        if tr_id not in {"0B", "FE"}:
+            return
+        symbol = str(getattr(event, "symbol", "")).strip().upper()
+        target = self._desired.get(symbol)
+        if target is None or tr_id != ("FE" if target.region == "overseas" else "0B"):
             return
         try:
-            trade = trade_from_tick(event)
+            trade = trade_from_tick(event, target)
         except (TypeError, ValueError):
             self.stats["invalid_events"] += 1
             return
@@ -559,6 +667,7 @@ class LiveService:
                     trade.symbol,
                     Timeframe.from_code(code),
                     observing_since=trade.received_at,
+                    timezone=target.timezone,
                 ),
             )
             for result in aggregator.ingest(trade):
@@ -602,9 +711,7 @@ class LiveService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.error(
-                "cannot restore active live model (%s)", type(exc).__name__
-            )
+            logger.error("cannot restore active live model (%s)", type(exc).__name__)
             self._connection_message = "active model could not be restored"
 
     def _repositories(
@@ -636,7 +743,7 @@ class LiveService:
             self._engine = engine
             self._deployment = deployment
             self._aggregators.clear()
-            observed_at = dt.datetime.now(KST)
+            observed_at = dt.datetime.now(dt.UTC)
             for symbol in self._desired:
                 self._reset_aggregators(symbol, observed_at)
             self._closed_overlay.clear()
@@ -644,6 +751,7 @@ class LiveService:
             self._sync_subscription_state()
 
     def _reset_aggregators(self, symbol: str, observed_at: dt.datetime) -> None:
+        target = self._desired[symbol]
         codes = set(LIVE_DISPLAY_TIMEFRAMES)
         if self._engine is not None:
             codes.add(self._engine.preset.timeframe.code)
@@ -653,11 +761,13 @@ class LiveService:
                 symbol,
                 Timeframe.from_code(code),
                 observing_since=observed_at,
+                timezone=target.timezone,
             )
             self._latest_candles.pop(key, None)
 
     def _seed_current_day(self, symbol: str, frame: pd.DataFrame) -> None:
-        now = dt.datetime.now(KST)
+        target = self._desired[symbol]
+        now = dt.datetime.now(target.timezone)
         today = pd.Timestamp(now.replace(tzinfo=None)).normalize()
         if today not in frame.index:
             return
@@ -665,14 +775,17 @@ class LiveService:
         close = Decimal(str(row["Close"]))
         volume = int(row["Volume"])
         amount = (
-            close * volume
-            if pd.isna(row["Amount"])
-            else Decimal(str(row["Amount"]))
+            close * volume if pd.isna(row["Amount"]) else Decimal(str(row["Amount"]))
         )
         key = (symbol, "day")
         aggregator = self._aggregators.setdefault(
             key,
-            CandleAggregator(symbol, Timeframe.from_code("day"), observing_since=now),
+            CandleAggregator(
+                symbol,
+                Timeframe.from_code("day"),
+                observing_since=now,
+                timezone=target.timezone,
+            ),
         )
         seeded = aggregator.seed_current(
             Candle(
@@ -691,15 +804,51 @@ class LiveService:
             )
         )
         if seeded is not None:
-            self._latest_candles[key] = self._candle_payload(
-                seeded, provisional=True
-            )
+            self._latest_candles[key] = self._candle_payload(seeded, provisional=True)
 
     async def _ensure_gateway(self) -> None:
         if not self._desired or self._closed:
             return
         if self._gateway_task is None or self._gateway_task.done():
             self._gateway_task = asyncio.create_task(self._gateway_loop())
+
+    async def _restart_gateway(self) -> None:
+        task = self._gateway_task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        self._gateway_task = None
+        await self._ensure_gateway()
+
+    @staticmethod
+    async def _subscribe_session(session: Any, target: LiveTarget) -> None:
+        if target.region == "overseas":
+            await session.subscribe_us_trades(target.symbol, exchange=target.exchange)
+        else:
+            await session.subscribe_trades(target.symbol)
+
+    @staticmethod
+    async def _unsubscribe_session(session: Any, target: LiveTarget) -> None:
+        if target.region == "overseas":
+            await session.unsubscribe(
+                target.symbol,
+                channel="us_trades",
+                market="US",
+                exchange=target.exchange,
+            )
+        else:
+            await session.unsubscribe(target.symbol)
+
+    @staticmethod
+    async def _forward_session(session: Any, queue: asyncio.Queue) -> None:
+        try:
+            async for event in session.stream():
+                await queue.put(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await queue.put(exc)
 
     async def _gateway_loop(self) -> None:
         while self._desired and not self._closed:
@@ -708,11 +857,20 @@ class LiveService:
                 factory = self.client_factory or _kiwoom_client
                 async with factory() as client:
                     self._client = client
-                    async with client.realtime.session() as session:
-                        self._session = session
+                    markets = sorted(
+                        {target.market for target in self._desired.values()}
+                    )
+                    async with contextlib.AsyncExitStack() as stack:
+                        for market in markets:
+                            self._sessions[market] = await stack.enter_async_context(
+                                client.realtime.session(market=market)
+                            )
                         for symbol in sorted(self._desired):
-                            await session.subscribe_trades(symbol)
-                            self._reset_aggregators(symbol, dt.datetime.now(KST))
+                            target = self._desired[symbol]
+                            await self._subscribe_session(
+                                self._sessions[target.market], target
+                            )
+                            self._reset_aggregators(symbol, dt.datetime.now(dt.UTC))
                             self._set_subscription_status(symbol, "subscribed")
                             await self._broadcast(
                                 "subscription",
@@ -720,24 +878,33 @@ class LiveService:
                             )
                         await self._set_connection("connected", "")
                         await self._reconcile_all()
-                        async for event in session.stream():
-                            await self.handle_sdk_event(event)
-                            if not self._desired or self._closed:
-                                break
+                        queue: asyncio.Queue = asyncio.Queue()
+                        stream_tasks = [
+                            asyncio.create_task(self._forward_session(session, queue))
+                            for session in self._sessions.values()
+                        ]
+                        try:
+                            while self._desired and not self._closed:
+                                event = await queue.get()
+                                if isinstance(event, Exception):
+                                    raise event
+                                await self.handle_sdk_event(event)
+                        finally:
+                            for task in stream_tasks:
+                                task.cancel()
+                            await asyncio.gather(*stream_tasks, return_exceptions=True)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 if self._closed:
                     break
-                logger.error(
-                    "Kiwoom realtime gateway failed (%s)", type(exc).__name__
-                )
+                logger.error("Kiwoom realtime gateway failed (%s)", type(exc).__name__)
                 await self._set_connection(
                     "reconnecting", "Kiwoom realtime connection failed"
                 )
                 await asyncio.sleep(1)
             finally:
-                self._session = None
+                self._sessions.clear()
                 self._client = None
         await self._set_connection("closed", "")
 
@@ -749,7 +916,7 @@ class LiveService:
             monotonic = asyncio.get_running_loop().time()
             if monotonic - last_heartbeat >= self.heartbeat_interval:
                 self._last_heartbeat_at = now
-                self._market_state = _market_state(now.astimezone(KST))
+                self._market_state = _market_state(now, self._desired.values())
                 await self._broadcast(
                     "heartbeat",
                     {
@@ -761,7 +928,11 @@ class LiveService:
                 last_heartbeat = monotonic
             if self._last_tick_at is not None:
                 idle = (now - self._last_tick_at).total_seconds()
-                if idle >= self.stale_after and self._connection == "connected":
+                if (
+                    idle >= self.stale_after
+                    and self._connection == "connected"
+                    and self._market_state == "open"
+                ):
                     await self._set_connection("stale", "no recent trade events")
             due = (
                 self._last_reconcile_at is None
@@ -773,19 +944,28 @@ class LiveService:
             await self._close_day_if_due(now.astimezone(KST))
 
     async def _close_day_if_due(self, now: dt.datetime) -> None:
-        if self._engine is None or self._timeframe().type != "day":
-            return
-        if now.time() < dt.time(15, 30):
-            return
         for (symbol, code), aggregator in list(self._aggregators.items()):
             if code != "day":
                 continue
+            target = self._desired.get(symbol)
+            if target is None:
+                continue
+            local_now = now.astimezone(target.timezone)
+            close_time = (
+                dt.time(16, 0) if target.region == "overseas" else dt.time(15, 30)
+            )
+            if local_now.time() < close_time:
+                continue
             current = aggregator.current
-            if current is None or current.start_at.date() != now.date():
+            if current is None or current.start_at.date() != local_now.date():
                 continue
             closed = aggregator.close_day()
             if closed is not None:
-                engine = self._engine if self._timeframe().code == code else None
+                engine = (
+                    self._engine
+                    if self._engine is not None and self._timeframe().code == code
+                    else None
+                )
                 await self._handle_closed(closed.candle, engine=engine)
 
     async def _handle_closed(
@@ -812,8 +992,12 @@ class LiveService:
         if active_engine is None or symbol not in self._desired:
             return
         try:
-            history = frame if frame is not None else await asyncio.to_thread(
-                self._history, symbol, active_engine.preset.timeframe
+            history = (
+                frame
+                if frame is not None
+                else await asyncio.to_thread(
+                    self._history, symbol, active_engine.preset.timeframe
+                )
             )
             async with self._inference_lock:
                 prediction = await asyncio.to_thread(
@@ -861,8 +1045,14 @@ class LiveService:
             )
 
     def _history(self, symbol: str, timeframe: Timeframe) -> pd.DataFrame:
+        target = self._desired[symbol]
         frame, _ = load_cache_window(
-            cache_path(self.data_root, BROKER, timeframe.code, symbol),
+            cache_path(
+                self.data_root,
+                cache_broker(target.region, target.exchange),
+                timeframe.code,
+                symbol,
+            ),
             limit=LIVE_HISTORY_LIMIT,
             columns=["Open", "High", "Low", "Close", "Volume", "Amount"],
         )
@@ -875,8 +1065,10 @@ class LiveService:
                 columns=["Open", "High", "Low", "Close", "Volume", "Amount"]
             ).rename_axis("Time")
         combined = pd.concat(frames)
-        return combined[~combined.index.duplicated(keep="last")].sort_index().tail(
-            LIVE_HISTORY_LIMIT
+        return (
+            combined[~combined.index.duplicated(keep="last")]
+            .sort_index()
+            .tail(LIVE_HISTORY_LIMIT)
         )
 
     async def _reconcile_all(self) -> None:
@@ -885,9 +1077,15 @@ class LiveService:
             return
         timeframe = engine.preset.timeframe
         for symbol in sorted(self._desired):
+            target = self._desired[symbol]
             try:
                 frame = await update_cache(
-                    self._client, symbol, timeframe, self.data_root
+                    self._client,
+                    symbol,
+                    timeframe,
+                    self.data_root,
+                    region=target.region,
+                    exchange=target.exchange,
                 )
                 if symbol not in self._desired or engine is not self._engine:
                     continue
@@ -942,9 +1140,12 @@ class LiveService:
             }
 
     def _new_subscription_state(self, symbol: str) -> dict:
+        target = self._desired[symbol]
         return {
             "symbol": symbol,
-            "name": None,
+            "name": target.name or None,
+            "region": target.region,
+            "exchange": target.exchange,
             "status": "pending",
             "inference_status": "warmup" if self._engine else "no_model",
             "error": None,
@@ -960,7 +1161,19 @@ class LiveService:
 
     def _subscription_event(self, symbol: str) -> dict:
         state = self._subscription_state[symbol]
-        return {key: state[key] for key in ("symbol", "status", "error")}
+        return {
+            key: state[key]
+            for key in (
+                "symbol",
+                "name",
+                "region",
+                "exchange",
+                "status",
+                "inference_status",
+                "error",
+                "last_tick_at",
+            )
+        }
 
     def _timeframe(self) -> Timeframe:
         if self._engine is None:
@@ -1061,37 +1274,59 @@ class LiveService:
         }
 
 
-def trade_from_tick(tick: Any) -> RealtimeTrade:
+def trade_from_tick(tick: Any, target: LiveTarget | None = None) -> RealtimeTrade:
     if tick.price is None or tick.volume is None:
         raise ValueError("trade has no price or volume")
     received = dt.datetime.fromisoformat(str(tick.received_at).replace("Z", "+00:00"))
     if received.tzinfo is None:
         raise ValueError("received_at must include a timezone")
+    region: Region = (
+        target.region
+        if target is not None
+        else "overseas"
+        if getattr(tick, "tr_id", None) == "FE"
+        else "domestic"
+    )
+    timezone = (
+        target.timezone
+        if target is not None
+        else US_EASTERN
+        if region == "overseas"
+        else KST
+    )
     try:
         exchange_time = dt.time.fromisoformat(str(tick.exchange_ts))
     except ValueError as exc:
         raise ValueError("invalid exchange timestamp") from exc
     exchange = dt.datetime.combine(
-        received.astimezone(KST).date(), exchange_time, tzinfo=KST
+        received.astimezone(timezone).date(), exchange_time, tzinfo=timezone
     )
     return RealtimeTrade(
-        symbol=_symbol(tick.symbol),
+        symbol=_symbol(tick.symbol, region),
         exchange_ts=exchange,
         received_at=received,
         received_seq=int(tick.received_seq),
         price=Decimal(tick.price),
         volume=int(tick.volume),
+        timezone=timezone,
     )
 
 
-def _symbol(value: Any) -> str:
-    symbol = str(value).strip()
-    if len(symbol) != 6 or not symbol.isdigit():
-        raise ValueError("domestic symbol must contain six digits")
+def _symbol(value: Any, region: Region = "domestic") -> str:
+    symbol = str(value).strip().upper()
+    if region == "domestic":
+        if len(symbol) != 6 or not symbol.isdigit():
+            raise ValueError("domestic symbol must contain six digits")
+    elif not OVERSEAS_SYMBOL_RE.fullmatch(symbol):
+        raise ValueError(
+            "overseas symbol must contain 1-20 letters, digits, dots, or hyphens"
+        )
     return symbol
 
 
-def _live_time_value(value: dt.datetime | pd.Timestamp, timeframe: Timeframe) -> str | int:
+def _live_time_value(
+    value: dt.datetime | pd.Timestamp, timeframe: Timeframe
+) -> str | int:
     """실시간 aware 시각을 기존 차트의 KST 벽시계 인코딩으로 맞춘다."""
     timestamp = pd.Timestamp(value)
     if timestamp.tzinfo is not None:
@@ -1116,11 +1351,18 @@ def _candles_frame(candles: list[Candle]) -> pd.DataFrame:
     ).set_index("Time")
 
 
-def _market_state(now: dt.datetime) -> str:
-    if now.weekday() >= 5:
-        return "closed"
-    if dt.time(9, 0) <= now.time() < dt.time(15, 30):
-        return "open"
+def _market_state(now: dt.datetime, targets=()) -> str:
+    markets = {(target.region, target.timezone) for target in targets} or {
+        ("domestic", KST)
+    }
+    for region, timezone in markets:
+        local = now.astimezone(timezone)
+        if local.weekday() >= 5:
+            continue
+        opens = dt.time(9, 30) if region == "overseas" else dt.time(9, 0)
+        closes = dt.time(16, 0) if region == "overseas" else dt.time(15, 30)
+        if opens <= local.time() < closes:
+            return "open"
     return "closed"
 
 

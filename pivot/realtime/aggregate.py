@@ -23,6 +23,7 @@ class RealtimeTrade:
     received_seq: int
     price: Decimal
     volume: int
+    timezone: ZoneInfo = KST
 
     def __post_init__(self) -> None:
         if not self.symbol.strip():
@@ -34,7 +35,9 @@ class RealtimeTrade:
         if self.price <= 0:
             raise ValueError("price must be positive")
         object.__setattr__(self, "symbol", self.symbol.strip())
-        object.__setattr__(self, "exchange_ts", self.exchange_ts.astimezone(KST))
+        object.__setattr__(
+            self, "exchange_ts", self.exchange_ts.astimezone(self.timezone)
+        )
         object.__setattr__(self, "received_at", self.received_at.astimezone(KST))
         object.__setattr__(self, "volume", abs(int(self.volume)))
 
@@ -169,13 +172,17 @@ class CandleAggregator:
         timeframe: Timeframe,
         *,
         observing_since: datetime | None = None,
+        timezone: ZoneInfo = KST,
     ) -> None:
         if not symbol.strip():
             raise ValueError("symbol is required")
         self.symbol = symbol.strip()
         self.timeframe = timeframe
+        self.timezone = timezone
         self.observing_since = (
-            observing_since.astimezone(KST) if observing_since is not None else None
+            observing_since.astimezone(timezone)
+            if observing_since is not None
+            else None
         )
         self.stats = AggregationStats()
         self._state: _CandleState | None = None
@@ -195,18 +202,23 @@ class CandleAggregator:
             raise ValueError("seed candle does not match aggregator")
         if candle.start_at.tzinfo is None or candle.end_at.tzinfo is None:
             raise ValueError("seed candle timestamps must be timezone-aware")
-        if self._last_closed_start is not None and candle.start_at <= self._last_closed_start:
+        if (
+            self._last_closed_start is not None
+            and candle.start_at <= self._last_closed_start
+        ):
             return self.current
         if self._state is not None and candle.start_at < self._state.start_at:
             return self.current
 
-        sequence = self._state.sequence if self._state is not None else self._next_sequence
+        sequence = (
+            self._state.sequence if self._state is not None else self._next_sequence
+        )
         self._state = _CandleState(
             symbol=self.symbol,
             timeframe=self.timeframe.code,
             sequence=sequence,
-            start_at=candle.start_at.astimezone(KST),
-            end_at=candle.end_at.astimezone(KST),
+            start_at=candle.start_at.astimezone(self.timezone),
+            end_at=candle.end_at.astimezone(self.timezone),
             open=candle.open,
             high=candle.high,
             low=candle.low,
@@ -214,8 +226,8 @@ class CandleAggregator:
             volume=candle.volume,
             amount=candle.amount,
             trade_count=candle.trade_count,
-            first_order=(candle.start_at.astimezone(KST), -1),
-            last_order=(candle.end_at.astimezone(KST), -1),
+            first_order=(candle.start_at.astimezone(self.timezone), -1),
+            last_order=(candle.end_at.astimezone(self.timezone), -1),
             fixed_start=True,
             partial_from_subscription=False,
         )
@@ -224,7 +236,9 @@ class CandleAggregator:
 
     def ingest(self, trade: RealtimeTrade) -> tuple[CandleUpdated | CandleClosed, ...]:
         if trade.symbol != self.symbol:
-            raise ValueError(f"trade symbol {trade.symbol!r} does not match {self.symbol!r}")
+            raise ValueError(
+                f"trade symbol {trade.symbol!r} does not match {self.symbol!r}"
+            )
         if not self._remember(trade.order):
             self.stats.duplicates += 1
             return ()
@@ -308,7 +322,7 @@ class CandleAggregator:
         return CandleClosed(candle)
 
     def _bucket_start(self, timestamp: datetime) -> datetime:
-        local = timestamp.astimezone(KST)
+        local = timestamp.astimezone(self.timezone)
         if self.timeframe.type == "day":
             return local.replace(hour=0, minute=0, second=0, microsecond=0)
         minute = local.minute - local.minute % self.timeframe.unit

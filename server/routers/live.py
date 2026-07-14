@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi import Query
@@ -19,6 +20,9 @@ class ActivateModelRequest(BaseModel):
 
 class SubscribeRequest(BaseModel):
     symbol: str
+    name: str = ""
+    region: Literal["domestic", "overseas"] = "domestic"
+    exchange: str = ""
 
 
 def _service(request: Request) -> LiveService:
@@ -37,7 +41,9 @@ async def activate_model(payload: ActivateModelRequest, request: Request) -> dic
             payload.run_id, payload.artifact_id
         )
     except (LiveServiceError, LookupError, RuntimeError, ValueError) as exc:
-        detail = str(exc) if isinstance(exc, LiveServiceError) else "model activation failed"
+        detail = (
+            str(exc) if isinstance(exc, LiveServiceError) else "model activation failed"
+        )
         raise HTTPException(422, detail) from exc
 
 
@@ -50,7 +56,12 @@ def subscriptions(request: Request) -> list[dict]:
 async def subscribe(payload: SubscribeRequest, request: Request) -> list[dict]:
     try:
         service = _service(request)
-        await service.subscribe(payload.symbol)
+        await service.subscribe(
+            payload.symbol,
+            name=payload.name,
+            region=payload.region,
+            exchange=payload.exchange,
+        )
         return service.subscriptions()
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

@@ -13,6 +13,7 @@ from pivot.realtime.aggregate import (
 )
 
 KST = ZoneInfo("Asia/Seoul")
+ET = ZoneInfo("America/New_York")
 
 
 def trade(
@@ -24,9 +25,9 @@ def trade(
     received_at: str | None = None,
 ) -> RealtimeTrade:
     exchange_ts = datetime.fromisoformat(f"2026-07-13T{time}").replace(tzinfo=KST)
-    received_ts = datetime.fromisoformat(
-        f"2026-07-13T{received_at or time}"
-    ).replace(tzinfo=KST)
+    received_ts = datetime.fromisoformat(f"2026-07-13T{received_at or time}").replace(
+        tzinfo=KST
+    )
     return RealtimeTrade(
         symbol="005930",
         exchange_ts=exchange_ts,
@@ -40,8 +41,12 @@ def trade(
 def test_minute_aggregator_closes_on_next_boundary():
     aggregator = CandleAggregator("005930", Timeframe(type="minute", unit=3))
 
-    assert isinstance(aggregator.ingest(trade("09:00:10", "100", 2, seq=1))[0], CandleUpdated)
-    assert isinstance(aggregator.ingest(trade("09:02:59", "103", 3, seq=2))[0], CandleUpdated)
+    assert isinstance(
+        aggregator.ingest(trade("09:00:10", "100", 2, seq=1))[0], CandleUpdated
+    )
+    assert isinstance(
+        aggregator.ingest(trade("09:02:59", "103", 3, seq=2))[0], CandleUpdated
+    )
     events = aggregator.ingest(trade("09:03:00", "101", 4, seq=3))
 
     assert [type(event) for event in events] == [CandleClosed, CandleUpdated]
@@ -87,8 +92,12 @@ def test_trade_for_closed_minute_is_counted_as_late_without_rewind():
 def test_tick_aggregator_closes_exactly_on_nth_trade():
     aggregator = CandleAggregator("005930", Timeframe(type="tick", unit=3))
 
-    assert isinstance(aggregator.ingest(trade("09:00:00", "100", seq=1))[0], CandleUpdated)
-    assert isinstance(aggregator.ingest(trade("09:00:00", "102", seq=2))[0], CandleUpdated)
+    assert isinstance(
+        aggregator.ingest(trade("09:00:00", "100", seq=1))[0], CandleUpdated
+    )
+    assert isinstance(
+        aggregator.ingest(trade("09:00:00", "102", seq=2))[0], CandleUpdated
+    )
     events = aggregator.ingest(trade("09:00:00", "99", seq=3))
 
     assert len(events) == 1
@@ -161,3 +170,21 @@ def test_trade_normalizes_timezone_and_signed_volume():
 
     assert item.exchange_ts == datetime(2026, 7, 13, 9, 0, tzinfo=KST)
     assert item.volume == 3
+
+
+def test_overseas_minute_aggregator_uses_exchange_timezone():
+    item = RealtimeTrade(
+        symbol="AAPL",
+        exchange_ts=datetime(2026, 7, 13, 13, 30, 45, tzinfo=ZoneInfo("UTC")),
+        received_at=datetime(2026, 7, 13, 13, 30, 46, tzinfo=ZoneInfo("UTC")),
+        received_seq=1,
+        price=Decimal("190.5"),
+        volume=3,
+        timezone=ET,
+    )
+    aggregator = CandleAggregator("AAPL", Timeframe(type="minute", unit=1), timezone=ET)
+
+    candle = aggregator.ingest(item)[0].candle
+
+    assert item.exchange_ts == datetime(2026, 7, 13, 9, 30, 45, tzinfo=ET)
+    assert candle.start_at == datetime(2026, 7, 13, 9, 30, tzinfo=ET)

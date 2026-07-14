@@ -51,16 +51,16 @@ Kiwoom 거래소 코드는 NASDAQ=`ND`, NYSE=`NY`, AMEX=`NA`다. 해외 일봉·
 |---|---|---|
 | **국내 캔들 (일/분/틱)** — 학습 데이터 | `brokers.kiwoom` | 위 표. KIS 모듈은 국내는 1분봉만 지원 |
 | **미국 캔들 (일/분/틱)** — 수집·차트 | `brokers.kiwoom.overseas` | NASDAQ/NYSE/AMEX와 동일한 `ChartBar` 계약 사용 |
-| 실시간 체결 (추론 단계) | `brokers.kiwoom` | M5 기반으로 확정. REST 캔들과 같은 브로커·인증을 사용하고 `주식체결(0B)`을 `RealtimeTick`으로 수신 |
+| 실시간 체결 (추론 단계) | `brokers.kiwoom` | 국내 `주식체결(0B)`과 미국 `해외주식체결(FE)`을 `RealtimeTick`으로 수신 |
 
-해외 종목 지원 범위는 M1 관심종목 검색·수집·캐시·차트까지다. 현재 학습 데이터셋과
-Kiwoom `0B` 실시간 구독 계약은 국내 6자리 종목코드를 전제로 하므로 전처리 실험실 이후 탭은
-국내 관심종목만 표시한다. 해외 학습/실시간은 종목 식별자에 시장을 포함하는 별도 계약 변경 후 확장한다.
+해외 종목은 관심종목 검색·수집·캐시·차트와 M5 실시간 구독까지 지원한다. 현재 학습 데이터셋은
+국내 종목 식별자 계약을 유지하므로 전처리 실험실·데이터셋·진단·학습 탭은 국내 관심종목만 표시한다.
 
 ### 2.1 M5 실시간 계약
 
-- `async with client.realtime.session() as ws`로 서버당 세션 하나를 유지한다.
-- 종목은 `await ws.subscribe_trades(symbol)`로 등록하고 `ws.stream()`의 `RealtimeTick`을 소비한다.
+- Kiwoom client는 서버당 하나를 유지하고 KRX/US 시장별 session을 하나씩 연다.
+- 국내는 `subscribe_trades(symbol)`, 미국은 `subscribe_us_trades(symbol, exchange=...)`로
+  등록하고 각 `stream()`의 `RealtimeTick`을 하나의 서버 이벤트 흐름으로 합친다.
 - SDK가 LOGIN, PING echo, 재접속과 활성 구독 복원을 담당한다. Pivot은 봉 집계와 REST gap
   보정, 모델 추론, 브라우저 전달을 담당한다.
 - `received_at`이 같으면 `received_seq`로 수신 순서를 고정한다. 이 순번은 재접속 전후의
@@ -77,10 +77,12 @@ Kiwoom `0B` 실시간 구독 계약은 국내 6자리 종목코드를 전제로 
     KST 벽시계를 UTC 필드로 복원할 수 있는 unix 초 숫자로 반환하며, Live REST/WS도 같은 형식을 쓴다.
 - 미국 분봉 원본은 연장시간을 `24` 이상 시각(예: `20260710274300`)으로 표현할 수 있다.
   Pivot은 이를 다음 달력일 `03:43:00`으로 정규화한 뒤 기간 필터와 중복 제거를 적용한다.
+  parquet 원본과 봉 경계는 America/New_York를 유지하고, 일반 차트와 Live REST/WS 응답만
+  KST 벽시계 unix 초로 변환한다.
 - M1 실측(2026-07-14, AAPL/NASDAQ):
   - `day`: 요청 범위 2026-07-01 ~ 2026-07-14에서 8봉, 2026-07-01 ~ 2026-07-13
   - `min1`: 요청일 2026-07-13에서 1,099봉, 04:00:00 ~ 23:59:00
-  - `/api/chart` 시간은 unix 초 오름차순이고 중복 0건이며, 1,099봉 모두 거래량을 포함한다.
+  - `/api/chart` 시간은 KST 변환 후 unix 초 오름차순이고 중복 0건이며, 1,099봉 모두 거래량을 포함한다.
 - 이평선 기준 결정 필요: 해당 타임프레임 기준 rolling(기본) vs 일봉 이평선 병합(구 프로젝트의
   `*_ma.csv` merge 방식) — 프리셋 옵션 `ma_source: self | daily`로 둘 다 지원
 
