@@ -65,6 +65,7 @@ pivot/                        # 저장소 루트
 │   ├── raw/                  #   수집 캐시: {broker}/{timeframe}/{symbol}.parquet
 │   ├── meta/                 #   watchlist.json, live_subscriptions.json
 │   └── tmp/                  #   Storage 업로드/다운로드 중 재생성 가능한 작업 캐시
+├── notebooks/                # 읽기 전용 방법론 연구 — 전처리/스케일링/튜닝
 ├── supabase/
 │   └── migrations/          #   종목마스터 + 학습 메타데이터/Storage bucket DDL
 └── docs/
@@ -78,6 +79,8 @@ pivot/                        # 저장소 루트
   추가할 수 있지만, 반드시 `pivot/` 함수 호출만 한다)
 - **단건 미리보기(Lab)와 일괄 처리(batch)는 같은 `pivot/` 함수를 호출한다.**
   호출자별로 파이프라인을 복제하지 않는다.
+- **연구 노트북도 `pivot/` 공용 함수를 호출한다.** 전처리·변환·학습 로직을
+  notebook cell에 별도로 복제하지 않고, 원천·Supabase 데이터는 기본적으로 읽기 전용으로 다룬다.
 - **차트 보조지표와 학습 피처는 분리한다.** Watchlist/Lab에서 lightweight-charts series로 표시한
   보조지표라도 프리셋 `features`에서 제외하면 데이터셋에는 들어가지 않는다. 표시하지 않은
   보조지표도 `features`에 포함하면 전처리/학습 피처로 사용한다.
