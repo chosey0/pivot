@@ -131,7 +131,7 @@ def preset_from_checkpoint(checkpoint: LoadedCheckpoint) -> PreprocessPreset:
         raise LiveContractError(f"invalid dataset preset snapshot: {exc}") from exc
     if list(preset.features) != checkpoint.feature_columns:
         raise LiveContractError("preset features do not match checkpoint features")
-    return preset
+    return preset.for_timeframe(preset.timeframe)
 
 
 def build_candidate_windows(

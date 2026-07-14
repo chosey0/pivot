@@ -14,6 +14,17 @@ export function toTimeframeCode(kind: TimeframeKind, unit: number): TimeframeCod
   return `${kind === 'minute' ? 'min' : 'tick'}${unit}` as TimeframeCode
 }
 
+export function fromTimeframeCode(timeframe: TimeframeCode): {
+  type: TimeframeKind
+  unit: number
+} {
+  if (timeframe === 'day') return { type: 'day', unit: 1 }
+  if (timeframe.startsWith('min')) {
+    return { type: 'minute', unit: Number(timeframe.slice(3)) }
+  }
+  return { type: 'tick', unit: Number(timeframe.slice(4)) }
+}
+
 export function chartLimitFor(timeframe: TimeframeCode) {
   return timeframe === 'day' ? undefined : INTRADAY_CHART_LIMIT
 }

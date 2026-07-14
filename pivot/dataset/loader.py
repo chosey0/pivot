@@ -34,6 +34,8 @@ class TrainingSample:
     symbol: str
     sample_index: int
     end_time: str
+    timeframe: str = "day"
+    source_key: str | None = None
 
 
 class ShardDataset(Dataset[TrainingSample]):
@@ -105,6 +107,7 @@ class ShardDataset(Dataset[TrainingSample]):
             )
 
         self.dataset_id = dataset_id
+        self.timeframe = dataset["timeframe"]
         self.split = split
         self.feature_columns = expected_columns
         self._storage = storage
@@ -154,6 +157,8 @@ class ShardDataset(Dataset[TrainingSample]):
             symbol=shard["symbol"],
             sample_index=int(row["sample_index"]),
             end_time=row["end_time"].isoformat(),
+            timeframe=row.get("timeframe") or self.timeframe,
+            source_key=row.get("source_key"),
         )
 
     def labels(self) -> list[int]:
@@ -238,6 +243,8 @@ def collate_samples(samples: list[TrainingSample]) -> dict[str, object]:
         "symbols": [sample.symbol for sample in samples],
         "sample_indices": [sample.sample_index for sample in samples],
         "end_times": [sample.end_time for sample in samples],
+        "timeframes": [sample.timeframe for sample in samples],
+        "source_keys": [sample.source_key for sample in samples],
     }
 
 

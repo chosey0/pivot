@@ -4,7 +4,6 @@ import {
   type CacheStatus,
   type ChartResponse,
   type InstrumentRegion,
-  type TimeframeCode,
   type WatchItem,
 } from '../api/client'
 import type { OhlcPoint } from '../components/chart/CandleChart'
@@ -23,6 +22,7 @@ import {
   percentChange,
 } from '../lib/format'
 import { chartLimitFor, MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
+import { timeframeLabel, watchItemKey } from '../lib/watchlist'
 
 function isMissingCacheError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
@@ -32,23 +32,6 @@ function isMissingCacheError(error: unknown) {
 function isEmptyRangeError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes('404 Not Found') && message.includes('no candles in requested chart range')
-}
-
-function watchItemKey(item: WatchItem) {
-  return [
-    item.region,
-    item.exchange,
-    item.symbol,
-    item.timeframe,
-    item.start ?? '',
-    item.end ?? '',
-  ].join(':')
-}
-
-function timeframeLabel(timeframe: TimeframeCode) {
-  if (timeframe === 'day') return '1day'
-  if (timeframe.startsWith('min')) return `${timeframe.slice(3)}min`
-  return `${timeframe.slice(4)}tick`
 }
 
 interface WatchlistProps {
@@ -155,7 +138,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   const refreshStatus = useCallback(async (items: WatchItem[]) => {
     if (items.length === 0) {
       setStatuses({})
-      return
+      return {}
     }
     const rows = await Promise.all(
       items.map(async (item) => {
@@ -168,7 +151,9 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
         return [watchItemKey(item), result[item.symbol] ?? null] as const
       }),
     )
-    setStatuses(Object.fromEntries(rows))
+    const next = Object.fromEntries(rows)
+    setStatuses(next)
+    return next
   }, [])
 
   const loadChart = useCallback(async (
@@ -241,9 +226,35 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
 
   useEffect(() => {
     refreshStatus(watchlist)
+      .then((next) => {
+        if (!selectedItem) return
+        if (next[watchItemKey(selectedItem)]) {
+          return loadChart(selectedItem, maWindows)
+        }
+        setChart(null)
+        setMessage(
+          `${selectedItem.symbol} ${selectedItem.timeframe} 캐시가 없습니다. 수집 버튼을 눌러 먼저 데이터를 수집하세요.`,
+        )
+      })
       .catch((e: Error) => setError(e.message))
-    if (selectedItem) loadChart(selectedItem, maWindows)
   }, [loadChart, maWindows, maWindowsKey, refreshStatus, selectedItem, watchlist])
+
+  const openChart = useCallback(
+    (item: WatchItem) => {
+      const key = watchItemKey(item)
+      setSelectedKey(key)
+      if (!statuses[key]) {
+        setChart(null)
+        setError(null)
+        setMessage(
+          `${item.symbol} ${item.timeframe} 캐시가 없습니다. 수집 버튼을 눌러 먼저 데이터를 수집하세요.`,
+        )
+        return
+      }
+      void loadChart(item, maWindows)
+    },
+    [loadChart, maWindows, statuses],
+  )
 
   useEffect(() => {
     setSelectedOhlc((current) => {
@@ -292,6 +303,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       await refreshStatus(items)
       setMessage(`${symbol} ${timeframe} 데이터 항목을 추가했습니다.`)
     } catch (e) {
+      setMessage(null)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
@@ -299,6 +311,12 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   }
 
   async function removeWatchItem(item: WatchItem) {
+    if (
+      !window.confirm(
+        `${item.name || item.symbol} ${timeframeLabel(item.timeframe)} 항목과 로컬 수집 데이터를 삭제할까요?`,
+      )
+    )
+      return
     setLoading(true)
     setError(null)
     try {
@@ -323,28 +341,48 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   }
 
   async function ingest(item: WatchItem) {
-    const { symbol } = item
+    const target = item.timeframe === timeframe
+      ? {
+          ...item,
+          start: rangeEnabled ? startDate : null,
+          end: rangeEnabled ? endDate : null,
+        }
+      : item
+    const { symbol } = target
+    if (target.start && target.end && target.start > target.end) {
+      setError('수집 시작일은 종료일보다 늦을 수 없습니다.')
+      return
+    }
     setLoading(true)
     setError(null)
-    const rangeText = item.start || item.end ? ` (${item.start ?? ''} ~ ${item.end ?? ''})` : ''
-    setMessage(`${symbol} ${item.timeframe}${rangeText} 수집 중...`)
+    const rangeText = target.start || target.end
+      ? ` (${target.start ?? ''} ~ ${target.end ?? ''})`
+      : ''
+    setMessage(`${symbol} ${target.timeframe}${rangeText} 수집 중...`)
     try {
+      let items = watchlist
+      if (watchItemKey(target) !== watchItemKey(item)) {
+        items = await api.updateWatchItem(item, target)
+        setWatchlist(items)
+        setSelectedKey(watchItemKey(target))
+      }
       const response = await api.ingest(
         [symbol],
-        item.timeframe,
+        target.timeframe,
         {
-          ...(item.start ? { start: item.start } : {}),
-          ...(item.end ? { end: item.end } : {}),
-          region: item.region,
-          exchange: item.exchange,
+          ...(target.start ? { start: target.start } : {}),
+          ...(target.end ? { end: target.end } : {}),
+          region: target.region,
+          exchange: target.exchange,
         },
       )
       const result = response.results[symbol]
       if (!result?.ok) throw new Error(result?.error ?? '수집 실패')
-      await refreshStatus(watchlist)
-      await loadChart(item, maWindows)
-      setMessage(`${symbol} ${item.timeframe}${rangeText} 수집 완료: ${result.bars ?? 0}봉`)
+      await refreshStatus(items)
+      await loadChart(target, maWindows)
+      setMessage(`${symbol} ${target.timeframe}${rangeText} 수집 완료: ${result.bars ?? 0}봉`)
     } catch (e) {
+      setMessage(null)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
@@ -513,7 +551,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                   >
                     <button
                       className="watch-main"
-                      onClick={() => loadChart(item, maWindows)}
+                      onClick={() => openChart(item)}
                       type="button"
                     >
                       <strong>
@@ -563,7 +601,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
               <button
                 className="ghost"
                 disabled={loading}
-                onClick={() => loadChart(selectedItem, maWindows)}
+                onClick={() => openChart(selectedItem)}
                 type="button"
               >
                 차트 새로고침

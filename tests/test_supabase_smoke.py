@@ -15,7 +15,7 @@ from pivot.dataset import samples as sample_browser
 from pivot.dataset.batch import build_snapshot, run_batch, split_config
 from pivot.diagnostics import quality
 from pivot.env import env_value
-from pivot.ingestion.cache import cache_path
+from pivot.ingestion.cache import cache_path, replace_cache
 from pivot.storage.datasets import DatasetNotFoundError, DatasetRepository
 from pivot.storage.diagnostics import DiagnosticReportRepository
 from pivot.storage.jobs import JobRepository
@@ -48,8 +48,7 @@ def test_batch_roundtrip_against_real_supabase(tmp_path):
 
     tag = uuid.uuid4().hex[:8]
     path = cache_path(tmp_path, BROKER, "day", SYMBOL)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    make_candles(seed=11).to_parquet(path)
+    replace_cache(path, make_candles(seed=11))
 
     preset_model = PreprocessPreset(
         name=f"pytest-smoke-{tag}",

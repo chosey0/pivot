@@ -26,10 +26,14 @@ class EmptyDeployments:
     def active(self):
         return None
 
+    def deactivate(self):
+        return None
+
 
 class ActivatingDeployments(EmptyDeployments):
     def __init__(self) -> None:
         self.calls = []
+        self.deactivate_calls = 0
 
     def activate(self, *, run_id, artifact_id):
         self.calls.append((run_id, artifact_id))
@@ -39,6 +43,10 @@ class ActivatingDeployments(EmptyDeployments):
             "artifact_id": artifact_id,
             "activated_at": "2026-07-13T00:00:00+00:00",
         }
+
+    def deactivate(self):
+        self.deactivate_calls += 1
+        return {"id": len(self.calls), "active": False}
 
 
 class DeployableRuns:
@@ -52,7 +60,7 @@ class DeployableRuns:
             "config": {"model": "cnn1d_temporal_v1"},
             "dataset_snapshot": {
                 "dataset": {
-                    "timeframe": "min1",
+                    "timeframe": "mixed",
                     "feature_columns": ["Close"],
                     "preset_snapshot": {
                         "preset": {
@@ -855,6 +863,7 @@ def test_model_activation_validates_before_pointer_swap_and_returns_public_state
         assert deployments.calls == [(3, 5)]
         assert state["deployment"]["pairing_rule"] == "adjacent_markers_v1"
         assert state["deployment"]["dataset_name"] == "live-data"
+        assert state["deployment"]["timeframe"] == "min1"
         assert "object_path" not in str(state)
 
         async def load_bad(*args):
@@ -867,6 +876,33 @@ def test_model_activation_validates_before_pointer_swap_and_returns_public_state
         assert service.state()["deployment"]["run_id"] == 3
 
     monkeypatch.setattr(live_module, "LiveInferenceEngine", FakeEngine)
+    asyncio.run(scenario())
+
+
+def test_model_deactivation_clears_engine_predictions_and_inference_state(tmp_path: Path):
+    async def scenario():
+        deployments = ActivatingDeployments()
+        service = LiveService(
+            tmp_path,
+            deployments=deployments,
+            runs=DeployableRuns(),
+            storage=object(),
+        )
+        service._desired["005930"] = LiveTarget("005930", "삼성전자")
+        service._subscription_state["005930"] = service._new_subscription_state(
+            "005930"
+        )
+        await service._install_engine(StubEngine(), {"id": 1, "run_id": 3})
+        service._predictions.append({"symbol": "005930"})
+
+        state = await service.deactivate_model()
+
+        assert deployments.deactivate_calls == 1
+        assert state["deployment"] is None
+        assert state["subscriptions"][0]["inference_status"] == "no_model"
+        assert not service._predictions
+        assert service._engine is None
+
     asyncio.run(scenario())
 
 

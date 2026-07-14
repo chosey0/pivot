@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import pandas as pd
 
 from pivot.config import Timeframe
-from pivot.ingestion.cache import cache_path, load_cache, merge_cache
+from pivot.ingestion.cache import cache_path, load_cache, merge_cache, replace_cache
 from pivot.ingestion.schema import bars_to_frame
 
 if TYPE_CHECKING:
@@ -217,7 +217,7 @@ async def update_cache(
     if existing is not None:
         filtered_existing = filter_overseas_day_market(existing, timeframe, region)
         if len(filtered_existing) != len(existing):
-            filtered_existing.to_parquet(path, row_group_size=10_000)
+            replace_cache(path, filtered_existing)
         existing = filtered_existing
 
     start_date = None

@@ -65,7 +65,8 @@ Kiwoom 거래소 코드는 NASDAQ=`ND`, NYSE=`NY`, AMEX=`NA`다. 해외 일봉·
 
 해외 종목은 관심종목 검색·수집·캐시·차트, 전처리 실험실, 데이터셋 생성과 M5 실시간 구독까지
 지원한다. 전처리 preview와 batch 요청은 종목별 `region/exchange`를 전달해
-`kiwoom-overseas-{nd|ny|na}` 캐시를 읽는다. 원천 캐시 진단은 아직 국내 종목만 지원한다.
+`data/raw/kiwoom/overseas/{exchange}/{symbol}/{timeframe}` 캐시를 읽는다. 원천 캐시
+진단은 아직 국내 종목만 지원한다.
 
 ### 2.1 M5 실시간 계약
 
@@ -185,16 +186,17 @@ bars = await client.overseas.chart.daily(
    │  fetch (async, rate limit 고려)
    ▼
 ChartBar 리스트 → 표준 DataFrame 변환 + 이평선 계산
-   │  캐시 저장: data/raw/{broker}/{timeframe}/{symbol}.parquet   # timeframe = day | min{N} | tick{N}
+   │  캐시 저장: data/raw/kiwoom/{market}/{symbol}/{timeframe}/{partition}/part.parquet
    ▼
 이후 단계는 기존 전처리와 동일: calc_fractal() → create_dataset()
 ```
 
 - **로컬 캐시 필수**: API rate limit과 재현성 때문에, 조회 결과를 저장해 두고
   전처리는 항상 캐시에서 읽는다 (수집과 전처리의 분리)
-- 국내 캐시는 `broker=kiwoom`, 미국 캐시는 거래소별
-  `broker=kiwoom-overseas-{nd|ny|na}`를 사용해 같은 심볼/타임프레임 충돌을 막는다.
-- 저장 포맷은 parquet 우선 검토 (백로그 C 참조)
+- 국내는 `market=domestic`, 미국은 `market=overseas/{ND|NY|NA}` 경로로 분리해 같은
+  심볼/타임프레임 충돌을 막는다.
+- 일봉은 `year=YYYY`, 분봉·틱봉은 `date=YYYY-MM-DD` 단위 parquet로 나눈다. 증분 수집은
+  영향받은 파티션만 병합하고 임시 파일을 원자적으로 교체하므로 전체 이력 파일을 다시 쓰지 않는다.
 - 구 `read_data()`의 역할 축소: CSV 파싱/정제가 사라지고 "캐시 로드 + 표준 스키마 검증"만 남는다
 
 ## 7. 구 파이프라인 대비 변경 요약

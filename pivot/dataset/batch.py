@@ -16,11 +16,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
-from pivot.config import PreprocessPreset
+import pandas as pd
+
+from pivot.config import PreprocessPreset, Timeframe
 from pivot.dataset.build import Sample, run_preprocess
 from pivot.dataset.shards import build_shards, feature_schema, object_path
 from pivot.ingestion.cache import cache_path, load_cache
-from pivot.ingestion.fetch import BROKER, filter_overseas_day_market
+from pivot.ingestion.fetch import filter_overseas_day_market
 from pivot.storage.jobs import TERMINAL_STATUSES, JobRepository, JobTransitionError
 from pivot.storage.supabase import DATASET_BUCKET, PARQUET_CONTENT_TYPE
 
@@ -138,6 +140,7 @@ def build_snapshot(
     *,
     preset: PreprocessPreset | None = None,
     sources: dict[str, dict] | None = None,
+    targets: list[dict] | None = None,
 ) -> dict:
     """datasets.preset_snapshot 봉투 — 프리셋 전체 + split 규칙 (docs/06 §2)."""
     return {
@@ -149,7 +152,16 @@ def build_snapshot(
         "preset": preset.model_dump(mode="json") if preset else preset_row["preset"],
         "split": split_conf,
         "sources": sources or {},
+        "targets": targets or [],
     }
+
+
+def target_key(target: dict) -> str:
+    """수집 항목의 재현 가능한 식별자."""
+    return "|".join(
+        str(target.get(field) or "")
+        for field in ("region", "exchange", "symbol", "timeframe", "start", "end")
+    )
 
 
 def run_batch(
@@ -161,12 +173,28 @@ def run_batch(
     dataset_id: int,
     preset: PreprocessPreset,
     symbols: list[str],
+    targets: list[dict] | None = None,
     data_root: Path,
     broker: str,
     brokers: dict[str, str] | None = None,
     split_seed: int = DEFAULT_SPLIT_SEED,
 ) -> None:
-    """생성 완료된 job/dataset 행을 받아 종목별 전처리→shard 업로드를 수행한다."""
+    """생성 완료된 job/dataset 행을 받아 수집 항목별 전처리→shard 업로드를 수행한다."""
+    targets = targets or [
+        {
+            "symbol": symbol,
+            "timeframe": preset.timeframe.code,
+            "region": "domestic",
+            "exchange": "",
+            "broker": (brokers or {}).get(symbol, broker),
+            "start": None,
+            "end": None,
+            "cache_start": None,
+            "cache_end": None,
+        }
+        for symbol in symbols
+    ]
+    symbols = list(dict.fromkeys(target["symbol"] for target in targets))
     emit = _EventEmitter(jobs, job_id)
     try:
         jobs.mark_running(job_id)
@@ -179,7 +207,7 @@ def run_batch(
             logger.exception("failed to persist batch startup failure")
         return
 
-    emit("job_started", {"dataset_id": dataset_id, "symbols": symbols})
+    emit("job_started", {"dataset_id": dataset_id, "targets": targets})
     failed: dict[str, str] = {}
     total_samples = 0
     total_class_counts: dict[str, int] = {}
@@ -198,85 +226,138 @@ def run_batch(
         emit("job_cancelled", {"dataset_id": dataset_id, "message": message})
 
     try:
-        processable: list[str] = []
+        processable: list[dict] = []
         sample_records: list[tuple[str, int, int]] = []
         completed = 0
-        for symbol in symbols:
+        for target in targets:
             if cancelled():
                 handle_cancelled()
                 return
+            symbol = target["symbol"]
+            key = target_key(target)
             try:
-                preview = _preprocess_symbol(
-                    symbol,
-                    preset,
-                    data_root,
-                    (brokers or {}).get(symbol, broker),
-                )
+                preview = _preprocess_target(target, preset, data_root)
             except Exception as exc:  # 종목 실패는 기록하고 계속 진행
-                failed[symbol] = str(exc)
-                datasets.set_symbol_failed(dataset_id, symbol, str(exc))
-                emit("symbol_failed", {"symbol": symbol, "error": str(exc)})
+                failed[key] = str(exc)
+                emit(
+                    "symbol_failed",
+                    {"target_key": key, "symbol": symbol, "error": str(exc)},
+                )
                 completed += 1
                 try:
                     jobs.set_progress(job_id, completed)
                 except Exception:
                     logger.exception("failed to persist progress for job %s", job_id)
             else:
-                processable.append(symbol)
+                processable.append(target)
                 sample_records.extend(
-                    (symbol, index, sample.label)
+                    (key, index, sample.label)
                     for index, sample in enumerate(preview.samples)
                 )
-                emit("symbol_analyzed", {"symbol": symbol, "samples": len(preview.samples)})
+                emit(
+                    "symbol_analyzed",
+                    {
+                        "target_key": key,
+                        "symbol": symbol,
+                        "timeframe": target["timeframe"],
+                        "samples": len(preview.samples),
+                    },
+                )
 
         sample_splits = assign_sample_splits(sample_records, seed=split_seed)
-        for symbol in processable:
+        summaries: dict[str, list[dict]] = {symbol: [] for symbol in symbols}
+        shard_offsets: dict[str, int] = {symbol: 0 for symbol in symbols}
+        started_symbols: set[str] = set()
+        remaining_targets = {
+            symbol: sum(target["symbol"] == symbol for target in processable)
+            for symbol in symbols
+        }
+        for target in processable:
             if cancelled():
                 handle_cancelled()
                 return
-            datasets.set_symbol_running(dataset_id, symbol)
-            emit("symbol_started", {"symbol": symbol})
+            symbol = target["symbol"]
+            key = target_key(target)
+            if symbol not in started_symbols:
+                datasets.set_symbol_running(dataset_id, symbol)
+                started_symbols.add(symbol)
+            emit(
+                "symbol_started",
+                {"target_key": key, "symbol": symbol, "timeframe": target["timeframe"]},
+            )
             try:
-                summary = _process_symbol(
+                summary = _process_target(
                     datasets=datasets,
                     storage=storage,
                     dataset_id=dataset_id,
-                    symbol=symbol,
+                    target=target,
                     preset=preset,
                     data_root=data_root,
-                    broker=(brokers or {}).get(symbol, broker),
                     sample_splits=sample_splits,
+                    shard_index_offset=shard_offsets[symbol],
                     is_cancelled=cancelled,
                 )
             except BatchCancelledError:
                 datasets.set_symbol_failed(dataset_id, symbol, "cancelled by user")
-                emit("symbol_failed", {"symbol": symbol, "error": "cancelled by user"})
+                emit(
+                    "symbol_failed",
+                    {"target_key": key, "symbol": symbol, "error": "cancelled by user"},
+                )
                 handle_cancelled()
                 return
             except Exception as exc:
-                failed[symbol] = str(exc)
-                datasets.set_symbol_failed(dataset_id, symbol, str(exc))
-                emit("symbol_failed", {"symbol": symbol, "error": str(exc)})
-            else:
-                datasets.set_symbol_ready(
-                    dataset_id,
-                    symbol,
-                    sample_count=summary["sample_count"],
-                    class_counts=summary["class_counts"],
-                    length_stats={
-                        **summary["length_stats"],
-                        "cleaning": summary["cleaning"],
-                    },
+                failed[key] = str(exc)
+                emit(
+                    "symbol_failed",
+                    {"target_key": key, "symbol": symbol, "error": str(exc)},
                 )
+            else:
+                summaries[symbol].append(summary)
+                shard_offsets[symbol] += summary["shard_count"]
                 total_samples += summary["sample_count"]
                 for label, count in summary["class_counts"].items():
                     total_class_counts[label] = total_class_counts.get(label, 0) + count
-                emit("symbol_succeeded", {"symbol": symbol, **summary})
+                emit(
+                    "symbol_succeeded",
+                    {"target_key": key, "symbol": symbol, **summary},
+                )
+            remaining_targets[symbol] -= 1
+            if remaining_targets[symbol] == 0:
+                errors = [
+                    message
+                    for item in targets
+                    if item["symbol"] == symbol
+                    and (message := failed.get(target_key(item))) is not None
+                ]
+                if errors:
+                    datasets.set_symbol_failed(dataset_id, symbol, "; ".join(errors))
+                elif summaries[symbol]:
+                    datasets.set_symbol_ready(
+                        dataset_id,
+                        symbol,
+                        **_combined_symbol_summary(summaries[symbol]),
+                    )
             completed += 1
             try:
                 jobs.set_progress(job_id, completed)
             except Exception:
                 logger.exception("failed to persist progress for job %s", job_id)
+
+        for symbol in symbols:
+            errors = [
+                message
+                for target in targets
+                if target["symbol"] == symbol
+                and (message := failed.get(target_key(target))) is not None
+            ]
+            if errors:
+                datasets.set_symbol_failed(dataset_id, symbol, "; ".join(errors))
+            elif summaries[symbol]:
+                datasets.set_symbol_ready(
+                    dataset_id,
+                    symbol,
+                    **_combined_symbol_summary(summaries[symbol]),
+                )
 
         result = {
             "dataset_id": dataset_id,
@@ -289,7 +370,7 @@ def run_batch(
             handle_cancelled()
             return
         if failed:
-            message = f"{len(failed)}/{len(symbols)} symbols failed: " + ", ".join(
+            message = f"{len(failed)}/{len(targets)} targets failed: " + ", ".join(
                 sorted(failed)
             )
             datasets.mark_failed(dataset_id, message)
@@ -349,24 +430,64 @@ def _process_symbol(
     sample_splits: dict[tuple[str, int], str] | None = None,
     is_cancelled: Callable[[], bool] = lambda: False,
 ) -> dict:
-    result = _preprocess_symbol(symbol, preset, data_root, broker)
+    target = {
+        "symbol": symbol,
+        "timeframe": preset.timeframe.code,
+        "region": "domestic",
+        "exchange": "",
+        "broker": broker,
+        "start": None,
+        "end": None,
+        "cache_start": None,
+        "cache_end": None,
+    }
+    return _process_target(
+        datasets=datasets,
+        storage=storage,
+        dataset_id=dataset_id,
+        target=target,
+        preset=preset,
+        data_root=data_root,
+        sample_splits=sample_splits,
+        is_cancelled=is_cancelled,
+    )
+
+
+def _process_target(
+    *,
+    datasets: DatasetStore,
+    storage: ObjectStore,
+    dataset_id: int,
+    target: dict,
+    preset: PreprocessPreset,
+    data_root: Path,
+    sample_splits: dict[tuple[str, int], str] | None = None,
+    shard_index_offset: int = 0,
+    is_cancelled: Callable[[], bool] = lambda: False,
+) -> dict:
+    symbol = target["symbol"]
+    key = target_key(target)
+    result = _preprocess_target(target, preset, data_root)
     if sample_splits is None:
         sample_splits = assign_sample_splits(
-            [(symbol, index, sample.label) for index, sample in enumerate(result.samples)]
+            [(key, index, sample.label) for index, sample in enumerate(result.samples)]
         )
-    row_splits = [sample_splits[(symbol, index)] for index in range(len(result.samples))]
+    row_splits = [sample_splits[(key, index)] for index in range(len(result.samples))]
     shards = build_shards(
         result.frame,
         result.samples,
         result.feature_columns,
         sample_splits=row_splits,
+        source_key=key,
+        timeframe=target["timeframe"],
     )
     schema = feature_schema(result.feature_columns)
     for shard in shards:
         if is_cancelled():
             # shard 업로드 사이의 협조적 취소 — 검증 전 업로드 잔여물은 정리 작업이 지운다
             raise BatchCancelledError(symbol)
-        path = object_path(dataset_id, symbol, shard.index, shard.sha256)
+        shard_index = shard_index_offset + shard.index
+        path = object_path(dataset_id, symbol, shard_index, shard.sha256)
         storage.upload(DATASET_BUCKET, path, shard.data, content_type=PARQUET_CONTENT_TYPE)
         echoed = hashlib.sha256(storage.download(DATASET_BUCKET, path)).hexdigest()
         if echoed != shard.sha256:
@@ -376,7 +497,7 @@ def _process_symbol(
         datasets.record_shard(
             dataset_id=dataset_id,
             symbol=symbol,
-            shard_index=shard.index,
+            shard_index=shard_index,
             object_path=path,
             size_bytes=len(shard.data),
             row_count=shard.row_count,
@@ -401,31 +522,182 @@ def _process_symbol(
         "dropped_nan": result.stats["dropped_nan"],
         "dropped_unpaired": result.stats["dropped_unpaired"],
         "cleaning": result.stats["cleaning"],
+        "target": {
+            key: target.get(key)
+            for key in ("symbol", "timeframe", "region", "exchange", "start", "end")
+        },
     }
 
 
 def _preprocess_symbol(
     symbol: str, preset: PreprocessPreset, data_root: Path, broker: str
 ):
-    timeframe = preset.timeframe.code
-    df = load_cache(cache_path(data_root, broker, timeframe, symbol))
+    return _preprocess_target(
+        {
+            "symbol": symbol,
+            "timeframe": preset.timeframe.code,
+            "region": "domestic",
+            "exchange": "",
+            "broker": broker,
+            "start": None,
+            "end": None,
+            "cache_start": None,
+            "cache_end": None,
+        },
+        preset,
+        data_root,
+    )
+
+
+def _preprocess_target(target: dict, preset: PreprocessPreset, data_root: Path):
+    symbol = target["symbol"]
+    timeframe = target["timeframe"]
+    target_preset = preset.for_timeframe(Timeframe.from_code(timeframe))
+    df = load_cache(cache_path(data_root, target["broker"], timeframe, symbol))
     if df is None or df.empty:
         raise RuntimeError(f"no cached data for {symbol} ({timeframe}) — run ingest first")
     df = filter_overseas_day_market(
         df,
-        preset.timeframe,
-        "overseas" if broker.startswith(f"{BROKER}-overseas-") else "domestic",
+        target_preset.timeframe,
+        target["region"],
     )
+    if target.get("cache_start"):
+        df = df.loc[df.index >= pd.Timestamp(target["cache_start"])]
+    if target.get("cache_end"):
+        df = df.loc[df.index <= pd.Timestamp(target["cache_end"])]
     if df.empty:
-        raise RuntimeError(f"no non-day-market data for {symbol} ({timeframe})")
+        raise RuntimeError(f"no cached data in target range for {symbol} ({timeframe})")
 
-    result = run_preprocess(df, preset)
+    result = run_preprocess(df, target_preset)
     if not result.samples:
         raise RuntimeError(
             f"preprocess produced no samples for {symbol} ({timeframe}); "
             "adjust the preset or collect more bars"
         )
     return result
+
+
+def _combined_symbol_summary(summaries: list[dict]) -> dict:
+    if len(summaries) == 1:
+        summary = summaries[0]
+        return {
+            "sample_count": summary["sample_count"],
+            "class_counts": summary["class_counts"],
+            "length_stats": {
+                **summary["length_stats"],
+                "cleaning": summary["cleaning"],
+                "targets": [summary["target"]],
+            },
+        }
+
+    counts: dict[str, int] = {}
+    for summary in summaries:
+        for label, count in summary["class_counts"].items():
+            counts[label] = counts.get(label, 0) + count
+    sample_count = sum(summary["sample_count"] for summary in summaries)
+    pairing_stats = {
+        "rule": summaries[0]["length_stats"]["pairing_stats"]["rule"],
+        **{
+            field: sum(
+                int(summary["length_stats"]["pairing_stats"].get(field, 0))
+                for summary in summaries
+            )
+            for field in (
+                "adjacent_edges",
+                "unpaired_markers",
+                "dropped_invalid_position",
+                "dropped_label2",
+            )
+        },
+    }
+    cleaning = _combined_cleaning(summaries)
+    return {
+        "sample_count": sample_count,
+        "class_counts": counts,
+        "length_stats": {
+            "min": min(summary["length_stats"]["min"] for summary in summaries),
+            "max": max(summary["length_stats"]["max"] for summary in summaries),
+            "mean": round(
+                sum(
+                    summary["length_stats"]["mean"] * summary["sample_count"]
+                    for summary in summaries
+                )
+                / sample_count,
+                2,
+            ),
+            "targets": [summary["target"] for summary in summaries],
+            "points": sum(summary["length_stats"]["points"] for summary in summaries),
+            "dropped_nan": sum(
+                summary["length_stats"]["dropped_nan"] for summary in summaries
+            ),
+            "pairing_stats": pairing_stats,
+            "overlap_clusters": _combined_overlap(summaries),
+            "cleaning": cleaning,
+        },
+    }
+
+
+def _combined_cleaning(summaries: list[dict]) -> dict:
+    rows = [summary["cleaning"] for summary in summaries]
+    original = sum(int(row.get("original_bars", 0)) for row in rows)
+    removed = sum(int(row.get("removed_bars", 0)) for row in rows)
+    reasons: dict[str, int] = {}
+    for row in rows:
+        for reason, count in row.get("reason_counts", {}).items():
+            reasons[reason] = reasons.get(reason, 0) + int(count)
+    first = rows[0]
+    return {
+        "mode": first.get("mode", "off"),
+        "policy": first.get("policy"),
+        "reference": first.get("reference"),
+        "original_bars": original,
+        "retained_bars": sum(int(row.get("retained_bars", 0)) for row in rows),
+        "removed_bars": removed,
+        "removed_ratio": removed / original if original else 0.0,
+        "segments": sum(int(row.get("segments", 0)) for row in rows),
+        "segment_lengths": [
+            length for row in rows for length in row.get("segment_lengths", [])
+        ],
+        "structural_breaks": sum(
+            int(row.get("structural_breaks", 0)) for row in rows
+        ),
+        "reason_counts": reasons,
+        "thresholds": (
+            first.get("thresholds", {})
+            if all(row.get("thresholds", {}) == first.get("thresholds", {}) for row in rows)
+            else {}
+        ),
+        "target_count": len(rows),
+        "targets": [
+            {"target": summary["target"], "stats": summary["cleaning"]}
+            for summary in summaries
+        ],
+    }
+
+
+def _combined_overlap(summaries: list[dict]) -> dict:
+    rows = [summary["length_stats"]["overlap_clusters"] for summary in summaries]
+    first = rows[0]
+    summed = (
+        "plateau_clusters",
+        "plateau_clustered_points",
+        "dropped_plateau_points",
+        "sample_clusters",
+        "clustered_samples",
+        "redundant_samples",
+    )
+    return {
+        "tie_policy": first["tie_policy"],
+        **{field: sum(int(row[field]) for row in rows) for field in summed},
+        "max_plateau_cluster_size": max(
+            int(row["max_plateau_cluster_size"]) for row in rows
+        ),
+        "max_sample_cluster_size": max(
+            int(row["max_sample_cluster_size"]) for row in rows
+        ),
+        "threshold": first["threshold"],
+        "max_end_gap": first["max_end_gap"],
+    }
 
 
 def _length_stats(samples: list[Sample]) -> dict:

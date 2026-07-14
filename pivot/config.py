@@ -215,6 +215,7 @@ class PreprocessPreset(BaseModel):
     name: str = ""
     timeframe: Timeframe = Field(default_factory=Timeframe)
     fractal: FractalConfig = Field(default_factory=FractalConfig)
+    fractal_windows: dict[str, int] = Field(default_factory=dict)
     ma_windows: list[int] = Field(default_factory=lambda: list(DEFAULT_MA_WINDOWS))
     chart_indicators: ChartIndicators = Field(default_factory=ChartIndicators)
     features: list[str] = Field(
@@ -239,8 +240,22 @@ class PreprocessPreset(BaseModel):
                 needed.add(int(feature))
         return sorted(needed)
 
+    def for_timeframe(self, timeframe: Timeframe) -> "PreprocessPreset":
+        """공통 설정을 유지하고 대상 타임프레임의 fractal n만 선택한다."""
+        n = self.fractal_windows.get(timeframe.code, self.fractal.n)
+        return self.model_copy(
+            update={
+                "timeframe": timeframe,
+                "fractal": self.fractal.model_copy(update={"n": n}),
+            }
+        )
+
     @model_validator(mode="after")
     def _check_features(self) -> Self:
+        for code, n in self.fractal_windows.items():
+            Timeframe.from_code(code)
+            if n < 3:
+                raise ValueError(f"fractal_windows[{code!r}] must be >= 3")
         if any(window <= 0 for window in self.ma_windows):
             raise ValueError("moving average windows must be positive")
         ma_columns = {

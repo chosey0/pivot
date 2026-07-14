@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  type CacheStatus,
   type DatasetRow,
   type JobRow,
   type PresetRow,
@@ -9,8 +10,7 @@ import {
   type WatchItem,
 } from '../api/client'
 import { MiniSampleChart } from '../components/chart/MiniSampleChart'
-import { toTimeframeCode } from '../lib/timeframe'
-import { watchItemsForTimeframe } from '../lib/watchlist'
+import { datasetSourceKey, timeframeLabel, watchItemKey } from '../lib/watchlist'
 
 const DATASET_STATUS_TEXT: Record<string, string> = {
   building: '생성 중',
@@ -61,11 +61,12 @@ export function Datasets() {
   const [archivedPresets, setArchivedPresets] = useState<PresetRow[]>([])
   const [showArchivedPresets, setShowArchivedPresets] = useState(false)
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
+  const [targetStatuses, setTargetStatuses] = useState<Record<string, CacheStatus | null>>({})
   const [datasets, setDatasets] = useState<DatasetRow[]>([])
   const [presetsLoading, setPresetsLoading] = useState(true)
   const [datasetsLoading, setDatasetsLoading] = useState(true)
   const [selectedPresetId, setSelectedPresetId] = useState<number | null>(null)
-  const [selectedSymbols, setSelectedSymbols] = useState<string[]>([])
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([])
   const [datasetName, setDatasetName] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -79,6 +80,7 @@ export function Datasets() {
     datasetId: number
     name: string
     sources: DatasetRow['preset_snapshot']['sources']
+    targets: NonNullable<DatasetRow['preset_snapshot']['targets']>
   } | null>(null)
   const [labelFilter, setLabelFilter] = useState<number | null>(null)
   const [pageOffset, setPageOffset] = useState(0)
@@ -89,17 +91,6 @@ export function Datasets() {
   const [samplesLoading, setSamplesLoading] = useState(false)
   const [sampleDetailLoading, setSampleDetailLoading] = useState(false)
   const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? null
-  const selectedTimeframe = selectedPreset
-    ? toTimeframeCode(
-        selectedPreset.preset.timeframe.type,
-        selectedPreset.preset.timeframe.unit,
-      )
-    : null
-  const eligibleWatchlist = useMemo(
-    () =>
-      selectedTimeframe ? watchItemsForTimeframe(watchlist, selectedTimeframe) : [],
-    [selectedTimeframe, watchlist],
-  )
 
   const refreshPresets = useCallback(() => {
     setPresetsLoading(true)
@@ -144,18 +135,44 @@ export function Datasets() {
   }, [refreshDatasets, refreshPresets])
 
   useEffect(() => {
-    const eligibleSymbols = eligibleWatchlist.map((item) => item.symbol)
-    setSelectedSymbols((current) => {
-      const retained = current.filter((symbol) => eligibleSymbols.includes(symbol))
-      return retained.length > 0 ? retained : eligibleSymbols
-    })
-  }, [eligibleWatchlist])
+    let stale = false
+    if (watchlist.length === 0) {
+      setTargetStatuses({})
+      return
+    }
+    Promise.all(
+      watchlist.map(async (item) => {
+        const result = await api.ingestStatus([item.symbol], item.timeframe, {
+          region: item.region,
+          exchange: item.exchange,
+          ...(item.start ? { start: item.start } : {}),
+          ...(item.end ? { end: item.end } : {}),
+        })
+        return [watchItemKey(item), result[item.symbol] ?? null] as const
+      }),
+    )
+      .then((rows) => {
+        if (!stale) setTargetStatuses(Object.fromEntries(rows))
+      })
+      .catch((e: Error) => {
+        if (!stale) setError(e.message)
+      })
+    return () => {
+      stale = true
+    }
+  }, [watchlist])
 
-  function toggleSymbol(symbol: string) {
-    setSelectedSymbols((current) =>
-      current.includes(symbol)
-        ? current.filter((item) => item !== symbol)
-        : [...current, symbol],
+  useEffect(() => {
+    const keys = watchlist.map(watchItemKey)
+    setSelectedTargets((current) => {
+      const retained = current.filter((key) => keys.includes(key))
+      return retained.length > 0 ? retained : keys
+    })
+  }, [watchlist])
+
+  function toggleTarget(key: string) {
+    setSelectedTargets((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key],
     )
   }
 
@@ -201,27 +218,31 @@ export function Datasets() {
       }
     })
     source.addEventListener('symbol_started', (event) => {
-      const { symbol } = JSON.parse((event as MessageEvent).data) as { symbol: string }
-      setSymbolProgress((current) => ({ ...current, [symbol]: { status: 'running' } }))
+      const { symbol, target_key: targetKey = symbol } = JSON.parse(
+        (event as MessageEvent).data,
+      ) as { symbol: string; target_key?: string }
+      setSymbolProgress((current) => ({ ...current, [targetKey]: { status: 'running' } }))
     })
     source.addEventListener('symbol_succeeded', (event) => {
       const data = JSON.parse((event as MessageEvent).data) as {
         symbol: string
+        target_key?: string
         sample_count: number
       }
       setSymbolProgress((current) => ({
         ...current,
-        [data.symbol]: { status: 'succeeded', sampleCount: data.sample_count },
+        [data.target_key ?? data.symbol]: { status: 'succeeded', sampleCount: data.sample_count },
       }))
     })
     source.addEventListener('symbol_failed', (event) => {
       const data = JSON.parse((event as MessageEvent).data) as {
         symbol: string
+        target_key?: string
         error: string
       }
       setSymbolProgress((current) => ({
         ...current,
-        [data.symbol]: { status: 'failed', error: data.error },
+        [data.target_key ?? data.symbol]: { status: 'failed', error: data.error },
       }))
     })
     source.addEventListener('dataset_ready', () => {
@@ -251,7 +272,7 @@ export function Datasets() {
   }
 
   async function startBatch() {
-    if (!selectedPresetId || selectedSymbols.length === 0 || !datasetName.trim()) return
+    if (!selectedPresetId || selectedTargets.length === 0 || !datasetName.trim()) return
     setError(null)
     setMessage(null)
     setSymbolProgress({})
@@ -259,7 +280,7 @@ export function Datasets() {
       const { job_id } = await api.preprocessBatch(
         selectedPresetId,
         datasetName.trim(),
-        eligibleWatchlist.filter((item) => selectedSymbols.includes(item.symbol)),
+        sortedWatchlist.filter((item) => selectedTargets.includes(watchItemKey(item))),
       )
       const started = await api.job(job_id)
       setJob(started)
@@ -306,6 +327,7 @@ export function Datasets() {
       datasetId: dataset.id,
       name: dataset.name,
       sources: dataset.preset_snapshot.sources,
+      targets: dataset.preset_snapshot.targets ?? [],
     })
     setLabelFilter(null)
     setPageOffset(0)
@@ -442,14 +464,35 @@ export function Datasets() {
 
   const jobRunning = job !== null && (job.status === 'queued' || job.status === 'running')
   const sampleRate = selectedSample ? sampleChangeRate(selectedSample) : null
+  const selectedSampleSource = selectedSample
+    ? browse?.targets.find(
+        (target) => datasetSourceKey(target) === selectedSample.source_key,
+      ) ?? browse?.sources?.[selectedSample.symbol]
+    : undefined
   const visiblePresets = showArchivedPresets ? archivedPresets : presets
+  const sortedWatchlist = useMemo(
+    () =>
+      [...watchlist].sort((left, right) => {
+        const nameOrder = (left.name || left.symbol).localeCompare(
+          right.name || right.symbol,
+          'ko',
+        )
+        if (nameOrder !== 0) return nameOrder
+        return watchItemKey(left).localeCompare(watchItemKey(right), 'ko')
+      }),
+    [watchlist],
+  )
   const totalPages = page ? Math.max(Math.ceil(page.total / PAGE_SIZE), 1) : 1
   const currentPage = Math.floor(pageOffset / PAGE_SIZE) + 1
+  const targetBySourceKey = useMemo(
+    () => new Map(watchlist.map((item) => [datasetSourceKey(item), item])),
+    [watchlist],
+  )
 
   return (
     <>
       {!browse && (
-        <aside className="side-panel lab-symbols">
+        <aside className="side-panel lab-symbols dataset-presets">
           <section className="control-section grow">
           <div className="section-title-row">
             <h2>{showArchivedPresets ? '보관된 프리셋' : '프리셋'}</h2>
@@ -483,7 +526,11 @@ export function Datasets() {
             </p>
           ) : (
             <div className="watch-table">
-              {visiblePresets.map((preset) => (
+              {visiblePresets.map((preset) => {
+                const referencedDataset = datasets.find(
+                  (dataset) => dataset.preset_id === preset.id,
+                )
+                return (
                 <div
                   className={
                     !showArchivedPresets && preset.id === selectedPresetId
@@ -502,10 +549,11 @@ export function Datasets() {
                       {preset.name} <em className="preset-version">v{preset.version}</em>
                     </strong>
                     <span>
-                      {preset.preset.timeframe.type === 'day'
-                        ? 'day'
-                        : `${preset.preset.timeframe.type}${preset.preset.timeframe.unit}`}
-                      {' · '}n={preset.preset.fractal.n}
+                      {Object.entries(preset.preset.fractal_windows ?? {}).length > 0
+                        ? Object.entries(preset.preset.fractal_windows)
+                            .map(([code, n]) => `${code} n=${n}`)
+                            .join(' · ')
+                        : `기본 n=${preset.preset.fractal.n}`}
                       {' · '}
                       {showArchivedPresets && preset.archived_at
                         ? `보관 ${formatDate(preset.archived_at)}`
@@ -525,15 +573,21 @@ export function Datasets() {
                     )}
                     <button
                       className="ghost danger"
+                      disabled={referencedDataset !== undefined}
                       onClick={() => removePreset(preset)}
-                      title="참조 데이터셋이 없는 프리셋만 영구 삭제할 수 있습니다"
+                      title={
+                        referencedDataset
+                          ? `데이터셋 '${referencedDataset.name}'에서 참조 중입니다`
+                          : '이 프리셋 버전을 영구 삭제합니다'
+                      }
                       type="button"
                     >
-                      삭제
+                      {referencedDataset ? '데이터셋 참조' : '삭제'}
                     </button>
                   </span>
                 </div>
-              ))}
+                )
+              })}
             </div>
           )}
           {!showArchivedPresets && selectedPreset && (
@@ -569,27 +623,39 @@ export function Datasets() {
               />
             </label>
             <div className="field">
-              대상 종목 ({selectedSymbols.length}/{eligibleWatchlist.length})
+              대상 데이터 ({selectedTargets.length}/{watchlist.length})
               <div className="batch-symbols">
-                {eligibleWatchlist.length === 0 ? (
+                {watchlist.length === 0 ? (
                   <p className="empty">
-                    종목 & 데이터 탭에서 {selectedTimeframe ?? '해당 타임프레임'} 데이터를 먼저 추가하세요.
+                    종목 & 데이터 탭에서 수집 항목을 먼저 추가하세요.
                   </p>
                 ) : (
-                  eligibleWatchlist.map((item) => (
+                  sortedWatchlist.map((item) => {
+                    const key = watchItemKey(item)
+                    const status = targetStatuses[key]
+                    const statusLoaded = Object.hasOwn(targetStatuses, key)
+                    return (
                     <label
                       className="inline-check"
-                      key={`${item.region}:${item.exchange}:${item.symbol}`}
+                      key={key}
                     >
                       <input
-                        checked={selectedSymbols.includes(item.symbol)}
-                        onChange={() => toggleSymbol(item.symbol)}
+                        checked={selectedTargets.includes(key)}
+                        onChange={() => toggleTarget(key)}
                         type="checkbox"
                       />
-                      {item.name || item.symbol}
-                      <span className="muted-text">{item.symbol}</span>
+                      {item.name || item.symbol} · {timeframeLabel(item.timeframe)}
+                      <span className="muted-text">
+                        {item.symbol} ·{' '}
+                        {status
+                          ? `${formatDate(status.first)} ~ ${formatDate(status.last)}`
+                          : statusLoaded
+                            ? '수집 데이터 없음'
+                            : '범위 확인 중'}
+                      </span>
                     </label>
-                  ))
+                    )
+                  })
                 )}
               </div>
             </div>
@@ -598,7 +664,7 @@ export function Datasets() {
               disabled={
                 jobRunning ||
                 !selectedPresetId ||
-                selectedSymbols.length === 0 ||
+                selectedTargets.length === 0 ||
                 datasetName.trim() === ''
               }
               onClick={startBatch}
@@ -607,7 +673,7 @@ export function Datasets() {
               {jobRunning ? '실행 중...' : '일괄 전처리 시작'}
             </button>
             <p className="hint">
-              선택한 프리셋을 로컬 캔들 캐시에 적용해 Supabase에 데이터셋을 생성합니다.
+              선택한 공통 프리셋과 타임프레임별 fractal n을 각 수집 범위에 적용합니다.
               전체 샘플을 클래스별로 train/validation/test 60/20/20으로 자동 배정합니다.
             </p>
           </div>
@@ -634,19 +700,25 @@ export function Datasets() {
               />
             </div>
             <span className="hint">
-              {job.completed_items}/{job.total_items} 종목 처리
+              {job.completed_items}/{job.total_items} 수집 항목 처리
               {job.error ? ` · ${job.error}` : ''}
             </span>
             <div className="symbol-progress">
-              {Object.entries(symbolProgress).map(([symbol, progress]) => (
-                <span className={`symbol-chip ${progress.status}`} key={symbol}>
-                  {symbol}
+              {Object.entries(symbolProgress).map(([sourceKey, progress]) => {
+                const target = targetBySourceKey.get(sourceKey)
+                const label = target
+                  ? `${target.name || target.symbol} ${timeframeLabel(target.timeframe)}`
+                  : sourceKey
+                return (
+                <span className={`symbol-chip ${progress.status}`} key={sourceKey}>
+                  {label}
                   {progress.status === 'running' && ' ⋯'}
                   {progress.status === 'succeeded' &&
                     ` ✓ ${progress.sampleCount?.toLocaleString() ?? ''}`}
                   {progress.status === 'failed' && ` ✗ ${progress.error ?? ''}`}
                 </span>
-              ))}
+                )
+              })}
             </div>
           </section>
             )}
@@ -830,7 +902,10 @@ export function Datasets() {
                           {item.label} {LABEL_TEXT[item.label]}
                         </span>
                         <strong>#{item.index}</strong>
-                        <span>{item.symbol}</span>
+                        <span>
+                          {item.symbol}
+                          {item.timeframe ? ` · ${item.timeframe}` : ''}
+                        </span>
                         <span className="muted-text">
                           {item.length}봉 · {item.split ?? '-'}
                         </span>
@@ -845,7 +920,10 @@ export function Datasets() {
                     <>
                       <div className="sample-meta">
                         <div className="sample-meta-primary">
-                          <strong>#{selectedSample.index} · {selectedSample.symbol}</strong>
+                          <strong>
+                            #{selectedSample.index} · {selectedSample.symbol}
+                            {selectedSample.timeframe ? ` · ${selectedSample.timeframe}` : ''}
+                          </strong>
                           <span className={`sample-label label-${selectedSample.label}`}>
                             {selectedSample.label} {LABEL_TEXT[selectedSample.label]}
                           </span>
@@ -875,7 +953,7 @@ export function Datasets() {
                         columns={selectedSample.feature_columns}
                         features={selectedSample.features}
                         priceDecimals={
-                          browse.sources?.[selectedSample.symbol]?.region === 'overseas' ? 2 : 0
+                          selectedSampleSource?.region === 'overseas' ? 2 : 0
                         }
                       />
                       <div className="sample-features">

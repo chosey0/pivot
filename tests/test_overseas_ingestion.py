@@ -18,7 +18,7 @@ from pivot.ingestion.fetch import (
     filter_overseas_day_market,
     update_cache,
 )
-from pivot.ingestion.cache import cache_path
+from pivot.ingestion.cache import cache_path, load_cache, replace_cache
 from server.routers.ingest import IngestRequest
 from server.serialize import US_EASTERN, market_time
 from server.routers.watchlist import WatchItem
@@ -145,7 +145,6 @@ def test_overseas_day_market_is_removed_from_intraday_frames():
 
 def test_overseas_cache_purges_existing_day_market_bars(tmp_path, monkeypatch):
     path = cache_path(tmp_path, "kiwoom-overseas-nd", "min1", "AAPL")
-    path.parent.mkdir(parents=True)
     index = pd.DatetimeIndex(
         [
             "2026-07-14 03:59:00",
@@ -155,7 +154,9 @@ def test_overseas_cache_purges_existing_day_market_bars(tmp_path, monkeypatch):
         ],
         name="Time",
     )
-    pd.DataFrame(
+    replace_cache(
+        path,
+        pd.DataFrame(
         {
             "Open": 100,
             "High": 101,
@@ -165,7 +166,8 @@ def test_overseas_cache_purges_existing_day_market_bars(tmp_path, monkeypatch):
             "Amount": 20100,
         },
         index=index,
-    ).to_parquet(path)
+        ),
+    )
 
     async def fake_fetch_bars(*args, **kwargs):
         return []
@@ -183,13 +185,14 @@ def test_overseas_cache_purges_existing_day_market_bars(tmp_path, monkeypatch):
     )
 
     assert list(frame.index) == list(index[1:3])
-    assert list(pd.read_parquet(path).index) == list(index[1:3])
+    assert list(load_cache(path).index) == list(index[1:3])
 
 
 def test_overseas_daily_refresh_backfills_a_partial_cache(tmp_path, monkeypatch):
     path = cache_path(tmp_path, "kiwoom-overseas-nd", "day", "AAPL")
-    path.parent.mkdir(parents=True)
-    pd.DataFrame(
+    replace_cache(
+        path,
+        pd.DataFrame(
         {
             "Open": [200.0],
             "High": [201.0],
@@ -199,7 +202,8 @@ def test_overseas_daily_refresh_backfills_a_partial_cache(tmp_path, monkeypatch)
             "Amount": [20050.0],
         },
         index=pd.DatetimeIndex(["2026-07-01"], name="Time"),
-    ).to_parquet(path)
+        ),
+    )
     calls = []
 
     async def fake_fetch_bars(*args, **kwargs):

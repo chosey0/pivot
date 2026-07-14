@@ -176,6 +176,7 @@ export interface PreviewResponse extends ChartResponse {
 export interface PreviewParams {
   timeframe: { type: 'day' | 'minute' | 'tick'; unit: number }
   fractal: { n: number; tie_policy: FractalTiePolicy }
+  fractal_windows: Partial<Record<TimeframeCode, number>>
   ma_windows: number[]
   features: string[]
   labeling: {
@@ -255,6 +256,14 @@ export interface DatasetRow {
     preset_version?: number
     split?: { method: string; seed: number; ratios: Record<string, number> }
     sources?: Record<string, { region: InstrumentRegion; exchange: string }>
+    targets?: Array<{
+      symbol: string
+      timeframe: TimeframeCode
+      region: InstrumentRegion
+      exchange: string
+      start: string | null
+      end: string | null
+    }>
   }
 }
 
@@ -286,6 +295,8 @@ export interface BatchStartResponse {
 export interface SampleListItem {
   index: number
   symbol: string
+  source_key?: string | null
+  timeframe?: string | null
   split: 'train' | 'validation' | 'test' | null
   label: 0 | 1 | 2
   kind: 'low' | 'high'
@@ -379,6 +390,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(item),
     }),
+  updateWatchItem: (original: WatchItem, replacement: WatchItem) =>
+    fetchJson<WatchItem[]>('/api/watchlist', {
+      method: 'PUT',
+      body: JSON.stringify({ original, replacement }),
+    }),
   removeWatchItem: (item: WatchItem) => {
     const params = new URLSearchParams({
       timeframe: item.timeframe,
@@ -442,6 +458,8 @@ export const api = {
         params,
         region: item.region,
         exchange: item.exchange,
+        start: item.start,
+        end: item.end,
       }),
       signal,
     }),
@@ -469,13 +487,15 @@ export const api = {
       body: JSON.stringify({
         preset_id: presetId,
         dataset_name: datasetName,
-        symbols: items.map((item) => item.symbol),
-        sources: Object.fromEntries(
-          items.map((item) => [
-            item.symbol,
-            { region: item.region, exchange: item.exchange },
-          ]),
-        ),
+        symbols: [],
+        targets: items.map((item) => ({
+          symbol: item.symbol,
+          timeframe: item.timeframe,
+          region: item.region,
+          exchange: item.exchange,
+          start: item.start,
+          end: item.end,
+        })),
       }),
     }),
   job: (jobId: number) => fetchJson<JobRow>(`/api/jobs/${jobId}`),

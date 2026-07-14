@@ -62,7 +62,7 @@ pivot/                        # 저장소 루트
 │   └── src/                  #   App.tsx는 탭 셸만. api/, lib/(format·timeframe 공용 유틸),
 │                             #   components/{chart,indicators}/, pages/{Watchlist,Lab,Datasets,Diagnostics,...}
 ├── data/                     # git 미추적 — 로컬 운영 데이터/임시 캐시, docs/04 §4
-│   ├── raw/                  #   수집 캐시: {broker}/{timeframe}/{symbol}.parquet
+│   ├── raw/                  #   수집 캐시: kiwoom/{market}/{symbol}/{timeframe}/{partition}/part.parquet
 │   ├── meta/                 #   watchlist.json, live_subscriptions.json
 │   └── tmp/                  #   Storage 업로드/다운로드 중 재생성 가능한 작업 캐시
 ├── notebooks/                # 읽기 전용 방법론 연구 — 전처리/스케일링/튜닝

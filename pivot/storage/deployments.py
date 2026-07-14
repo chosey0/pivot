@@ -1,5 +1,7 @@
 """Single-active live model deployment repository."""
 
+import datetime as dt
+
 from pivot.storage.supabase import PostgrestClient
 
 
@@ -24,3 +26,14 @@ class DeploymentRepository:
         if len(rows) != 1:
             raise RuntimeError("activation did not return one live deployment")
         return rows[0]
+
+    def deactivate(self) -> dict | None:
+        rows = self.db.update(
+            "live_deployments",
+            {
+                "active": False,
+                "deactivated_at": dt.datetime.now(dt.UTC).isoformat(),
+            },
+            filters={"active": "eq.true"},
+        )
+        return rows[0] if rows else None

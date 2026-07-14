@@ -3,6 +3,7 @@
 run_preprocess를 호출한다 (단일 파이프라인 원칙)."""
 
 import functools
+import datetime
 import re
 from typing import Literal
 
@@ -10,7 +11,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from pivot.config import PreprocessPreset
+from pivot.config import PreprocessPreset, Timeframe
 from pivot.dataset.batch import (
     DEFAULT_SPLIT_SEED,
     build_snapshot,
@@ -19,12 +20,23 @@ from pivot.dataset.batch import (
 )
 from pivot.dataset.build import run_preprocess
 from pivot.ingestion.cache import cache_path, load_cache
-from pivot.ingestion.fetch import BROKER, cache_broker, filter_overseas_day_market
+from pivot.ingestion.fetch import (
+    BROKER,
+    DateBoundary,
+    cache_broker,
+    filter_overseas_day_market,
+)
 from pivot.storage.presets import PresetNotFoundError, validate_preset
 from pivot.symbols.master import DOMESTIC_SYMBOL_RE
 from server.deps import DATA_ROOT, dataset_repo, job_repo, object_storage, preset_repo
 from server.jobs import start_background
-from server.serialize import US_EASTERN, chart_payload, display_frame, time_value
+from server.serialize import (
+    US_EASTERN,
+    chart_payload,
+    display_frame,
+    market_time,
+    time_value,
+)
 
 router = APIRouter(prefix="/api/preprocess", tags=["preprocess"])
 
@@ -34,6 +46,8 @@ class PreviewRequest(BaseModel):
     params: PreprocessPreset
     region: Literal["domestic", "overseas"] = "domestic"
     exchange: str = ""
+    start: DateBoundary | None = None
+    end: DateBoundary | None = None
 
     @model_validator(mode="after")
     def validate_instrument(self):
@@ -54,11 +68,30 @@ class InstrumentSource(BaseModel):
         return self
 
 
+class BatchTarget(BaseModel):
+    symbol: str
+    timeframe: str
+    region: Literal["domestic", "overseas"] = "domestic"
+    exchange: str = ""
+    start: DateBoundary | None = None
+    end: DateBoundary | None = None
+
+    @model_validator(mode="after")
+    def validate_target(self):
+        self.symbol = _validated_symbol(self.symbol, self.region)
+        self.exchange = self.exchange.strip().upper()
+        cache_broker(self.region, self.exchange)
+        Timeframe.from_code(self.timeframe)
+        _market_bounds(self.start, self.end, Timeframe.from_code(self.timeframe), self.region)
+        return self
+
+
 class BatchRequest(BaseModel):
     preset_id: int
     dataset_name: str
     symbols: list[str]
     sources: dict[str, InstrumentSource] = Field(default_factory=dict)
+    targets: list[BatchTarget] = Field(default_factory=list)
     split_seed: int = DEFAULT_SPLIT_SEED
 
     @model_validator(mode="after")
@@ -73,7 +106,12 @@ class BatchRequest(BaseModel):
             )
             for symbol in self.symbols
         ]
+        if len(self.symbols) != len(set(self.symbols)):
+            raise ValueError("duplicate batch targets")
         self.sources = normalized_sources
+        keys = [_target_identity(target) for target in self.targets]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate batch targets")
         return self
 
 
@@ -89,10 +127,68 @@ def _validated_symbol(symbol: str, region: str) -> str:
     return normalized
 
 
+def _datetime_boundary(
+    value: DateBoundary | None, *, end_of_day: bool
+) -> datetime.datetime | None:
+    if value is None or isinstance(value, datetime.datetime):
+        return value
+    return datetime.datetime.combine(
+        value, datetime.time.max if end_of_day else datetime.time.min
+    )
+
+
+def _market_bounds(
+    start: DateBoundary | None,
+    end: DateBoundary | None,
+    timeframe: Timeframe,
+    region: str,
+) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    source_timezone = US_EASTERN if region == "overseas" else None
+    range_start = market_time(
+        None
+        if start is None
+        else pd.Timestamp(_datetime_boundary(start, end_of_day=False)),
+        timeframe,
+        source_timezone,
+    )
+    range_end = market_time(
+        None if end is None else pd.Timestamp(_datetime_boundary(end, end_of_day=True)),
+        timeframe,
+        source_timezone,
+    )
+    if range_start is not None and range_end is not None and range_start > range_end:
+        raise ValueError("start must be on or before end")
+    return range_start, range_end
+
+
+def _target_identity(target: BatchTarget) -> tuple:
+    return (
+        target.region,
+        target.exchange,
+        target.symbol,
+        target.timeframe,
+        target.start,
+        target.end,
+    )
+
+
+def _batch_target(target: BatchTarget) -> dict:
+    timeframe = Timeframe.from_code(target.timeframe)
+    cache_start, cache_end = _market_bounds(
+        target.start, target.end, timeframe, target.region
+    )
+    return {
+        **target.model_dump(mode="json"),
+        "broker": cache_broker(target.region, target.exchange),
+        "cache_start": None if cache_start is None else cache_start.isoformat(),
+        "cache_end": None if cache_end is None else cache_end.isoformat(),
+    }
+
+
 @router.post("/preview")
 def preview(request: PreviewRequest) -> dict:
-    preset = request.params
-    tf = preset.timeframe
+    tf = request.params.timeframe
+    preset = request.params.for_timeframe(tf)
     broker = cache_broker(request.region, request.exchange)
     df = load_cache(cache_path(DATA_ROOT, broker, tf.code, request.symbol))
     if df is None or df.empty:
@@ -100,8 +196,18 @@ def preview(request: PreviewRequest) -> dict:
             404, f"no cached data for {request.symbol} ({tf.code}) — run ingest first"
         )
     df = filter_overseas_day_market(df, tf, request.region)
+    try:
+        range_start, range_end = _market_bounds(
+            request.start, request.end, tf, request.region
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if range_start is not None:
+        df = df.loc[df.index >= range_start]
+    if range_end is not None:
+        df = df.loc[df.index <= range_end]
     if df.empty:
-        raise HTTPException(404, "no candles outside the overseas day market")
+        raise HTTPException(404, "no candles in requested preprocess range")
 
     result = run_preprocess(df, preset)
     frame = result.frame
@@ -163,11 +269,8 @@ def preview(request: PreviewRequest) -> dict:
 def start_batch(request: BatchRequest) -> dict:
     """durable batch job을 만들고 백그라운드 스레드에서 실행한다."""
     name = request.dataset_name.strip()
-    symbols = list(dict.fromkeys(symbol.strip() for symbol in request.symbols if symbol.strip()))
     if not name:
         raise HTTPException(422, "dataset_name is required")
-    if not symbols:
-        raise HTTPException(422, "symbols must not be empty")
 
     presets = preset_repo()
     try:
@@ -183,13 +286,31 @@ def start_batch(request: BatchRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
+    requested_targets = request.targets or [
+        BatchTarget(
+            symbol=symbol,
+            timeframe=preset.timeframe.code,
+            region=request.sources.get(symbol, InstrumentSource()).region,
+            exchange=request.sources.get(symbol, InstrumentSource()).exchange,
+        )
+        for symbol in request.symbols
+    ]
+    if not requested_targets:
+        raise HTTPException(422, "targets must not be empty")
+    targets = [_batch_target(target) for target in requested_targets]
+    symbols = list(dict.fromkeys(target["symbol"] for target in targets))
+    timeframes = list(dict.fromkeys(target["timeframe"] for target in targets))
+
     datasets = dataset_repo()
     if any(row["name"] == name for row in datasets.list()):
         raise HTTPException(409, f"dataset name {name!r} already exists")
 
     sources = {
-        symbol: request.sources.get(symbol, InstrumentSource()).model_dump()
-        for symbol in symbols
+        target["symbol"]: {
+            "region": target["region"],
+            "exchange": target["exchange"],
+        }
+        for target in reversed(targets)
     }
     try:
         dataset = datasets.create(
@@ -200,8 +321,15 @@ def start_batch(request: BatchRequest) -> dict:
                 split_config(request.split_seed),
                 preset=preset,
                 sources=sources,
+                targets=[
+                    {
+                        key: target[key]
+                        for key in ("symbol", "timeframe", "region", "exchange", "start", "end")
+                    }
+                    for target in targets
+                ],
             ),
-            timeframe=preset.timeframe.code,
+            timeframe=timeframes[0] if len(timeframes) == 1 else "mixed",
             feature_columns=list(preset.features),
             symbols=symbols,
             splits={},
@@ -219,8 +347,9 @@ def start_batch(request: BatchRequest) -> dict:
                 "preset_id": preset_row["id"],
                 "symbols": symbols,
                 "sources": sources,
+                "targets": targets,
             },
-            total_items=len(symbols),
+            total_items=len(targets),
         )
     except Exception as exc:
         try:
@@ -242,12 +371,9 @@ def start_batch(request: BatchRequest) -> dict:
             dataset_id=dataset["id"],
             preset=preset,
             symbols=symbols,
+            targets=targets,
             data_root=DATA_ROOT,
             broker=BROKER,
-            brokers={
-                symbol: cache_broker(source["region"], source["exchange"])
-                for symbol, source in sources.items()
-            },
             split_seed=request.split_seed,
         )
     )

@@ -351,8 +351,31 @@ class LiveService:
                 deployment_id=deployment["id"],
                 device=torch.device("cpu"),
             )
-            await self._install_engine(engine, self._public_deployment(deployment, run))
+            await self._install_engine(
+                engine,
+                self._public_deployment(
+                    deployment, run, timeframe=engine.preset.timeframe.code
+                ),
+            )
             await self._reconcile_all()
+            await self._broadcast_snapshot()
+            return self.state()
+
+    async def deactivate_model(self) -> dict:
+        async with self._activation_lock:
+            deployments, _, _ = self._repositories()
+            await asyncio.to_thread(deployments.deactivate)
+            async with self._lock:
+                self._engine = None
+                self._deployment = None
+                self._aggregators.clear()
+                observed_at = dt.datetime.now(dt.UTC)
+                for symbol in self._desired:
+                    self._reset_aggregators(symbol, observed_at)
+                self._predictions.clear()
+                self._closed_overlay.clear()
+                self._latest_candles.clear()
+                self._sync_subscription_state()
             await self._broadcast_snapshot()
             return self.state()
 
@@ -718,7 +741,12 @@ class LiveService:
                 deployment_id=deployment["id"],
                 device=torch.device("cpu"),
             )
-            await self._install_engine(engine, self._public_deployment(deployment, run))
+            await self._install_engine(
+                engine,
+                self._public_deployment(
+                    deployment, run, timeframe=engine.preset.timeframe.code
+                ),
+            )
             await self._reconcile_all()
         except asyncio.CancelledError:
             raise
@@ -1263,7 +1291,7 @@ class LiveService:
         }
 
     @staticmethod
-    def _public_deployment(deployment: dict, run: dict) -> dict:
+    def _public_deployment(deployment: dict, run: dict, *, timeframe: str) -> dict:
         dataset = run.get("dataset_snapshot", {}).get("dataset", {})
         return {
             "id": deployment["id"],
@@ -1272,7 +1300,7 @@ class LiveService:
             "run_name": run["name"],
             "dataset_id": run["dataset_id"],
             "dataset_name": run.get("dataset_name", ""),
-            "timeframe": dataset.get("timeframe"),
+            "timeframe": timeframe,
             "feature_columns": dataset.get("feature_columns", []),
             "model": run.get("config", {}).get("model"),
             "pairing_rule": (

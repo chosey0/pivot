@@ -13,9 +13,19 @@ import {
   type RunSummary,
 } from '../../api/training'
 import { PredictionChart } from '../../components/training/PredictionChart'
+import { datasetSourceKey, timeframeLabel } from '../../lib/watchlist'
 
 const LABEL_TEXT: Record<number, string> = { 0: '저점', 1: '고점', 2: '무시' }
 const MAX_PREDICTION_CHART_BARS = 20_000
+
+interface DatasetTarget {
+  symbol: string
+  timeframe: TimeframeCode
+  region: 'domestic' | 'overseas'
+  exchange: string
+  start: string | null
+  end: string | null
+}
 
 function formatTime(value: string | number) {
   if (typeof value === 'number') {
@@ -46,9 +56,11 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
   const [sources, setSources] = useState<
     Record<string, { region: 'domestic' | 'overseas'; exchange: string }>
   >({})
+  const [targets, setTargets] = useState<DatasetTarget[]>([])
   const [symbolsError, setSymbolsError] = useState<string | null>(null)
   const [split, setSplit] = useState<EvaluationSplit>('validation')
   const [symbol, setSymbol] = useState<string | null>(null)
+  const [selectedTargetKey, setSelectedTargetKey] = useState('')
   const [evaluation, setEvaluation] = useState<PredictionEvaluation | null>(null)
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(false)
@@ -64,6 +76,7 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
         if (stale) return
         setSymbols(detail.symbols)
         setSources(detail.preset_snapshot.sources ?? {})
+        setTargets(detail.preset_snapshot.targets ?? [])
         setSymbolsError(null)
       })
       .catch((e: Error) => {
@@ -87,17 +100,39 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
     )
   }, [splitSymbols])
 
+  const symbolTargets = useMemo(
+    () => targets.filter((target) => target.symbol === symbol),
+    [symbol, targets],
+  )
+  const selectedTarget =
+    symbolTargets.find((target) => datasetSourceKey(target) === selectedTargetKey) ??
+    symbolTargets[0] ??
+    null
+
+  useEffect(() => {
+    setSelectedTargetKey(selectedTarget ? datasetSourceKey(selectedTarget) : '')
+  }, [selectedTarget])
+
   async function evaluate() {
     if (!symbol) return
     setLoading(true)
     setError(null)
     setSelected(null)
     try {
-      const result = await trainingApi.evaluate(run.id, symbol, split)
-      const source = sources[symbol]
+      const result = await trainingApi.evaluate(
+        run.id,
+        symbol,
+        split,
+        selectedTarget
+          ? { timeframe: selectedTarget.timeframe, source_key: datasetSourceKey(selectedTarget) }
+          : undefined,
+      )
+      const source = selectedTarget ?? sources[symbol]
       const chart = await api.chart(symbol, result.timeframe as TimeframeCode, [], {
         limit: MAX_PREDICTION_CHART_BARS,
         before: chartBefore(result.points, result.timeframe),
+        start: selectedTarget?.start ?? undefined,
+        end: selectedTarget?.end ?? undefined,
         region: source?.region ?? 'domestic',
         exchange: source?.exchange ?? '',
       })
@@ -127,6 +162,25 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
             <option value="test">test</option>
           </select>
         </label>
+        {symbolTargets.length > 1 ? (
+          <label className="inline-field">
+            데이터
+            <select
+              onChange={(event) => setSelectedTargetKey(event.target.value)}
+              value={selectedTargetKey}
+            >
+              {symbolTargets.map((target) => {
+                const key = datasetSourceKey(target)
+                return (
+                  <option key={key} value={key}>
+                    {timeframeLabel(target.timeframe)} · {target.start ?? '처음'} ~{' '}
+                    {target.end ?? '최신'}
+                  </option>
+                )
+              })}
+            </select>
+          </label>
+        ) : null}
         <label className="inline-field">
           종목
           <select
@@ -201,7 +255,7 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
                 candles={candles}
                 onSelect={setSelected}
                 points={visiblePoints}
-                priceDecimals={sources[symbol ?? '']?.region === 'overseas' ? 2 : 0}
+                priceDecimals={(selectedTarget ?? sources[symbol ?? ''])?.region === 'overseas' ? 2 : 0}
                 selectedIndex={selected?.sample_index ?? null}
               />
             </div>

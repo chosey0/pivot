@@ -35,6 +35,8 @@ def evaluate_model(model, loader, device: torch.device) -> dict:
                     "symbol": batch["symbols"][index],
                     "sample_index": batch["sample_indices"][index],
                     "time": batch["end_times"][index],
+                    "timeframe": batch["timeframes"][index],
+                    "source_key": batch["source_keys"][index],
                     "actual_label": expected,
                     "predicted_label": guess,
                     "probabilities": [

@@ -3,7 +3,13 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from pivot.ingestion.cache import cache_path, cache_status, load_cache_window
+from pivot.ingestion.cache import (
+    cache_path,
+    cache_status,
+    load_cache_window,
+    merge_cache,
+    replace_cache,
+)
 from server.routers import chart as chart_api
 from server.routers import ingest as ingest_api
 
@@ -21,12 +27,12 @@ def make_cache(path):
         },
         index=index,
     )
-    df.to_parquet(path)
+    replace_cache(path, df)
     return df
 
 
 def test_load_cache_window_limits_to_recent_rows_with_lookback(tmp_path):
-    path = tmp_path / "cache.parquet"
+    path = tmp_path / "005930" / "min1"
     source = make_cache(path)
 
     window, has_more = load_cache_window(path, limit=3, lookback=2, columns=["Close"])
@@ -37,7 +43,7 @@ def test_load_cache_window_limits_to_recent_rows_with_lookback(tmp_path):
 
 
 def test_load_cache_window_before_is_exclusive(tmp_path):
-    path = tmp_path / "cache.parquet"
+    path = tmp_path / "005930" / "min1"
     source = make_cache(path)
     before = source.index[7]
 
@@ -49,7 +55,7 @@ def test_load_cache_window_before_is_exclusive(tmp_path):
 
 
 def test_load_cache_window_reports_no_more_when_window_reaches_start(tmp_path):
-    path = tmp_path / "cache.parquet"
+    path = tmp_path / "005930" / "min1"
     source = make_cache(path)
 
     window, has_more = load_cache_window(path, limit=20, columns=["Close"])
@@ -59,7 +65,7 @@ def test_load_cache_window_reports_no_more_when_window_reaches_start(tmp_path):
 
 
 def test_cache_status_can_describe_one_collection_range(tmp_path):
-    path = tmp_path / "cache.parquet"
+    path = tmp_path / "005930" / "min1"
     source = make_cache(path)
 
     status = cache_status(path, start=source.index[2], end=source.index[5])
@@ -72,7 +78,6 @@ def test_cache_status_can_describe_one_collection_range(tmp_path):
 
 def test_ingest_status_accepts_collection_range_query(tmp_path, monkeypatch):
     path = cache_path(tmp_path, "kiwoom", "min1", "005930")
-    path.parent.mkdir(parents=True)
     make_cache(path)
     monkeypatch.setattr(ingest_api, "DATA_ROOT", tmp_path)
     app = FastAPI()
@@ -94,9 +99,10 @@ def test_ingest_status_accepts_collection_range_query(tmp_path, monkeypatch):
 
 def test_chart_range_hides_ma_warmup_bars(tmp_path, monkeypatch):
     path = cache_path(tmp_path, "kiwoom", "min1", "005930")
-    path.parent.mkdir(parents=True)
     index = pd.date_range("2026-07-14 07:00", periods=126, freq="min", name="Time")
-    pd.DataFrame(
+    replace_cache(
+        path,
+        pd.DataFrame(
         {
             "Open": range(126),
             "High": range(1, 127),
@@ -105,7 +111,8 @@ def test_chart_range_hides_ma_warmup_bars(tmp_path, monkeypatch):
             "Volume": 100,
         },
         index=index,
-    ).to_parquet(path)
+        ),
+    )
     monkeypatch.setattr(chart_api, "DATA_ROOT", tmp_path)
 
     response = chart_api.chart(
@@ -129,7 +136,6 @@ def test_chart_range_hides_ma_warmup_bars(tmp_path, monkeypatch):
 
 def test_chart_range_without_candles_returns_404(tmp_path, monkeypatch):
     path = cache_path(tmp_path, "kiwoom", "min1", "005930")
-    path.parent.mkdir(parents=True)
     make_cache(path)
     monkeypatch.setattr(chart_api, "DATA_ROOT", tmp_path)
 
@@ -148,3 +154,35 @@ def test_chart_range_without_candles_returns_404(tmp_path, monkeypatch):
 
     assert raised.value.status_code == 404
     assert raised.value.detail == "no candles in requested chart range"
+
+
+def test_cache_path_separates_market_exchange_symbol_and_timeframe(tmp_path):
+    assert cache_path(tmp_path, "kiwoom", "min1", "005930") == (
+        tmp_path / "raw" / "kiwoom" / "domestic" / "005930" / "min1"
+    )
+    assert cache_path(tmp_path, "kiwoom-overseas-nd", "day", "AAPL") == (
+        tmp_path / "raw" / "kiwoom" / "overseas" / "ND" / "AAPL" / "day"
+    )
+
+
+def test_cache_partitions_intraday_by_date_and_day_by_year(tmp_path):
+    minute_path = cache_path(tmp_path, "kiwoom", "min1", "005930")
+    minute = pd.DataFrame(
+        {"Close": [1.0, 2.0]},
+        index=pd.DatetimeIndex(
+            ["2025-12-31 15:30", "2026-01-02 09:00"], name="Time"
+        ),
+    )
+    merge_cache(minute_path, minute)
+
+    day_path = cache_path(tmp_path, "kiwoom", "day", "005930")
+    day = pd.DataFrame(
+        {"Close": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2025-12-31", "2026-01-02"], name="Time"),
+    )
+    merge_cache(day_path, day)
+
+    assert (minute_path / "date=2025-12-31" / "part.parquet").exists()
+    assert (minute_path / "date=2026-01-02" / "part.parquet").exists()
+    assert (day_path / "year=2025" / "part.parquet").exists()
+    assert (day_path / "year=2026" / "part.parquet").exists()

@@ -2,7 +2,15 @@
 
 from pathlib import Path
 
-from pivot.config import CleaningConfig, FractalConfig, LabelingConfig, PreprocessPreset
+import pandas as pd
+
+from pivot.config import (
+    CleaningConfig,
+    FractalConfig,
+    LabelingConfig,
+    PreprocessPreset,
+    Timeframe,
+)
 from pivot.dataset.batch import (
     assign_sample_splits,
     assign_splits,
@@ -12,7 +20,7 @@ from pivot.dataset.batch import (
 )
 from pivot.dataset.build import run_preprocess
 from pivot.dataset.shards import build_shards, object_path, read_shard
-from pivot.ingestion.cache import cache_path, load_cache
+from pivot.ingestion.cache import cache_path, load_cache, replace_cache
 from pivot.storage.datasets import DatasetRepository
 from pivot.storage.jobs import JobRepository
 from pivot.storage.supabase import DATASET_BUCKET
@@ -33,8 +41,7 @@ def make_preset(name: str = "배치 테스트") -> PreprocessPreset:
 
 def write_cache(data_root: Path, symbol: str, seed: int) -> None:
     path = cache_path(data_root, BROKER, "day", symbol)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    make_candles(seed=seed).to_parquet(path)
+    replace_cache(path, make_candles(seed=seed))
 
 
 class Harness:
@@ -86,6 +93,18 @@ class Harness:
 
 
 class TestRunBatch:
+    def test_timeframe_specific_fractal_keeps_common_settings(self):
+        preset = make_preset().model_copy(
+            update={"fractal_windows": {"day": 7, "min1": 11}}
+        )
+
+        minute = preset.for_timeframe(Timeframe.from_code("min1"))
+
+        assert minute.timeframe.code == "min1"
+        assert minute.fractal.n == 11
+        assert minute.features == preset.features
+        assert minute.labeling == preset.labeling
+
     def test_snapshot_materializes_compatible_cleaning_defaults(self):
         preset = PreprocessPreset(cleaning=CleaningConfig())
         row = {
@@ -179,6 +198,87 @@ class TestRunBatch:
             assert row["end_time"] == preview.frame.index[sample.end_position]
             assert row["start_position"] == sample.start_position
             assert row["end_position"] == sample.end_position
+
+    def test_same_symbol_multiple_timeframes_share_dataset_without_collisions(
+        self, tmp_path
+    ):
+        h = Harness(tmp_path, ["AAA"], cached=["AAA"])
+        minute = make_candles(seed=7).copy()
+        minute.index = pd.date_range(
+            "2025-01-01 09:00", periods=len(minute), freq="min", name="Time"
+        )
+        minute_path = cache_path(tmp_path, BROKER, "min1", "AAA")
+        replace_cache(minute_path, minute)
+        targets = [
+            {
+                "symbol": "AAA",
+                "timeframe": code,
+                "region": "domestic",
+                "exchange": "",
+                "broker": BROKER,
+                "start": None,
+                "end": None,
+                "cache_start": None,
+                "cache_end": None,
+            }
+            for code in ("day", "min1")
+        ]
+
+        run_batch(
+            jobs=h.jobs,
+            datasets=h.datasets,
+            storage=h.storage,
+            job_id=h.job["id"],
+            dataset_id=h.dataset["id"],
+            preset=h.preset.model_copy(
+                update={"fractal_windows": {"day": 5, "min1": 7}}
+            ),
+            symbols=["AAA"],
+            targets=targets,
+            data_root=tmp_path,
+            broker=BROKER,
+        )
+
+        rows = []
+        shards = h.datasets.list_shards(h.dataset["id"])
+        for shard in shards:
+            rows.extend(
+                read_shard(
+                    h.storage.objects[(DATASET_BUCKET, shard["object_path"])]
+                ).to_pylist()
+            )
+        assert {row["timeframe"] for row in rows} == {"day", "min1"}
+        assert len({row["source_key"] for row in rows}) == 2
+        assert [shard["shard_index"] for shard in shards] == list(range(len(shards)))
+        expected = assign_sample_splits(
+            [
+                (row["source_key"], row["sample_index"], row["label"])
+                for row in rows
+            ]
+        )
+        assert all(
+            row["split"] == expected[(row["source_key"], row["sample_index"])]
+            for row in rows
+        )
+
+        symbol = h.datasets.list_symbols(h.dataset["id"])[0]
+        stats = symbol["length_stats"]
+        assert stats["targets"] == [
+            {
+                key: target.get(key)
+                for key in ("symbol", "timeframe", "region", "exchange", "start", "end")
+            }
+            for target in targets
+        ]
+        assert stats["min"] <= stats["mean"] <= stats["max"]
+        assert stats["points"] == (
+            stats["pairing_stats"]["adjacent_edges"]
+            + stats["pairing_stats"]["unpaired_markers"]
+        )
+        assert stats["cleaning"]["target_count"] == 2
+        assert len(stats["cleaning"]["targets"]) == 2
+        assert stats["overlap_clusters"]["sample_clusters"] >= 0
+        assert h.jobs.get(h.job["id"])["completed_items"] == 2
 
     def test_partial_failure_keeps_processing_and_fails_dataset(self, tmp_path):
         # 첫 종목(BBB)은 캐시가 없어 실패 — 나머지 종목은 계속 처리돼야 한다

@@ -140,6 +140,7 @@ interface RunSummary {
   dataset_id: number
   dataset_name: string
   job_id: number | null
+  deployment_ids: number[]
   status: RunStatus
   config: TrainingConfig
   device: string | null
@@ -213,9 +214,11 @@ interface ArtifactSummary {
 Run 생성 시 허용 범위 밖 숫자, `ready`가 아닌 데이터셋, 진단 실패, shard 무결성 실패는
 4xx로 거부한다. 시작 이후 실패는 run/job을 `failed`로 마감하고 `error`에 사용자 표시 가능한
 원인을 기록한다. 이미 terminal인 run의 stop은 멱등 응답을 반환한다.
-run 삭제는 terminal 상태이면서 실시간 배포 이력에서 참조하지 않을 때만 허용하고, checkpoint
+run 삭제는 terminal 상태이면서 현재 활성 실시간 배포에서 참조하지 않을 때만 허용하고, checkpoint
 객체 삭제가 성공한 뒤 run 하위 메타데이터를 cascade 삭제한다. 부분 실패는 `run_delete` job에
-남겨 같은 DELETE 호출로 재시도한다.
+남겨 같은 DELETE 호출로 재시도한다. 비활성 배포 이력은 run과 함께 cascade 삭제한다.
+`RunSummary.deployment_ids`는 활성 배포만 포함하며, 비어 있지 않으면 UI는 삭제 요청을 보내지 않고
+배포 참조 상태를 표시한다.
 
 ### 5.3 예측 차트 계약
 

@@ -144,7 +144,10 @@ npm --prefix web run build
 
 ```
 data/
-├─ raw/{broker}/{timeframe}/{symbol}.parquet   # 캔들 캐시 (day | min{N} | tick{N})
+├─ raw/kiwoom/domestic/{symbol}/{timeframe}/
+│  └─ {year=YYYY|date=YYYY-MM-DD}/part.parquet
+├─ raw/kiwoom/overseas/{exchange}/{symbol}/{timeframe}/
+│  └─ {year=YYYY|date=YYYY-MM-DD}/part.parquet
 ├─ meta/watchlist.json                         # 로컬 UI 운영 상태
 └─ tmp/                                        # 재생성 가능한 다운로드/업로드 작업 캐시
 

@@ -47,6 +47,14 @@ async def activate_model(payload: ActivateModelRequest, request: Request) -> dic
         raise HTTPException(422, detail) from exc
 
 
+@router.delete("/api/live/model")
+async def deactivate_model(request: Request) -> dict:
+    try:
+        return await _service(request).deactivate_model()
+    except (LiveServiceError, RuntimeError, ValueError) as exc:
+        raise HTTPException(503, "model deactivation failed") from exc
+
+
 @router.get("/api/live/subscriptions")
 def subscriptions(request: Request) -> list[dict]:
     return _service(request).subscriptions()

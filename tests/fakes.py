@@ -199,6 +199,11 @@ class FakeDb:
                 self.tables[child] = [
                     row for row in self.tables[child] if row["run_id"] not in run_ids
                 ]
+            self.tables["live_deployments"] = [
+                row
+                for row in self.tables["live_deployments"]
+                if row["run_id"] not in run_ids
+            ]
         elif table == "jobs":
             job_ids = {row["id"] for row in deleted}
             self.tables["job_events"] = [

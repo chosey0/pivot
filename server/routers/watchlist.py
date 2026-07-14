@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, model_validator
 
 from pivot.config import MINUTE_UNITS, TICK_UNITS, Timeframe
+from pivot.ingestion.cache import cache_path, delete_cache
 from pivot.ingestion.fetch import OVERSEAS_EXCHANGES, cache_broker
 from pivot.symbols.master import DOMESTIC_SYMBOL_RE
 
@@ -42,6 +43,11 @@ class WatchItem(BaseModel):
             if start > end:
                 raise ValueError("start must be on or before end")
         return self
+
+
+class WatchItemUpdate(BaseModel):
+    original: WatchItem
+    replacement: WatchItem
 
 
 def _as_datetime(value: date | datetime, *, end_of_day: bool) -> datetime:
@@ -81,7 +87,7 @@ def _cached_timeframes(item: WatchItem) -> list[str]:
     cached = [
         code
         for code in codes
-        if (DATA_ROOT / "raw" / broker / code / f"{item.symbol}.parquet").exists()
+        if cache_path(DATA_ROOT, broker, code, item.symbol).exists()
     ]
     return cached or ["day"]
 
@@ -108,6 +114,30 @@ def add_watch_item(item: WatchItem) -> list[dict]:
     return items
 
 
+@router.put("")
+def update_watch_item(request: WatchItemUpdate) -> list[dict]:
+    if _identity(request.original)[:4] != _identity(request.replacement)[:4]:
+        raise HTTPException(422, "only the name and collection range can be updated")
+    items = _load()
+    original_identity = _identity(request.original)
+    try:
+        index = next(
+            index for index, item in enumerate(items) if _identity(item) == original_identity
+        )
+    except StopIteration:
+        raise HTTPException(404, f"data item not found for {request.original.symbol}") from None
+    replacement_identity = _identity(request.replacement)
+    if replacement_identity != original_identity and any(
+        _identity(item) == replacement_identity for item in items
+    ):
+        raise HTTPException(
+            409, f"same data item already exists for {request.replacement.symbol}"
+        )
+    items[index] = request.replacement.model_dump(mode="json")
+    _save(items)
+    return items
+
+
 @router.delete("/{symbol}")
 def remove_watch_item(
     symbol: str,
@@ -129,5 +159,15 @@ def remove_watch_item(
     remaining = [existing for existing in items if _identity(existing) != _identity(target)]
     if len(remaining) == len(items):
         raise HTTPException(404, f"data item not found for {symbol}")
+    cache_identity = _identity(target)[:4]
+    if not any(_identity(existing)[:4] == cache_identity for existing in remaining):
+        delete_cache(
+            cache_path(
+                DATA_ROOT,
+                cache_broker(target.region, target.exchange),
+                target.timeframe,
+                target.symbol,
+            )
+        )
     _save(remaining)
     return remaining

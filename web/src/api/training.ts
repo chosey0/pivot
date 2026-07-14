@@ -24,6 +24,7 @@ export interface RunSummary {
   dataset_id: number
   dataset_name: string
   job_id: number | null
+  deployment_ids: number[]
   status: RunStatus
   config: TrainingConfig
   device: string | null
@@ -105,6 +106,8 @@ export interface PredictionPoint {
   predicted_label: 0 | 1 | 2
   probabilities: [number, number, number]
   correct: boolean
+  timeframe?: string
+  source_key?: string | null
 }
 
 export interface PredictionEvaluation {
@@ -132,10 +135,15 @@ export const trainingApi = {
     fetchJson<{ job_id: number; deleted_objects: number }>(`/api/runs/${runId}`, {
       method: 'DELETE',
     }),
-  evaluate: (runId: number, symbol: string, split: EvaluationSplit) =>
+  evaluate: (
+    runId: number,
+    symbol: string,
+    split: EvaluationSplit,
+    target?: { timeframe: string; source_key: string },
+  ) =>
     fetchJson<PredictionEvaluation>(`/api/runs/${runId}/evaluate`, {
       method: 'POST',
-      body: JSON.stringify({ symbol, split }),
+      body: JSON.stringify({ symbol, split, ...target }),
     }),
   eventsUrl: (runId: number) => `/api/runs/${runId}/events`,
 }

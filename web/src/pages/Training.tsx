@@ -184,16 +184,26 @@ export function Training() {
                   <div className="run-item-actions">
                     <button
                       className="run-item-delete danger"
-                      disabled={!isTerminal(row.status) || deletingRunId === row.id}
+                      disabled={
+                        !isTerminal(row.status) ||
+                        row.deployment_ids.length > 0 ||
+                        deletingRunId === row.id
+                      }
                       onClick={() => removeRun(row)}
                       title={
-                        isTerminal(row.status)
+                        row.deployment_ids.length > 0
+                          ? `실시간 배포 이력 ${row.deployment_ids.join(', ')}에서 참조 중입니다`
+                          : isTerminal(row.status)
                           ? '체크포인트와 학습 이력을 삭제합니다'
                           : '진행 중인 run은 중단 후 삭제할 수 있습니다'
                       }
                       type="button"
                     >
-                      {deletingRunId === row.id ? '삭제 중' : '삭제'}
+                      {row.deployment_ids.length > 0
+                        ? '배포 참조'
+                        : deletingRunId === row.id
+                          ? '삭제 중'
+                          : '삭제'}
                     </button>
                   </div>
                 </div>

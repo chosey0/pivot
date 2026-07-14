@@ -416,11 +416,13 @@ export function CandleChart({
     const addedBefore = Math.max(candleData.length - previousLength, 0)
     const replacingContent = fitContentKeyRef.current !== fitContentKey
 
+    // setData는 연결된 marker primitive를 즉시 재계산한다. 종목/기간 교체 시
+    // 이전 marker 시간이 새 candle에 없을 수 있으므로 데이터보다 먼저 비운다.
+    markersApiRef.current?.setMarkers([])
     if (previousLength > 0 && (addedBefore > 0 || replacingContent)) {
       // setData 사이에는 series별 시간축이 잠시 어긋난다. 기존 crosshair/marker가
       // 그 중간 상태를 hit-test하지 않도록 먼저 해제한다.
       chart.clearCrosshairPosition()
-      markersApiRef.current?.setMarkers([])
       for (const series of Object.values(maSeriesRef.current)) {
         series.setData([])
       }
@@ -441,11 +443,10 @@ export function CandleChart({
       })
     }
     dataLengthRef.current = candleData.length
-  }, [candles, volumes, ma, visibleIndicators, fitContentKey, priceDecimals])
-
-  useEffect(() => {
-    markersApiRef.current?.setMarkers(markers.map(toSeriesMarker))
-  }, [markers, candles])
+    markersApiRef.current?.setMarkers(
+      markers.filter((marker) => validTimes.has(marker.time)).map(toSeriesMarker),
+    )
+  }, [candles, volumes, ma, visibleIndicators, markers, fitContentKey, priceDecimals])
 
   useEffect(() => {
     highlightRef.current?.setRange(highlightRange)

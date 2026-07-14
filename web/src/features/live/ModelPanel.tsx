@@ -26,8 +26,8 @@ interface Props {
 }
 
 /**
- * 활성 모델 지정 — succeeded run의 검증된 best_checkpoint만 후보로 노출한다.
- * PUT /api/live/model 실패 시 기존 deployment를 그대로 유지한다 (docs/08 §6.1).
+ * 활성 모델 지정/해제 — succeeded run의 검증된 best_checkpoint만 후보로 노출한다.
+ * 모델 변경 실패 시 기존 deployment를 그대로 유지한다 (docs/08 §6.1).
  */
 export function ModelPanel({ deployment, onActivated }: Props) {
   const [runs, setRuns] = useState<RunSummary[]>([])
@@ -38,6 +38,7 @@ export function ModelPanel({ deployment, onActivated }: Props) {
   const [artifactLoading, setArtifactLoading] = useState(false)
   const [artifactError, setArtifactError] = useState<string | null>(null)
   const [activating, setActivating] = useState(false)
+  const [deactivating, setDeactivating] = useState(false)
   const [activateError, setActivateError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
@@ -114,45 +115,70 @@ export function ModelPanel({ deployment, onActivated }: Props) {
     }
   }
 
+  async function deactivate() {
+    setDeactivating(true)
+    setActivateError(null)
+    setMessage(null)
+    try {
+      const next = await liveApi.deactivateModel()
+      onActivated(next)
+      setMessage('활성 모델을 해제했습니다.')
+    } catch (e) {
+      setActivateError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setDeactivating(false)
+    }
+  }
+
   const selectedRun = succeededRuns.find((run) => run.id === selectedRunId) ?? null
 
   return (
     <section className="control-section">
       <h2>활성 모델</h2>
       {deployment ? (
-        <dl className="live-model-meta">
-          <div>
-            <dt>run</dt>
-            <dd>
-              #{deployment.run_id} {deployment.run_name}
-              <span className={`live-deploy-status ${deployment.status}`}>
-                {DEPLOYMENT_STATUS_TEXT[deployment.status]}
-              </span>
-            </dd>
-          </div>
-          <div>
-            <dt>데이터셋</dt>
-            <dd>{deployment.dataset_name}</dd>
-          </div>
-          <div>
-            <dt>모델 · timeframe</dt>
-            <dd>
-              {deployment.model} · {deployment.timeframe}
-            </dd>
-          </div>
-          <div>
-            <dt>features</dt>
-            <dd>{deployment.feature_columns.join(', ')}</dd>
-          </div>
-          <div>
-            <dt>pairing</dt>
-            <dd>{deployment.pairing_rule}</dd>
-          </div>
-          <div>
-            <dt>활성화 시각</dt>
-            <dd>{formatDate(deployment.activated_at)}</dd>
-          </div>
-        </dl>
+        <>
+          <dl className="live-model-meta">
+            <div>
+              <dt>run</dt>
+              <dd>
+                #{deployment.run_id} {deployment.run_name}
+                <span className={`live-deploy-status ${deployment.status}`}>
+                  {DEPLOYMENT_STATUS_TEXT[deployment.status]}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>데이터셋</dt>
+              <dd>{deployment.dataset_name}</dd>
+            </div>
+            <div>
+              <dt>모델 · timeframe</dt>
+              <dd>
+                {deployment.model} · {deployment.timeframe}
+              </dd>
+            </div>
+            <div>
+              <dt>features</dt>
+              <dd>{deployment.feature_columns.join(', ')}</dd>
+            </div>
+            <div>
+              <dt>pairing</dt>
+              <dd>{deployment.pairing_rule}</dd>
+            </div>
+            <div>
+              <dt>활성화 시각</dt>
+              <dd>{formatDate(deployment.activated_at)}</dd>
+            </div>
+          </dl>
+          <button
+            className="ghost danger"
+            disabled={activating || deactivating}
+            onClick={deactivate}
+            type="button"
+          >
+            {deactivating ? 'deactivating...' : 'deactivate'}
+          </button>
+        </>
       ) : (
         <p className="empty">활성 모델이 없습니다. succeeded run에서 모델을 지정하세요.</p>
       )}
@@ -197,16 +223,18 @@ export function ModelPanel({ deployment, onActivated }: Props) {
             </p>
           )}
           {activateError ? (
-            <p className="error">활성화 실패 (기존 모델 유지): {activateError}</p>
+            <p className="error">모델 변경 실패 (기존 상태 유지): {activateError}</p>
           ) : null}
           {message && !activateError ? <p className="message">{message}</p> : null}
           <button
             className="primary"
-            disabled={selectedRunId === null || !bestArtifact || activating}
+            disabled={
+              selectedRunId === null || !bestArtifact || activating || deactivating
+            }
             onClick={activate}
             type="button"
           >
-            {activating ? '활성화 중...' : '이 모델 활성화'}
+            {activating ? 'activating...' : 'activate'}
           </button>
         </>
       )}

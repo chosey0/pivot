@@ -283,12 +283,12 @@ class TestDeleteRun:
         assert (MODEL_BUCKET, path) in storage.objects
         assert storage.removed == []
 
-    def test_deployment_history_blocks_deletion_before_storage(self):
+    def test_active_deployment_blocks_deletion_before_storage(self):
         db, storage = FakeDb(), FakeStorage()
         runs, run_id, artifact, path = make_deletable_run(db, storage)
         db.insert(
             "live_deployments",
-            {"run_id": run_id, "artifact_id": artifact["id"], "active": False},
+            {"run_id": run_id, "artifact_id": artifact["id"]},
         )
 
         with pytest.raises(RunDeletionBlockedError, match="live deployment"):
@@ -302,6 +302,31 @@ class TestDeleteRun:
         assert runs.get(run_id)["id"] == run_id
         assert (MODEL_BUCKET, path) in storage.objects
         assert storage.removed == []
+
+    def test_inactive_deployment_is_removed_with_run(self):
+        db, storage = FakeDb(), FakeStorage()
+        runs, run_id, artifact, path = make_deletable_run(db, storage)
+        db.insert(
+            "live_deployments",
+            {
+                "run_id": run_id,
+                "artifact_id": artifact["id"],
+                "active": False,
+                "deactivated_at": "2026-07-14T00:00:00+00:00",
+            },
+        )
+
+        delete_run(
+            runs=runs,
+            jobs=JobRepository(db),
+            storage=storage,
+            run_id=run_id,
+        )
+
+        with pytest.raises(RunNotFoundError):
+            runs.get(run_id)
+        assert db.tables["live_deployments"] == []
+        assert (MODEL_BUCKET, path) not in storage.objects
 
     def test_storage_failure_keeps_run_metadata_for_retry(self):
         class FlakyStorage(FakeStorage):

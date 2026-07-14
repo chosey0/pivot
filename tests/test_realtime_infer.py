@@ -130,6 +130,28 @@ def test_checkpoint_preset_hydrates_missing_pairing_as_legacy():
     assert hydrated.labeling.sample_pairing == "latest_opposite_v1"
 
 
+def test_checkpoint_preset_selects_timeframe_specific_fractal_window():
+    config = preset().model_copy(
+        update={"fractal_windows": {"day": 9, "min1": 15}}
+    )
+    snapshot = {
+        "dataset": {
+            "id": 1,
+            "feature_columns": config.features,
+            "preset_snapshot": {
+                "schema_version": 1,
+                "preset": config.model_dump(mode="json"),
+            },
+        }
+    }
+    data, digest = checkpoint_bytes(config.features, dataset_snapshot=snapshot)
+
+    hydrated = preset_from_checkpoint(load_verified_checkpoint(data, digest))
+
+    assert hydrated.timeframe.code == "day"
+    assert hydrated.fractal.n == 9
+
+
 def test_live_inference_reuses_sample_standardization():
     frame = make_candles(length=240)
     config = preset()

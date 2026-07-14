@@ -45,6 +45,9 @@ class FakeLiveService:
         }
         return result
 
+    async def deactivate_model(self):
+        return self.state()
+
     def subscriptions(self):
         return self.rows
 
@@ -90,6 +93,7 @@ def test_live_http_mutations_return_ui_contract_state():
     with _client() as client:
         state = client.get("/api/live/state")
         activated = client.put("/api/live/model", json={"run_id": 4, "artifact_id": 7})
+        deactivated = client.delete("/api/live/model")
         subscribed = client.post("/api/live/subscriptions", json={"symbol": "005930"})
         removed = client.delete("/api/live/subscriptions/005930")
 
@@ -114,6 +118,7 @@ def test_live_http_mutations_return_ui_contract_state():
         "status": "active",
         "activated_at": "2026-07-13T00:00:00+00:00",
     }
+    assert deactivated.json()["deployment"] is None
     assert subscribed.json()[0]["inference_status"] == "no_model"
     assert subscribed.json()[0]["region"] == "domestic"
     assert removed.json() == []

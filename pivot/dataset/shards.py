@@ -25,6 +25,8 @@ SHA256_PREFIX_LEN = 12
 SHARD_SCHEMA = pa.schema(
     [
         ("sample_index", pa.int32()),
+        ("source_key", pa.string()),
+        ("timeframe", pa.string()),
         ("label", pa.int8()),
         ("split", pa.string()),
         ("kind", pa.string()),
@@ -69,6 +71,8 @@ def build_shards(
     feature_columns: list[str],
     *,
     sample_splits: list[str] | None = None,
+    source_key: str | None = None,
+    timeframe: str | None = None,
     target_bytes: int = SHARD_TARGET_BYTES,
 ) -> list[ShardBlob]:
     """run_preprocess 결과를 shard 목록으로 직렬화한다.
@@ -94,7 +98,14 @@ def build_shards(
     for shard_index, chunk in enumerate(chunks):
         if not chunk:
             continue  # 샘플 0개면 shard를 만들지 않는다
-        data = _serialize_chunk(chunk, features, times, sample_splits)
+        data = _serialize_chunk(
+            chunk,
+            features,
+            times,
+            sample_splits,
+            source_key=source_key,
+            timeframe=timeframe,
+        )
         if len(data) >= SHARD_MAX_BYTES:
             raise ValueError(
                 f"shard {shard_index} is {len(data)} bytes — exceeds the "
@@ -121,11 +132,16 @@ def _serialize_chunk(
     features: pd.DataFrame,
     times: pd.Index,
     sample_splits: list[str] | None,
+    *,
+    source_key: str | None,
+    timeframe: str | None,
 ) -> bytes:
     rows: dict[str, list] = {name: [] for name in SHARD_SCHEMA.names}
     for index, sample in chunk:
         window = features.iloc[sample.start_position : sample.end_position + 1]
         rows["sample_index"].append(index)
+        rows["source_key"].append(source_key)
+        rows["timeframe"].append(timeframe)
         rows["label"].append(sample.label)
         rows["split"].append(sample_splits[index] if sample_splits else None)
         rows["kind"].append(sample.kind)

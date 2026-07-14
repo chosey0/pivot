@@ -7,6 +7,7 @@ import {
   type PreviewParams,
   type PreviewResponse,
   type SamplePairing,
+  type TimeframeCode,
   type PreviewSample,
   type PreviewStats,
   type WatchItem,
@@ -14,8 +15,9 @@ import {
 import type { TimeRange, VisibleIndicators } from '../components/chart/CandleChart'
 import { CandleChart } from '../components/chart/CandleChart'
 import { ChartPanel } from '../components/chart/ChartPanel'
-import { MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
-import { watchItemsForTimeframe } from '../lib/watchlist'
+import { formatDateTime } from '../lib/format'
+import { fromTimeframeCode } from '../lib/timeframe'
+import { timeframeLabel, watchItemKey } from '../lib/watchlist'
 
 const PREVIEW_DEBOUNCE_MS = 400
 
@@ -46,10 +48,10 @@ function isEditableTarget(target: EventTarget | null) {
 
 export function Lab() {
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
-  const [selectedSymbol, setSelectedSymbol] = useState('')
-  const [timeframeKind, setTimeframeKind] = useState<'day' | 'minute' | 'tick'>('day')
-  const [timeframeUnit, setTimeframeUnit] = useState(1)
-  const [fractalN, setFractalN] = useState(20)
+  const [selectedKey, setSelectedKey] = useState('')
+  const [fractalByTimeframe, setFractalByTimeframe] = useState<
+    Partial<Record<TimeframeCode, number>>
+  >({})
   const [tiePolicy, setTiePolicy] = useState<FractalTiePolicy>('plateau_last')
   const [labelMode, setLabelMode] = useState<'cls3' | 'cls2_drop'>('cls3')
   const [samplePairing, setSamplePairing] = useState<SamplePairing>('adjacent_markers_v1')
@@ -71,14 +73,13 @@ export function Lab() {
   const lastStatsRef = useRef<PreviewStats | null>(null)
   const requestSeqRef = useRef(0)
 
-  const timeframe = useMemo(
-    () => toTimeframeCode(timeframeKind, timeframeUnit),
-    [timeframeKind, timeframeUnit],
+  const selectedItem = useMemo(
+    () => watchlist.find((item) => watchItemKey(item) === selectedKey) ?? null,
+    [selectedKey, watchlist],
   )
-  const visibleWatchlist = useMemo(
-    () => watchItemsForTimeframe(watchlist, timeframe),
-    [timeframe, watchlist],
-  )
+  const timeframe = selectedItem?.timeframe ?? 'day'
+  const timeframeConfig = useMemo(() => fromTimeframeCode(timeframe), [timeframe])
+  const fractalN = fractalByTimeframe[timeframe] ?? 20
 
   const featureColumns = useMemo(
     () => [
@@ -94,8 +95,9 @@ export function Lab() {
 
   const params = useMemo<PreviewParams>(
     () => ({
-      timeframe: { type: timeframeKind, unit: timeframeKind === 'day' ? 1 : timeframeUnit },
+      timeframe: timeframeConfig,
       fractal: { n: fractalN, tie_policy: tiePolicy },
+      fractal_windows: { ...fractalByTimeframe, [timeframe]: fractalN },
       ma_windows: LAB_MA_LINES.map((line) => line.window),
       features: featureColumns,
       labeling: {
@@ -121,6 +123,7 @@ export function Lab() {
     [
       cleaningMode,
       featureColumns,
+      fractalByTimeframe,
       fractalN,
       ignoreRuleOn,
       ignoreSwingPctInput,
@@ -128,8 +131,8 @@ export function Lab() {
       maAlignment,
       minAmountInput,
       samplePairing,
-      timeframeKind,
-      timeframeUnit,
+      timeframe,
+      timeframeConfig,
       tiePolicy,
     ],
   )
@@ -147,15 +150,12 @@ export function Lab() {
   )
 
   const selectedSymbolLabel = useMemo(() => {
-    if (!selectedSymbol) return ''
-    const name = visibleWatchlist.find((item) => item.symbol === selectedSymbol)?.name
-    return name ? `${name} • ${selectedSymbol}` : selectedSymbol
-  }, [selectedSymbol, visibleWatchlist])
-
-  const selectedItem = useMemo(
-    () => visibleWatchlist.find((item) => item.symbol === selectedSymbol) ?? null,
-    [selectedSymbol, visibleWatchlist],
-  )
+    if (!selectedItem) return ''
+    const symbol = selectedItem.name
+      ? `${selectedItem.name} • ${selectedItem.symbol}`
+      : selectedItem.symbol
+    return `${symbol} • ${timeframeLabel(selectedItem.timeframe)}`
+  }, [selectedItem])
 
   const highlightRange = useMemo<TimeRange | null>(
     () =>
@@ -173,12 +173,22 @@ export function Lab() {
   }, [])
 
   useEffect(() => {
-    setSelectedSymbol((current) =>
-      visibleWatchlist.some((item) => item.symbol === current)
+    setSelectedKey((current) =>
+      watchlist.some((item) => watchItemKey(item) === current)
         ? current
-        : visibleWatchlist[0]?.symbol ?? '',
+        : watchlist[0]
+          ? watchItemKey(watchlist[0])
+          : '',
     )
-  }, [visibleWatchlist])
+  }, [watchlist])
+
+  useEffect(() => {
+    requestSeqRef.current += 1
+    setPreview(null)
+    setSelectedSample(null)
+    setPrevStats(null)
+    lastStatsRef.current = null
+  }, [selectedKey])
 
   useEffect(() => {
     if (!selectedItem) return
@@ -324,24 +334,36 @@ export function Lab() {
         <section className="control-section grow">
           <h2>종목</h2>
           <div className="watch-table">
-            {visibleWatchlist.length === 0 ? (
-              <p className="empty">종목 & 데이터 탭에서 {timeframe} 데이터를 먼저 추가하세요.</p>
+            {watchlist.length === 0 ? (
+              <p className="empty">종목 & 데이터 탭에서 수집 항목을 먼저 추가하세요.</p>
             ) : (
-              visibleWatchlist.map((item) => (
+              watchlist.map((item) => {
+                const key = watchItemKey(item)
+                return (
                 <div
-                  className={item.symbol === selectedSymbol ? 'watch-row selected' : 'watch-row'}
-                  key={`${item.region}:${item.exchange}:${item.symbol}`}
+                  className={key === selectedKey ? 'watch-row selected' : 'watch-row'}
+                  key={key}
                 >
                   <button
                     className="watch-main"
-                    onClick={() => setSelectedSymbol(item.symbol)}
+                    onClick={() => setSelectedKey(key)}
                     type="button"
                   >
-                    <strong>{item.name || item.symbol}</strong>
-                    <span>{item.symbol}</span>
+                    <strong>
+                      {item.name || item.symbol} - {timeframeLabel(item.timeframe)}
+                    </strong>
+                    <span>
+                      {item.symbol} · {item.region === 'overseas' ? item.exchange : 'KRX'}
+                    </span>
+                    <small className="data-range">
+                      {item.start || item.end
+                        ? `${item.start ? formatDateTime(item.start) : '처음'} ~ ${item.end ? formatDateTime(item.end) : '최신'}`
+                        : '전체 수집 범위'}
+                    </small>
                   </button>
                 </div>
-              ))
+                )
+              })
             )}
           </div>
         </section>
@@ -450,7 +472,7 @@ export function Lab() {
         {preview ? (
           <CandleChart
             candles={preview.candles}
-            fitContentKey={`${preview.symbol}:${preview.timeframe}:${preview.stats.cleaning.mode}`}
+            fitContentKey={`${selectedKey}:${preview.stats.cleaning.mode}`}
             highlightRange={highlightRange}
             ma={preview.ma}
             markers={chartMarkers}
@@ -464,77 +486,20 @@ export function Lab() {
 
       <aside className="side-panel lab-params">
         <section className="control-section">
-          <h2>타임프레임</h2>
-          <div className="segmented">
-            <button
-              className={timeframeKind === 'day' ? 'selected' : ''}
-              onClick={() => {
-                setTimeframeKind('day')
-                setTimeframeUnit(1)
-              }}
-              type="button"
-            >
-              일봉
-            </button>
-            <button
-              className={timeframeKind === 'minute' ? 'selected' : ''}
-              onClick={() => {
-                setTimeframeKind('minute')
-                setTimeframeUnit(1)
-              }}
-              type="button"
-            >
-              분봉
-            </button>
-            <button
-              className={timeframeKind === 'tick' ? 'selected' : ''}
-              onClick={() => {
-                setTimeframeKind('tick')
-                setTimeframeUnit(30)
-              }}
-              type="button"
-            >
-              틱봉
-            </button>
-          </div>
-          {timeframeKind !== 'day' && (
-            <label className="field">
-              단위
-              <select
-                onChange={(event) => setTimeframeUnit(Number(event.target.value))}
-                value={timeframeUnit}
-              >
-                {(timeframeKind === 'minute' ? MINUTE_UNITS : TICK_UNITS).map((unit) => (
-                  <option key={unit} value={unit}>
-                    {unit}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </section>
-
-        <section className="control-section">
-          <h2>프랙탈 파라미터</h2>
+          <h2>프랙탈 파라미터 · {timeframeLabel(timeframe)}</h2>
           <label className="field">
             fractal n (center window)
             <input
               min={3}
-              onChange={(event) => setFractalN(Math.max(3, Number(event.target.value) || 3))}
+              onChange={(event) => {
+                const n = Math.max(3, Number(event.target.value) || 3)
+                setFractalByTimeframe((current) => ({ ...current, [timeframe]: n }))
+              }}
               type="number"
               value={fractalN}
             />
           </label>
-          <label className="field">
-            동률 극값 처리
-            <select
-              onChange={(event) => setTiePolicy(event.target.value as FractalTiePolicy)}
-              value={tiePolicy}
-            >
-              <option value="plateau_last">plateau_last — 마지막 봉만 라벨</option>
-              <option value="all">all — 모든 봉 라벨 (기존 방식)</option>
-            </select>
-          </label>
+          <p className="hint">fractal n만 타임프레임별로 저장됩니다.</p>
           <p className="hint">
             확정에 미래 {Math.floor((fractalN - 1) / 2)}봉이 필요합니다. 마지막{' '}
             {Math.floor((fractalN - 1) / 2)}봉은 라벨되지 않습니다.
@@ -548,7 +513,17 @@ export function Lab() {
         </section>
 
         <section className="control-section">
-          <h2>라벨 모드</h2>
+          <h2>공통 라벨 설정</h2>
+          <label className="field">
+            동률 극값 처리
+            <select
+              onChange={(event) => setTiePolicy(event.target.value as FractalTiePolicy)}
+              value={tiePolicy}
+            >
+              <option value="plateau_last">plateau_last — 마지막 봉만 라벨</option>
+              <option value="all">all — 모든 봉 라벨 (기존 방식)</option>
+            </select>
+          </label>
           <label className="field">
             샘플 페어링
             <select
@@ -646,7 +621,7 @@ export function Lab() {
             가격 이상, 구조적 점프, 장기 비유동·정체를 탐지합니다. 필터 적용 시 이동평균,
             프랙탈과 샘플을 각 정상 구간에서 독립 계산합니다.
           </p>
-          {timeframeKind === 'tick' && cleaningMode !== 'off' ? (
+          {timeframeConfig.type === 'tick' && cleaningMode !== 'off' ? (
             <p className="warning">
               틱봉은 논문 주기 기준이 없어 가격 필드 무결성만 자동 검사합니다.
             </p>
@@ -662,7 +637,7 @@ export function Lab() {
         </section>
 
         <section className="control-section">
-          <h2>학습 피처</h2>
+          <h2>학습 피처 (공통)</h2>
           <p className="hint">Open/High/Low/Close는 항상 포함됩니다.</p>
           {LAB_MA_LINES.map((line) => (
             <label className="inline-check" key={line.window}>

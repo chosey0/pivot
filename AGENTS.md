@@ -35,6 +35,9 @@ are implemented and browser-verified.
 deterministic class-stratified sample splits), preset CRUD is version-bump/archive only,
 `POST /api/preprocess/batch` runs a durable job (jobs/job_events) streamed via
 `GET /api/jobs/{id}/events` SSE, and the Datasets tab + Lab preset save are browser-verified.
+Lab and batch now use collection targets identified by symbol, market, timeframe, and requested
+range. Preset settings are common across timeframes except `fractal_windows`, and one dataset may
+contain mixed timeframes while each shard row preserves its `source_key` and timeframe.
 
 **M3-B (sample browser + diagnostics + lifecycle) done**: `pivot/dataset/samples.py`
 serves paged/label-filtered samples with stable global indices (metadata-only parquet

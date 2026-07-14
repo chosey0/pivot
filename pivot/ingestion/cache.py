@@ -1,34 +1,35 @@
-"""parquet 캐시 입출력. 경로 규약: data/raw/{broker}/{timeframe}/{symbol}.parquet (docs/04 §4)."""
+"""기간 파티션 parquet 캐시 입출력 (docs/04 §4)."""
 
 import datetime
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
 import pandas as pd
-import pyarrow.parquet as pq
 
 
 def cache_path(data_root: Path, broker: str, timeframe_code: str, symbol: str) -> Path:
-    return data_root / "raw" / broker / timeframe_code / f"{symbol}.parquet"
+    """종목·타임프레임 캐시 디렉터리를 반환한다."""
+    if broker == "kiwoom":
+        market_path = Path("kiwoom") / "domestic"
+    elif broker.startswith("kiwoom-overseas-"):
+        exchange = broker.removeprefix("kiwoom-overseas-").upper()
+        market_path = Path("kiwoom") / "overseas" / exchange
+    else:
+        market_path = Path(broker) / "domestic"
+    return data_root / "raw" / market_path / symbol / timeframe_code
 
 
-def load_cache(path: Path) -> pd.DataFrame | None:
-    if not path.exists():
-        return None
-    return pd.read_parquet(path)
-
-
-def _time_bounds(row_group: pq.RowGroupMetaData) -> tuple[pd.Timestamp, pd.Timestamp] | None:
-    for index in range(row_group.num_columns):
-        column = row_group.column(index)
-        if column.path_in_schema != "Time" or column.statistics is None:
-            continue
-        return pd.Timestamp(column.statistics.min), pd.Timestamp(column.statistics.max)
-    return None
+def _partition_files(path: Path) -> list[Path]:
+    if not path.is_dir():
+        return []
+    return sorted(path.glob("*/part.parquet"))
 
 
 def _with_time_index(df: pd.DataFrame, path: Path) -> pd.DataFrame:
-    if df.empty:
-        return df
+    if len(df) == 0:
+        return df.rename_axis("Time")
     if "Time" in df.columns:
         df = df.set_index("Time")
     if df.index.name != "Time":
@@ -36,21 +37,49 @@ def _with_time_index(df: pd.DataFrame, path: Path) -> pd.DataFrame:
     return df.sort_index()
 
 
+def _normalize(frame: pd.DataFrame, path: Path) -> pd.DataFrame:
+    frame = _with_time_index(frame.copy(), path)
+    return frame[~frame.index.duplicated(keep="last")].sort_index()
+
+
+def _partition_name(timeframe_code: str, value: pd.Timestamp) -> str:
+    if timeframe_code == "day":
+        return f"year={value.year:04d}"
+    return f"date={value.date().isoformat()}"
+
+
+def _partitioned(frame: pd.DataFrame, path: Path) -> dict[str, pd.DataFrame]:
+    groups: dict[str, list[int]] = {}
+    for position, value in enumerate(frame.index):
+        groups.setdefault(_partition_name(path.name, pd.Timestamp(value)), []).append(position)
+    return {name: frame.iloc[positions] for name, positions in groups.items()}
+
+
+def _atomic_write(path: Path, frame: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(dir=path.parent, suffix=".parquet", delete=False)
+    temporary = Path(handle.name)
+    handle.close()
+    try:
+        frame.to_parquet(temporary, row_group_size=10_000)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def load_cache(path: Path, columns: list[str] | None = None) -> pd.DataFrame | None:
+    files = _partition_files(path)
+    if not files:
+        return None
+    read_columns = None if columns is None else list(dict.fromkeys([*columns, "Time"]))
+    frames = [
+        _with_time_index(pd.read_parquet(file, columns=read_columns), file) for file in files
+    ]
+    return _normalize(pd.concat(frames), path)
+
+
 def _empty_window(columns: list[str]) -> pd.DataFrame:
     return pd.DataFrame(columns=columns).rename_axis("Time")
-
-
-def _read_row_groups(
-    parquet_file: pq.ParquetFile,
-    group_indexes: list[int],
-    columns: list[str],
-    path: Path,
-) -> pd.DataFrame:
-    if not group_indexes:
-        return _empty_window(columns)
-    read_columns = list(dict.fromkeys([*columns, "Time"]))
-    table = parquet_file.read_row_groups(sorted(group_indexes), columns=read_columns)
-    return _with_time_index(table.to_pandas(), path)
 
 
 def load_cache_window(
@@ -61,67 +90,84 @@ def load_cache_window(
     lookback: int = 0,
     columns: list[str] | None = None,
 ) -> tuple[pd.DataFrame | None, bool]:
-    """차트용 캐시 윈도우를 읽는다.
-
-    반환 DataFrame은 MA 계산용 lookback을 포함할 수 있고, bool은 요청 윈도우보다
-    더 과거 데이터가 있는지 나타낸다.
-    """
-    if not path.exists():
+    """최신 파티션부터 차트 윈도우와 더 과거 데이터 존재 여부를 읽는다."""
+    files = _partition_files(path)
+    if not files:
         return None, False
 
     requested_columns = columns or ["Open", "High", "Low", "Close", "Volume"]
-
+    read_columns = list(dict.fromkeys([*requested_columns, "Time"]))
     if limit is None:
-        df = _with_time_index(pd.read_parquet(path, columns=requested_columns), path)
+        df = _normalize(
+            pd.concat(
+                [
+                    _with_time_index(pd.read_parquet(file, columns=read_columns), file)
+                    for file in files
+                ]
+            ),
+            path,
+        )
         if before is not None:
             df = df[df.index < before]
         return df, False
 
     rows_to_read = max(limit + lookback, limit)
-    parquet_file = pq.ParquetFile(path)
-    candidate_groups: list[tuple[int, int]] = []
-    for index in range(parquet_file.num_row_groups):
-        row_group = parquet_file.metadata.row_group(index)
-        bounds = _time_bounds(row_group)
-        if before is not None and bounds is not None and bounds[0] >= before:
-            continue
-        candidate_groups.append((index, row_group.num_rows))
-
-    selected_groups: list[int] = []
-    remaining_groups = list(reversed(candidate_groups))
-    estimated_rows = 0
-    while remaining_groups and estimated_rows < rows_to_read:
-        index, row_count = remaining_groups.pop(0)
-        selected_groups.append(index)
-        estimated_rows += row_count
-
-    df = _read_row_groups(parquet_file, selected_groups, requested_columns, path)
-    if before is not None:
-        df = df[df.index < before]
-
-    while len(df) < rows_to_read and remaining_groups:
-        index, _ = remaining_groups.pop(0)
-        selected_groups.append(index)
-        df = _read_row_groups(parquet_file, selected_groups, requested_columns, path)
+    frames: list[pd.DataFrame] = []
+    unread_older = False
+    for index, file in enumerate(reversed(files)):
+        frame = _with_time_index(pd.read_parquet(file, columns=read_columns), file)
         if before is not None:
-            df = df[df.index < before]
+            frame = frame[frame.index < before]
+        if len(frame):
+            frames.append(frame)
+        if sum(len(item) for item in frames) >= rows_to_read:
+            unread_older = index < len(files) - 1
+            break
 
-    has_more = len(df) > rows_to_read
-    has_more = has_more or bool(remaining_groups)
-    return df.tail(rows_to_read), has_more
+    if not frames:
+        return _empty_window(requested_columns), False
+    df = _normalize(pd.concat(reversed(frames)), path)
+    return df.tail(rows_to_read), unread_older or len(df) > rows_to_read
+
+
+def replace_cache(path: Path, frame: pd.DataFrame) -> pd.DataFrame:
+    """캐시 전체를 파티션 단위로 교체한다."""
+    normalized = _normalize(frame, path)
+    if path.is_file():
+        path.unlink()
+    if len(normalized) == 0:
+        delete_cache(path)
+        return normalized
+
+    partitions = _partitioned(normalized, path)
+    for name, partition in partitions.items():
+        _atomic_write(path / name / "part.parquet", partition)
+    for existing in path.glob("*/part.parquet"):
+        if existing.parent.name not in partitions:
+            shutil.rmtree(existing.parent)
+    return normalized
 
 
 def merge_cache(path: Path, new_frame: pd.DataFrame) -> pd.DataFrame:
-    """기존 캐시와 병합해 저장. 같은 Time은 새 값으로 덮어쓴다."""
-    existing = load_cache(path)
-    if existing is not None and not existing.empty:
-        merged = pd.concat([existing, new_frame])
-        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-    else:
-        merged = new_frame
-    path.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_parquet(path, row_group_size=10_000)
-    return merged
+    """영향받은 기간 파티션만 병합한다. 같은 Time은 새 값으로 덮어쓴다."""
+    normalized = _normalize(new_frame, path)
+    for name, partition in _partitioned(normalized, path).items():
+        destination = path / name / "part.parquet"
+        if destination.exists():
+            existing = _with_time_index(pd.read_parquet(destination), destination)
+            partition = _normalize(pd.concat([existing, partition]), destination)
+        _atomic_write(destination, partition)
+    if len(normalized) == 0:
+        return normalized
+    merged = load_cache(path)
+    return merged if merged is not None else normalized
+
+
+def delete_cache(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 
 
 def cache_status(
@@ -130,19 +176,23 @@ def cache_status(
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> dict | None:
-    if not path.exists():
+    files = _partition_files(path)
+    if not files:
         return None
-    filters = []
+    df = load_cache(path, columns=[])
+    if df is None:
+        return None
     if start is not None:
-        filters.append(("Time", ">=", start.to_pydatetime()))
+        df = df[df.index >= start]
     if end is not None:
-        filters.append(("Time", "<=", end.to_pydatetime()))
-    df = pd.read_parquet(path, columns=[], filters=filters or None)
+        df = df[df.index <= end]
     if len(df) == 0:
         return None
     return {
         "bars": len(df),
         "first": df.index[0].isoformat(),
         "last": df.index[-1].isoformat(),
-        "updated_at": datetime.datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+        "updated_at": datetime.datetime.fromtimestamp(
+            max(file.stat().st_mtime for file in files)
+        ).isoformat(),
     }

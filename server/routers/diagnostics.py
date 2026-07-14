@@ -14,7 +14,7 @@ from pivot.dataset.samples import (
     overlap_stats_by_symbol,
     sample_split_stats,
 )
-from pivot.dataset.batch import SPLIT_METHOD
+from pivot.dataset.batch import SPLIT_METHOD, target_key
 from pivot.labeling.fractal import confirmation_lag
 from pivot.diagnostics import quality
 from pivot.ingestion.cache import cache_path, load_cache
@@ -131,17 +131,25 @@ def diagnose_dataset(dataset_id: int) -> dict:
     split_stats = None
     split_error = None
     if dataset["status"] == "ready":
-        fractal = (
-            ((dataset.get("preset_snapshot") or {}).get("preset") or {}).get("fractal")
-            or {}
-        )
+        snapshot = dataset.get("preset_snapshot") or {}
+        preset = snapshot.get("preset") or {}
+        fractal = preset.get("fractal") or {}
+        default_n = int(fractal.get("n", 20))
+        fractal_windows = preset.get("fractal_windows") or {}
+        source_gaps = {
+            target_key(target): confirmation_lag(
+                int(fractal_windows.get(target.get("timeframe"), default_n))
+            )
+            for target in snapshot.get("targets", [])
+        }
         try:
             overlap = overlap_stats_by_symbol(
                 repo,
                 object_storage(),
                 dataset_id,
                 cache_root=SHARD_CACHE_ROOT,
-                max_end_gap=confirmation_lag(int(fractal.get("n", 20))),
+                max_end_gap=confirmation_lag(default_n),
+                max_end_gap_by_source=source_gaps,
             )
         except (SampleAccessError, RuntimeError, ValueError) as exc:
             overlap_error = str(exc)

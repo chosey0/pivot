@@ -101,17 +101,19 @@ def overlap_stats_by_symbol(
     *,
     cache_root: Path,
     max_end_gap: int,
+    max_end_gap_by_source: dict[str, int] | None = None,
 ) -> dict[str, dict]:
     """기존 dataset shard의 메타데이터만 읽어 종목별 overlap cluster를 계산한다."""
     entries = _load_index(datasets, storage, dataset_id, cache_root)["entries"]
     by_symbol: dict[str, list[dict]] = {}
     for entry in entries:
-        by_symbol.setdefault(entry["symbol"], []).append(entry)
+        by_symbol.setdefault(entry.get("source_key") or entry["symbol"], []).append(entry)
     result = {}
     for symbol, rows in by_symbol.items():
         exact = all(row.get("start_position") is not None for row in rows)
+        source_gap = (max_end_gap_by_source or {}).get(symbol, max_end_gap)
         result[symbol] = {
-            **analyze_overlap_clusters(rows, max_end_gap=max_end_gap),
+            **analyze_overlap_clusters(rows, max_end_gap=source_gap),
             "approximate": not exact,
         }
     return result
@@ -127,7 +129,10 @@ def sample_split_stats(
 ) -> dict:
     entries = _load_index(datasets, storage, dataset_id, cache_root)["entries"]
     expected = assign_sample_splits(
-        [(row["symbol"], row["sample_index"], row["label"]) for row in entries],
+        [
+            (row.get("source_key") or row["symbol"], row["sample_index"], row["label"])
+            for row in entries
+        ],
         seed=seed,
     )
     counts: dict[str, dict[str, int]] = {}
@@ -137,7 +142,8 @@ def sample_split_stats(
         split = row.get("split")
         label_counts = counts.setdefault(label, {})
         label_counts[str(split)] = label_counts.get(str(split), 0) + 1
-        if split != expected[(row["symbol"], row["sample_index"])]:
+        key = row.get("source_key") or row["symbol"]
+        if split != expected[(key, row["sample_index"])]:
             mismatched.append(row["index"])
     return {"counts": counts, "mismatched": mismatched, "total": len(entries)}
 
@@ -173,7 +179,11 @@ def _load_index(
         available = set(parquet.schema_arrow.names)
         columns = [
             *_META_COLUMNS,
-            *(name for name in ("split", *_POSITION_COLUMNS) if name in available),
+            *(
+                name
+                for name in ("split", "source_key", "timeframe", *_POSITION_COLUMNS)
+                if name in available
+            ),
         ]
         table = parquet.read(columns=columns)  # features 제외
         if table.num_rows != shard["row_count"]:
@@ -187,6 +197,8 @@ def _load_index(
                     "index": len(entries),
                     "sample_index": row["sample_index"],
                     "symbol": shard["symbol"],
+                    "source_key": row.get("source_key"),
+                    "timeframe": row.get("timeframe") or dataset["timeframe"],
                     "split": row.get("split") or splits.get(shard["symbol"]),
                     "label": row["label"],
                     "kind": row["kind"],

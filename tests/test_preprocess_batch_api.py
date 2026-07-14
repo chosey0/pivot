@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.storage.datasets import DatasetRepository
+from pivot.storage.jobs import JobRepository
 from server.routers import preprocess
 
 from fakes import FakeDb, make_candles
@@ -64,9 +65,7 @@ def test_preview_uses_overseas_cache_path(monkeypatch):
         )
     )
 
-    assert paths[0].as_posix().endswith(
-        "raw/kiwoom-overseas-nd/day/AAPL.parquet"
-    )
+    assert paths[0].as_posix().endswith("raw/kiwoom/overseas/ND/AAPL/day")
     assert response["candles"][0]["time"] == "2025-01-02"
     assert response["markers"][0]["time"] >= "2025-01-02"
 
@@ -83,6 +82,91 @@ def test_batch_request_accepts_overseas_source():
 
     assert request.symbols == ["AAPL"]
     assert request.sources["AAPL"].exchange == "ND"
+
+
+def test_batch_request_allows_same_symbol_with_distinct_collection_targets():
+    request = preprocess.BatchRequest(
+        preset_id=1,
+        dataset_name="mixed",
+        symbols=[],
+        targets=[
+            preprocess.BatchTarget(symbol="005930", timeframe="day"),
+            preprocess.BatchTarget(symbol="005930", timeframe="min1"),
+        ],
+    )
+
+    assert [target.timeframe for target in request.targets] == ["day", "min1"]
+
+
+def test_batch_request_rejects_exact_duplicate_collection_target():
+    with pytest.raises(ValidationError, match="duplicate batch targets"):
+        preprocess.BatchRequest(
+            preset_id=1,
+            dataset_name="duplicate",
+            symbols=[],
+            targets=[
+                preprocess.BatchTarget(symbol="005930", timeframe="day"),
+                preprocess.BatchTarget(symbol="005930", timeframe="day"),
+            ],
+        )
+
+
+def test_legacy_batch_request_rejects_duplicate_symbols():
+    with pytest.raises(ValidationError, match="duplicate batch targets"):
+        preprocess.BatchRequest(
+            preset_id=1,
+            dataset_name="duplicate-legacy",
+            symbols=["005930", "005930"],
+        )
+
+
+def test_batch_start_records_mixed_targets_and_counts_each_collection_item(monkeypatch):
+    db = FakeDb()
+    datasets = DatasetRepository(db)
+    jobs = JobRepository(db)
+    preset = PreprocessPreset(name="mixed-batch")
+    preset_row = {
+        "id": 1,
+        "name": preset.name,
+        "version": 1,
+        "schema_version": 1,
+        "preset": preset.model_dump(mode="json"),
+        "archived_at": None,
+    }
+
+    class Presets:
+        def get(self, preset_id: int) -> dict:
+            return preset_row
+
+    started = []
+    monkeypatch.setattr(preprocess, "preset_repo", lambda: Presets())
+    monkeypatch.setattr(preprocess, "dataset_repo", lambda: datasets)
+    monkeypatch.setattr(preprocess, "job_repo", lambda: jobs)
+    monkeypatch.setattr(preprocess, "object_storage", lambda: object())
+    monkeypatch.setattr(preprocess, "start_background", started.append)
+
+    response = preprocess.start_batch(
+        preprocess.BatchRequest(
+            preset_id=1,
+            dataset_name="mixed-targets",
+            symbols=[],
+            targets=[
+                preprocess.BatchTarget(symbol="005930", timeframe="day"),
+                preprocess.BatchTarget(symbol="005930", timeframe="min1"),
+            ],
+        )
+    )
+
+    dataset = datasets.get(response["dataset_id"])
+    job = jobs.get(response["job_id"])
+    assert dataset["timeframe"] == "mixed"
+    assert [row["timeframe"] for row in dataset["preset_snapshot"]["targets"]] == [
+        "day",
+        "min1",
+    ]
+    assert dataset["symbol_count"] == 1
+    assert job["total_items"] == 2
+    assert len(started) == 1
 
 
 def test_job_creation_failure_discards_building_dataset(monkeypatch):

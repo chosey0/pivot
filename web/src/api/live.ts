@@ -174,6 +174,8 @@ export const liveApi = {
           : { run_id: runId, artifact_id: artifactId },
       ),
     }),
+  deactivateModel: () =>
+    fetchJson<LiveStateResponse>('/api/live/model', { method: 'DELETE' }),
   subscriptions: () => fetchJson<LiveSubscription[]>('/api/live/subscriptions'),
   subscribe: (instrument: {
     symbol: string

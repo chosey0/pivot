@@ -112,6 +112,9 @@ Kiwoom WebSocket KRX 0B / US FE
   서버/repository 계층은 저장 snapshot을 공통 `resolve_stored_preset()`으로 hydrate하며,
   pairing 필드가 없으면 `latest_opposite_v1`로 읽는다. `pivot/realtime/`에는 materialize된
   도메인 설정만 전달해 저장소 의존성을 만들지 않는다.
+- 학습 데이터셋의 `datasets.timeframe`이 `mixed`여도 활성화할 수 있다. 이때 실시간 엔진은
+  checkpoint의 프리셋 기본 `timeframe`과 그 타임프레임에 대응하는 fractal 설정을 사용한다.
+  공개 deployment에도 실제 엔진 타임프레임을 반환하며 `mixed`를 봉 집계 코드로 노출하지 않는다.
 - 각 마감 봉 뒤 캐시+overlay에 필요한 이동평균을 다시 계산한다. 피처에 NaN/무한값이 있거나
   history가 부족하면 추론하지 않고 `warmup` 상태를 보낸다.
 - 새로 확정된 프랙탈은 `(n-1)//2` lag를 적용해 과거 시점에 기록한다. 후보 윈도우는 활성
@@ -141,6 +144,7 @@ Kiwoom WebSocket KRX 0B / US FE
 |---|---|---|
 | GET | `/api/live/state` | `{connection, deployment, subscriptions, counters}` |
 | PUT | `/api/live/model` | `{run_id, artifact_id?}`. 활성화 후 갱신된 state 전체 반환 |
+| DELETE | `/api/live/model` | 현재 활성 deployment를 비활성화하고 갱신된 state 전체 반환 |
 | GET | `/api/live/subscriptions` | 저장된 구독 종목과 종목별 상태 |
 | POST | `/api/live/subscriptions` | `{symbol,name,region,exchange}`. 구독 후 갱신된 구독 목록 반환 |
 | DELETE | `/api/live/subscriptions/{symbol}` | 해제 후 갱신된 구독 목록 반환 |
@@ -148,6 +152,8 @@ Kiwoom WebSocket KRX 0B / US FE
 
 모델 교체는 새 artifact 검증·모델 forward warmup 성공 후 원자적으로 활성 포인터를 바꾼다. 실패하면 기존
 모델과 구독은 유지한다. 활성 모델이 없으면 구독은 저장할 수 있지만 추론 상태는 `no_model`이다.
+모델 비활성화는 활성 deployment 이력을 삭제하지 않고 `active=false`로 전환한 뒤 메모리 추론 엔진과
+최근 예측을 해제한다. 이후 API 재시작에서도 해당 모델을 복원하지 않는다.
 `connection`은 `status/message/last_tick_at/last_heartbeat_at/market_state`, deployment는
 공개 run·dataset·artifact id, model/timeframe/features/pairing만 포함한다. 구독 행은
 `symbol/name/region/exchange`, 전송 상태

@@ -912,10 +912,17 @@ button:disabled {
   flex: 1;
   flex-direction: column;
   gap: 16px;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   padding: 16px;
-  overflow-y: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.dataset-presets {
+  flex-basis: 360px;
 }
 
 .datasets-main.reviewing {
@@ -934,7 +941,8 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 560px;
+  width: 100%;
+  min-width: 0;
 }
 
 .batch-symbols {

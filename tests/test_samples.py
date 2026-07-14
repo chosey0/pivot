@@ -173,6 +173,28 @@ class TestListSamples:
         assert all("clusters" in item for item in stats.values())
         assert all(item["approximate"] is False for item in stats.values())
 
+    def test_overlap_stats_use_source_specific_confirmation_gap(self, tmp_path, monkeypatch):
+        db, storage = FakeDb(), FakeStorage()
+        datasets, dataset_id, _ = make_ready_dataset(db, storage, symbols=("AAA",))
+        seen = []
+        monkeypatch.setattr(
+            samples,
+            "analyze_overlap_clusters",
+            lambda rows, *, max_end_gap: seen.append(max_end_gap) or {},
+        )
+
+        stats = samples.overlap_stats_by_symbol(
+            datasets,
+            storage,
+            dataset_id,
+            cache_root=tmp_path,
+            max_end_gap=2,
+            max_end_gap_by_source={"AAA": 7},
+        )
+
+        assert stats["AAA"]["approximate"] is False
+        assert seen == [7]
+
     def test_legacy_shard_without_positions_uses_approximation(self, tmp_path):
         db, storage = FakeDb(), FakeStorage()
         datasets, dataset_id, _ = make_ready_dataset(db, storage, symbols=("AAA",))

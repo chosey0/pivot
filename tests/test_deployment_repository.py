@@ -72,6 +72,21 @@ def test_activation_rejects_non_succeeded_run_without_changing_active():
     assert repo.active()["id"] == active["id"]
 
 
+def test_deactivation_clears_active_pointer_and_keeps_history():
+    db = FakeDb()
+    run, artifact = _deployable(db)
+    repo = DeploymentRepository(db)
+    active = repo.activate(run_id=run["id"], artifact_id=artifact["id"])
+
+    deactivated = repo.deactivate()
+
+    assert deactivated["id"] == active["id"]
+    assert deactivated["active"] is False
+    assert deactivated["deactivated_at"] is not None
+    assert repo.active() is None
+    assert len(db.tables["live_deployments"]) == 1
+
+
 def test_run_repository_only_returns_owned_best_artifact():
     db = FakeDb()
     run, artifact = _deployable(db)

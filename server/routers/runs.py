@@ -53,6 +53,8 @@ class StartRunRequest(BaseModel):
 class EvaluateRequest(BaseModel):
     symbol: str
     split: Literal["validation", "test"]
+    timeframe: str | None = None
+    source_key: str | None = None
 
 
 def _prediction_time(
@@ -72,7 +74,11 @@ def _prediction_time(
 
 @router.get("")
 def list_runs() -> list[dict]:
-    return [public_run(row) for row in run_repo().list()]
+    runs = run_repo()
+    return [
+        {**public_run(row), "deployment_ids": runs.deployment_ids(row["id"])}
+        for row in runs.list()
+    ]
 
 
 @router.post("")
@@ -143,12 +149,16 @@ def _mark_crashed_process(run_id: int, job_id: int, exit_code: int) -> None:
 
 @router.get("/{run_id}")
 def get_run(run_id: int) -> dict:
+    runs = run_repo()
     try:
-        detail = run_repo().detail(run_id)
+        detail = runs.detail(run_id)
     except RunNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     return {
-        "run": public_run(detail["run"]),
+        "run": {
+            **public_run(detail["run"]),
+            "deployment_ids": runs.deployment_ids(run_id),
+        },
         "epochs": detail["epochs"],
         "evaluations": [public_evaluation(row) for row in detail["evaluations"]],
         "artifacts": [public_artifact(row) for row in detail["artifacts"]],
@@ -233,10 +243,30 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
         run["dataset_id"],
         SHARD_CACHE_ROOT,
     )[request.split]
-    indices = [
-        index
+    candidates = [
+        (index, split_dataset[index])
         for index in range(len(split_dataset))
         if split_dataset[index].symbol == request.symbol
+    ]
+    timeframes = sorted({sample.timeframe for _, sample in candidates})
+    source_keys = sorted(
+        {sample.source_key for _, sample in candidates if sample.source_key is not None}
+    )
+    if request.source_key is None and len(source_keys) > 1:
+        raise HTTPException(
+            409,
+            f"symbol {request.symbol} has multiple collection targets; select source_key",
+        )
+    if request.timeframe is None and len(timeframes) > 1:
+        raise HTTPException(
+            409,
+            f"symbol {request.symbol} has multiple timeframes; select one of {timeframes}",
+        )
+    indices = [
+        index
+        for index, sample in candidates
+        if (request.timeframe is None or sample.timeframe == request.timeframe)
+        and (request.source_key is None or sample.source_key == request.source_key)
     ]
     if not indices:
         raise HTTPException(
@@ -258,9 +288,17 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
     )
     result = evaluate_model(checkpoint.model, loader, torch.device("cpu"))
     dataset = datasets.get(run["dataset_id"])
-    timeframe = dataset["timeframe"]
-    source = dataset.get("preset_snapshot", {}).get("sources", {}).get(
-        request.symbol, {}
+    timeframe = request.timeframe or timeframes[0]
+    snapshot = dataset.get("preset_snapshot", {})
+    source = next(
+        (
+            target
+            for target in snapshot.get("targets", [])
+            if target.get("symbol") == request.symbol
+            and target.get("timeframe") == timeframe
+            and (request.source_key is None or _target_source_key(target) == request.source_key)
+        ),
+        snapshot.get("sources", {}).get(request.symbol, {}),
     )
     overseas = source.get("region") == "overseas"
     return {
@@ -279,3 +317,10 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
             for point in result["points"]
         ],
     }
+
+
+def _target_source_key(target: dict) -> str:
+    return "|".join(
+        str(target.get(field) or "")
+        for field in ("region", "exchange", "symbol", "timeframe", "start", "end")
+    )

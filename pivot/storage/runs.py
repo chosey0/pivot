@@ -186,7 +186,7 @@ class RunRepository:
             int(row["id"])
             for row in self.db.select(
                 "live_deployments",
-                filters={"run_id": f"eq.{run_id}"},
+                filters={"run_id": f"eq.{run_id}", "active": "eq.true"},
                 columns="id",
             )
         ]
