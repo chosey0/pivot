@@ -8,6 +8,7 @@ import pytest
 
 from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.dataset import samples
+from pivot.dataset.batch import assign_sample_splits, split_config
 from pivot.dataset.build import run_preprocess
 from pivot.dataset.shards import build_shards, feature_schema, object_path
 from pivot.storage.datasets import DatasetRepository
@@ -38,26 +39,43 @@ def make_ready_dataset(
     symbols: tuple[str, ...] = ("AAA", "BBB"),
     *,
     target_bytes: int = 2_000,
+    sample_level: bool = False,
 ):
     """여러 shard로 나뉜 ready 데이터셋과 종목별 원본 전처리 결과를 만든다."""
     datasets = DatasetRepository(db)
     preset = make_preset()
+    expected = {
+        symbol: run_preprocess(make_candles(seed=seed), preset)
+        for seed, symbol in enumerate(symbols, start=1)
+    }
+    assignments = assign_sample_splits(
+        [
+            (symbol, index, sample.label)
+            for symbol, result in expected.items()
+            for index, sample in enumerate(result.samples)
+        ]
+    )
     dataset = datasets.create(
         name="샘플셋",
         preset_id=1,
-        preset_snapshot={},
+        preset_snapshot={"split": split_config()} if sample_level else {},
         timeframe="day",
         feature_columns=list(preset.features),
         symbols=list(symbols),
-        splits={symbol: "train" for symbol in symbols},
+        splits={} if sample_level else {symbol: "train" for symbol in symbols},
     )
-    expected = {}
     total = 0
-    for seed, symbol in enumerate(symbols, start=1):
-        result = run_preprocess(make_candles(seed=seed), preset)
-        expected[symbol] = result
+    for symbol, result in expected.items():
         shards = build_shards(
-            result.frame, result.samples, result.feature_columns, target_bytes=target_bytes
+            result.frame,
+            result.samples,
+            result.feature_columns,
+            sample_splits=(
+                [assignments[(symbol, index)] for index in range(len(result.samples))]
+                if sample_level
+                else None
+            ),
+            target_bytes=target_bytes,
         )
         assert len(shards) > 1, "다중 shard 시나리오를 보장해야 한다"
         for shard in shards:

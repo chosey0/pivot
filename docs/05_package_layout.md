@@ -41,11 +41,11 @@ pivot/                        # 저장소 루트
 │   │   ├── transforms.py     #   스케일링 공용 모듈 — 학습·실시간 추론 공유 (A4), torch 비의존
 │   │   └── loader.py         #   Storage shard 로딩 + torch Dataset/collate (마스킹/패딩 A3)
 │   ├── diagnostics/          #   데이터 품질 진단 — raw cache / preset preview / dataset 리포트
-│   │   └── quality.py        #   timestamp, OHLC, MA NaN, 라벨 분포, split 누수 검사
+│   │   └── quality.py        #   timestamp, OHLC, MA NaN, 라벨 분포, split 재현성 검사
 │   ├── models/               # ⑤ 모델
 │   │   └── cnn1d.py          #   재현 베이스라인 (B1 비교 실험의 기준점)
 │   ├── training/             # ⑥ 학습/평가
-│   │   ├── train.py          #   학습 루프 (종목 단위 split A5, 안정화 B6)
+│   │   ├── train.py          #   학습 루프 (클래스별 샘플 split, 안정화 B6)
 │   │   ├── metrics.py        #   클래스별 P/R/F1, confusion matrix (A6)
 │   │   ├── runs.py           #   학습 run orchestration + 검증 checkpoint 업로드
 │   │   ├── checkpoint.py     #   평가·실시간 공용 SHA-256/checkpoint 계약 검증 로더

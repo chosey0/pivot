@@ -8,6 +8,7 @@ rate limit(1700) 재시도는 SDK가 내장. 반환은 timestamp 오름차순 li
 """
 
 import datetime
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -27,6 +28,21 @@ Region = Literal["domestic", "overseas"]
 OVERSEAS_EXCHANGES = {"NA", "ND", "NY"}
 OVERSEAS_CHART_PATH = "/api/us/chart"
 DateBoundary = datetime.date | datetime.datetime
+OVERSEAS_SESSION_OPEN = datetime.time(4)
+OVERSEAS_SESSION_CLOSE = datetime.time(20)
+
+
+def is_supported_overseas_time(value: datetime.datetime | pd.Timestamp) -> bool:
+    time = pd.Timestamp(value).time()
+    return OVERSEAS_SESSION_OPEN <= time < OVERSEAS_SESSION_CLOSE
+
+
+def filter_overseas_day_market(
+    frame: pd.DataFrame, timeframe: Timeframe, region: Region
+) -> pd.DataFrame:
+    if frame.empty or region != "overseas" or timeframe.type == "day":
+        return frame
+    return frame.loc[[is_supported_overseas_time(value) for value in frame.index]]
 
 
 def _boundary_datetime(value: DateBoundary, *, end_of_day: bool = False) -> datetime.datetime:
@@ -180,6 +196,7 @@ async def update_cache(
     *,
     start: DateBoundary | None = None,
     end: DateBoundary | None = None,
+    warmup_bars: int = 0,
     max_pages: int | None = None,
     region: Region = "domestic",
     exchange: str = "",
@@ -190,20 +207,32 @@ async def update_cache(
     마지막 봉 이후만 증분 조회한다. 단, 미국 일봉은 부분 캐시의 과거 이력을 복구하도록
     전체 구간을 다시 조회한다.
     """
+    if warmup_bars < 0:
+        raise ValueError("warmup_bars must not be negative")
     if start and end and _boundary_datetime(start) > _boundary_datetime(end, end_of_day=True):
         raise ValueError("start date must be on or before end date")
 
     path = cache_path(data_root, cache_broker(region, exchange), timeframe.code, symbol)
     existing = load_cache(path)
+    if existing is not None:
+        filtered_existing = filter_overseas_day_market(existing, timeframe, region)
+        if len(filtered_existing) != len(existing):
+            filtered_existing.to_parquet(path, row_group_size=10_000)
+        existing = filtered_existing
 
     start_date = None
     if start is not None:
+        query_start = _boundary_datetime(start)
+        if timeframe.type == "minute" and warmup_bars:
+            trading_days = math.ceil(warmup_bars * timeframe.unit / 390)
+            calendar_days = math.ceil(trading_days * 7 / 5) + 7
+            query_start -= datetime.timedelta(days=calendar_days)
         if timeframe.type == "day":
-            start_date = _boundary_datetime(start).date().isoformat()
+            start_date = query_start.date().isoformat()
         elif isinstance(start, datetime.datetime):
-            start_date = start.strftime("%Y-%m-%d %H%M%S")
+            start_date = query_start.strftime("%Y-%m-%d %H%M%S")
         else:
-            start_date = f"{start.isoformat()} 000000"
+            start_date = f"{query_start.date().isoformat()} 000000"
     elif (
         existing is not None
         and not existing.empty
@@ -226,9 +255,15 @@ async def update_cache(
         region=region,
         exchange=exchange,
     )
-    frame = bars_to_frame(bars)
+    frame = filter_overseas_day_market(bars_to_frame(bars), timeframe, region)
     if start is not None and not frame.empty:
-        frame = frame.loc[frame.index >= pd.Timestamp(_boundary_datetime(start))]
+        start_ts = pd.Timestamp(_boundary_datetime(start))
+        requested = frame.loc[frame.index >= start_ts]
+        if timeframe.type == "minute" and warmup_bars:
+            warmup = frame.loc[frame.index < start_ts].tail(warmup_bars)
+            frame = pd.concat([warmup, requested])
+        else:
+            frame = requested
     if end is not None and not frame.empty:
         end_ts = pd.Timestamp(_boundary_datetime(end, end_of_day=True))
         frame = frame.loc[frame.index <= end_ts]

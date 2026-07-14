@@ -40,6 +40,23 @@ def test_loader_uses_stored_symbol_split_and_verified_shards(tmp_path):
     np.testing.assert_allclose(train[0].features.mean(axis=0), 0.0, atol=1e-5)
 
 
+def test_loader_uses_sample_level_stratified_split(tmp_path):
+    db, storage = FakeDb(), FakeStorage()
+    datasets, dataset_id, expected = make_ready_dataset(
+        db, storage, sample_level=True
+    )
+
+    splits = {
+        name: ShardDataset(datasets, storage, dataset_id, name, cache_root=tmp_path)
+        for name in ("train", "validation", "test")
+    }
+
+    assert sum(map(len, splits.values())) == sum(
+        len(result.samples) for result in expected.values()
+    )
+    assert all(dataset[0].symbol in expected for dataset in splits.values())
+
+
 def test_loader_rejects_latest_failed_diagnostic(tmp_path):
     db, storage = FakeDb(), FakeStorage()
     datasets, dataset_id, _ = make_ready_dataset(db, storage)

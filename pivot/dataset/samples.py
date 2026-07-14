@@ -18,6 +18,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from pivot.dataset.overlap import analyze_overlap_clusters
+from pivot.dataset.batch import assign_sample_splits
 from pivot.storage.datasets import DatasetRepository
 
 # ponytail: mtime 기준 파일 수 상한 — 부족해지면 바이트 상한 LRU로 교체
@@ -116,6 +117,31 @@ def overlap_stats_by_symbol(
     return result
 
 
+def sample_split_stats(
+    datasets: DatasetRepository,
+    storage,
+    dataset_id: int,
+    *,
+    cache_root: Path,
+    seed: int,
+) -> dict:
+    entries = _load_index(datasets, storage, dataset_id, cache_root)["entries"]
+    expected = assign_sample_splits(
+        [(row["symbol"], row["sample_index"], row["label"]) for row in entries],
+        seed=seed,
+    )
+    counts: dict[str, dict[str, int]] = {}
+    mismatched: list[int] = []
+    for row in entries:
+        label = str(row["label"])
+        split = row.get("split")
+        label_counts = counts.setdefault(label, {})
+        label_counts[str(split)] = label_counts.get(str(split), 0) + 1
+        if split != expected[(row["symbol"], row["sample_index"])]:
+            mismatched.append(row["index"])
+    return {"counts": counts, "mismatched": mismatched, "total": len(entries)}
+
+
 def evict(dataset_id: int, *, cache_root: Path | None = None) -> None:
     """데이터셋 삭제 후 메모리 인덱스와 로컬 shard 캐시를 정리한다."""
     _index_cache.pop(dataset_id, None)
@@ -145,7 +171,10 @@ def _load_index(
         data = _verified_shard_bytes(storage, shard, cache_dir)
         parquet = pq.ParquetFile(io.BytesIO(data))
         available = set(parquet.schema_arrow.names)
-        columns = [*_META_COLUMNS, *(name for name in _POSITION_COLUMNS if name in available)]
+        columns = [
+            *_META_COLUMNS,
+            *(name for name in ("split", *_POSITION_COLUMNS) if name in available),
+        ]
         table = parquet.read(columns=columns)  # features 제외
         if table.num_rows != shard["row_count"]:
             raise SampleAccessError(
@@ -156,8 +185,9 @@ def _load_index(
             entries.append(
                 {
                     "index": len(entries),
+                    "sample_index": row["sample_index"],
                     "symbol": shard["symbol"],
-                    "split": splits.get(shard["symbol"]),
+                    "split": row.get("split") or splits.get(shard["symbol"]),
                     "label": row["label"],
                     "kind": row["kind"],
                     "start_time": row["start_time"].isoformat(),

@@ -12,7 +12,7 @@ import pytest
 
 from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.dataset import samples as sample_browser
-from pivot.dataset.batch import assign_splits, build_snapshot, run_batch, split_config
+from pivot.dataset.batch import build_snapshot, run_batch, split_config
 from pivot.diagnostics import quality
 from pivot.env import env_value
 from pivot.ingestion.cache import cache_path
@@ -70,7 +70,7 @@ def test_batch_roundtrip_against_real_supabase(tmp_path):
             timeframe="day",
             feature_columns=list(preset_model.features),
             symbols=[SYMBOL],
-            splits=assign_splits([SYMBOL]),
+            splits={},
         )
         job = jobs.create(
             kind="preprocess_batch",
@@ -125,6 +125,13 @@ def test_batch_roundtrip_against_real_supabase(tmp_path):
             datasets.get(dataset["id"]),
             datasets.list_symbols(dataset["id"]),
             datasets.list_shards(dataset["id"]),
+            sample_split_stats=sample_browser.sample_split_stats(
+                datasets,
+                storage,
+                dataset["id"],
+                cache_root=cache_root,
+                seed=42,
+            ),
         )
         report_row = None
         try:

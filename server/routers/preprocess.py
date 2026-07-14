@@ -13,14 +13,13 @@ from pydantic import BaseModel, Field, model_validator
 from pivot.config import PreprocessPreset
 from pivot.dataset.batch import (
     DEFAULT_SPLIT_SEED,
-    assign_splits,
     build_snapshot,
     run_batch,
     split_config,
 )
 from pivot.dataset.build import run_preprocess
 from pivot.ingestion.cache import cache_path, load_cache
-from pivot.ingestion.fetch import BROKER, cache_broker
+from pivot.ingestion.fetch import BROKER, cache_broker, filter_overseas_day_market
 from pivot.storage.presets import PresetNotFoundError, validate_preset
 from pivot.symbols.master import DOMESTIC_SYMBOL_RE
 from server.deps import DATA_ROOT, dataset_repo, job_repo, object_storage, preset_repo
@@ -100,6 +99,9 @@ def preview(request: PreviewRequest) -> dict:
         raise HTTPException(
             404, f"no cached data for {request.symbol} ({tf.code}) — run ingest first"
         )
+    df = filter_overseas_day_market(df, tf, request.region)
+    if df.empty:
+        raise HTTPException(404, "no candles outside the overseas day market")
 
     result = run_preprocess(df, preset)
     frame = result.frame
@@ -185,7 +187,6 @@ def start_batch(request: BatchRequest) -> dict:
     if any(row["name"] == name for row in datasets.list()):
         raise HTTPException(409, f"dataset name {name!r} already exists")
 
-    splits = assign_splits(symbols, seed=request.split_seed)
     sources = {
         symbol: request.sources.get(symbol, InstrumentSource()).model_dump()
         for symbol in symbols
@@ -203,7 +204,7 @@ def start_batch(request: BatchRequest) -> dict:
             timeframe=preset.timeframe.code,
             feature_columns=list(preset.features),
             symbols=symbols,
-            splits=splits,
+            splits={},
         )
     except Exception as exc:
         raise HTTPException(503, "failed to create dataset metadata") from exc
@@ -247,6 +248,7 @@ def start_batch(request: BatchRequest) -> dict:
                 symbol: cache_broker(source["region"], source["exchange"])
                 for symbol, source in sources.items()
             },
+            split_seed=request.split_seed,
         )
     )
     return {"job_id": job["id"], "dataset_id": dataset["id"]}

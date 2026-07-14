@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pivot.config import CleaningConfig, FractalConfig, LabelingConfig, PreprocessPreset
 from pivot.dataset.batch import (
+    assign_sample_splits,
     assign_splits,
     build_snapshot,
     run_batch,
@@ -63,7 +64,7 @@ class Harness:
             timeframe="day",
             feature_columns=list(self.preset.features),
             symbols=symbols,
-            splits=assign_splits(symbols),
+            splits={},
         )
         self.job = self.jobs.create(
             kind="preprocess_batch", payload={}, total_items=len(symbols)
@@ -113,7 +114,7 @@ class TestRunBatch:
         assert dataset["status"] == "ready"
         symbol_rows = h.datasets.list_symbols(h.dataset["id"])
         assert [row["status"] for row in symbol_rows] == ["ready", "ready"]
-        assert all(row["split"] in ("train", "validation", "test") for row in symbol_rows)
+        assert all(row["split"] is None for row in symbol_rows)
         assert dataset["sample_count"] == sum(row["sample_count"] for row in symbol_rows)
         assert dataset["sample_count"] > 0
 
@@ -123,6 +124,11 @@ class TestRunBatch:
             data = h.storage.objects[(DATASET_BUCKET, shard["object_path"])]
             assert len(data) == shard["size_bytes"]
             assert shard["feature_schema"]["columns"] == h.preset.features
+            assert set(read_shard(data)["split"].to_pylist()) <= {
+                "train",
+                "validation",
+                "test",
+            }
 
         events = h.jobs.events_after(h.job["id"])
         assert [e["sequence"] for e in events] == list(range(len(events)))
@@ -267,6 +273,24 @@ class TestRunBatch:
 
 
 class TestSplits:
+    def test_samples_are_stratified_60_20_20_per_class(self):
+        samples = [
+            (f"S{index % 3}", label * 10 + index, label)
+            for label in (0, 1, 2)
+            for index in range(10)
+        ]
+        splits = assign_sample_splits(samples, seed=42)
+
+        for label in (0, 1, 2):
+            values = [
+                splits[(symbol, index)]
+                for symbol, index, row_label in samples
+                if row_label == label
+            ]
+            assert values.count("train") == 6
+            assert values.count("validation") == 2
+            assert values.count("test") == 2
+
     def test_deterministic_and_order_independent(self):
         symbols = [f"S{i:03d}" for i in range(20)]
         first = assign_splits(symbols, seed=42)
@@ -283,6 +307,16 @@ class TestSplits:
 
     def test_small_symbol_count_falls_back_to_train(self):
         assert set(assign_splits(["ONLY"]).values()) == {"train"}
+
+    def test_three_or_more_symbols_keep_all_splits_non_empty(self):
+        splits = assign_splits(["A", "B", "C", "D", "E"])
+        assert set(splits.values()) == {"train", "validation", "test"}
+
+    def test_legacy_split_remains_reproducible(self):
+        splits = assign_splits(
+            ["A", "B", "C", "D", "E"], method="seeded_shuffle_v1"
+        )
+        assert set(splits.values()) == {"train"}
 
 
 class TestBuildShards:

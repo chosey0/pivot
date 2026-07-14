@@ -15,6 +15,7 @@ import type { TimeRange, VisibleIndicators } from '../components/chart/CandleCha
 import { CandleChart } from '../components/chart/CandleChart'
 import { ChartPanel } from '../components/chart/ChartPanel'
 import { MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
+import { watchItemsForTimeframe } from '../lib/watchlist'
 
 const PREVIEW_DEBOUNCE_MS = 400
 
@@ -73,6 +74,10 @@ export function Lab() {
   const timeframe = useMemo(
     () => toTimeframeCode(timeframeKind, timeframeUnit),
     [timeframeKind, timeframeUnit],
+  )
+  const visibleWatchlist = useMemo(
+    () => watchItemsForTimeframe(watchlist, timeframe),
+    [timeframe, watchlist],
   )
 
   const featureColumns = useMemo(
@@ -143,13 +148,13 @@ export function Lab() {
 
   const selectedSymbolLabel = useMemo(() => {
     if (!selectedSymbol) return ''
-    const name = watchlist.find((item) => item.symbol === selectedSymbol)?.name
+    const name = visibleWatchlist.find((item) => item.symbol === selectedSymbol)?.name
     return name ? `${name} • ${selectedSymbol}` : selectedSymbol
-  }, [selectedSymbol, watchlist])
+  }, [selectedSymbol, visibleWatchlist])
 
   const selectedItem = useMemo(
-    () => watchlist.find((item) => item.symbol === selectedSymbol) ?? null,
-    [selectedSymbol, watchlist],
+    () => visibleWatchlist.find((item) => item.symbol === selectedSymbol) ?? null,
+    [selectedSymbol, visibleWatchlist],
   )
 
   const highlightRange = useMemo<TimeRange | null>(
@@ -163,12 +168,17 @@ export function Lab() {
   useEffect(() => {
     api
       .watchlist()
-      .then((items) => {
-        setWatchlist(items)
-        setSelectedSymbol((current) => current || items[0]?.symbol || '')
-      })
+      .then(setWatchlist)
       .catch((e: Error) => setError(e.message))
   }, [])
+
+  useEffect(() => {
+    setSelectedSymbol((current) =>
+      visibleWatchlist.some((item) => item.symbol === current)
+        ? current
+        : visibleWatchlist[0]?.symbol ?? '',
+    )
+  }, [visibleWatchlist])
 
   useEffect(() => {
     if (!selectedItem) return
@@ -314,10 +324,10 @@ export function Lab() {
         <section className="control-section grow">
           <h2>종목</h2>
           <div className="watch-table">
-            {watchlist.length === 0 ? (
-              <p className="empty">종목 & 데이터 탭에서 종목을 먼저 추가하세요.</p>
+            {visibleWatchlist.length === 0 ? (
+              <p className="empty">종목 & 데이터 탭에서 {timeframe} 데이터를 먼저 추가하세요.</p>
             ) : (
-              watchlist.map((item) => (
+              visibleWatchlist.map((item) => (
                 <div
                   className={item.symbol === selectedSymbol ? 'watch-row selected' : 'watch-row'}
                   key={`${item.region}:${item.exchange}:${item.symbol}`}

@@ -15,10 +15,11 @@ from pivot.ingestion.fetch import (
     _normalize_overseas_time,
     cache_broker,
     fetch_bars,
+    filter_overseas_day_market,
     update_cache,
 )
 from pivot.ingestion.cache import cache_path
-from server.routers.ingest import IngestRequest, _warmup_start
+from server.routers.ingest import IngestRequest
 from server.serialize import US_EASTERN, market_time
 from server.routers.watchlist import WatchItem
 
@@ -121,6 +122,68 @@ def test_overseas_extended_hour_rolls_into_the_next_calendar_day():
 
     assert row["cntr_tm"] == "20260711034300"
     assert row["cntr_tm_original"] == "20260710274300"
+
+
+def test_overseas_day_market_is_removed_from_intraday_frames():
+    index = pd.DatetimeIndex(
+        [
+            "2026-07-14 03:59:00",
+            "2026-07-14 04:00:00",
+            "2026-07-14 19:59:00",
+            "2026-07-14 20:00:00",
+        ],
+        name="Time",
+    )
+    frame = pd.DataFrame({"Close": range(4)}, index=index)
+
+    filtered = filter_overseas_day_market(
+        frame, Timeframe.from_code("min1"), "overseas"
+    )
+
+    assert list(filtered.index) == list(index[1:3])
+
+
+def test_overseas_cache_purges_existing_day_market_bars(tmp_path, monkeypatch):
+    path = cache_path(tmp_path, "kiwoom-overseas-nd", "min1", "AAPL")
+    path.parent.mkdir(parents=True)
+    index = pd.DatetimeIndex(
+        [
+            "2026-07-14 03:59:00",
+            "2026-07-14 04:00:00",
+            "2026-07-14 19:59:00",
+            "2026-07-14 20:00:00",
+        ],
+        name="Time",
+    )
+    pd.DataFrame(
+        {
+            "Open": 100,
+            "High": 101,
+            "Low": 99,
+            "Close": 100.5,
+            "Volume": 200,
+            "Amount": 20100,
+        },
+        index=index,
+    ).to_parquet(path)
+
+    async def fake_fetch_bars(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("pivot.ingestion.fetch.fetch_bars", fake_fetch_bars)
+    frame = asyncio.run(
+        update_cache(
+            object(),
+            "AAPL",
+            Timeframe.from_code("min1"),
+            tmp_path,
+            region="overseas",
+            exchange="ND",
+        )
+    )
+
+    assert list(frame.index) == list(index[1:3])
+    assert list(pd.read_parquet(path).index) == list(index[1:3])
 
 
 def test_overseas_daily_refresh_backfills_a_partial_cache(tmp_path, monkeypatch):
@@ -230,22 +293,44 @@ def test_overseas_daily_collection_date_maps_to_kst_close_date():
     ) == pd.Timestamp("2026-07-14")
 
 
-@pytest.mark.parametrize(
-    ("timeframe", "expected"),
-    [
-        ("min1", datetime.datetime(2026, 7, 14, 7, 0)),
-        ("min5", datetime.datetime(2026, 7, 13, 23, 0)),
-    ],
-)
-def test_minute_collection_includes_120_bar_ma_warmup(timeframe, expected):
-    assert _warmup_start(
-        datetime.datetime(2026, 7, 14, 9, 0),
-        Timeframe.from_code(timeframe),
-    ) == expected
+def test_minute_cache_keeps_120_actual_bars_before_requested_start(
+    tmp_path, monkeypatch
+):
+    calls = []
+    previous = pd.date_range("2026-07-13 13:00", periods=130, freq="min")
+    requested = pd.date_range("2026-07-14 09:00", periods=2, freq="min")
 
+    async def fake_fetch_bars(*args, **kwargs):
+        calls.append(kwargs)
+        return [
+            SimpleNamespace(
+                timestamp=time.strftime("%Y%m%d%H%M%S"),
+                open=100,
+                high=101,
+                low=99,
+                close=100.5,
+                volume=200,
+                amount=20100,
+            )
+            for time in [*previous, *requested]
+        ]
 
-def test_day_and_tick_collection_do_not_add_minute_warmup():
-    start = datetime.datetime(2026, 7, 14, 9, 0)
+    monkeypatch.setattr("pivot.ingestion.fetch.fetch_bars", fake_fetch_bars)
+    frame = asyncio.run(
+        update_cache(
+            object(),
+            "AAPL",
+            Timeframe.from_code("min1"),
+            tmp_path,
+            start=datetime.datetime(2026, 7, 14, 9, 0),
+            end=datetime.datetime(2026, 7, 14, 9, 1),
+            warmup_bars=120,
+            region="overseas",
+            exchange="ND",
+        )
+    )
 
-    assert _warmup_start(start, Timeframe.from_code("day")) == start
-    assert _warmup_start(start, Timeframe.from_code("tick30")) == start
+    assert calls[0]["start_date"] < "2026-07-13"
+    assert len(frame) == 122
+    assert frame.index[0] == previous[-120]
+    assert frame["Close"].rolling(120).mean().loc[requested[0]] == 100.5

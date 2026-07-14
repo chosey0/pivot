@@ -32,7 +32,7 @@ are implemented and browser-verified.
 **M3-A (presets + batch datasets) done**: `pivot/storage/` owns the Supabase boundary
 (PostgREST/Storage clients split, preset/job/dataset repositories), `pivot/dataset/shards.py`
 + `batch.py` build parquet shards (SHA-256 verified re-download before metadata insert,
-deterministic symbol-level splits), preset CRUD is version-bump/archive only,
+deterministic class-stratified sample splits), preset CRUD is version-bump/archive only,
 `POST /api/preprocess/batch` runs a durable job (jobs/job_events) streamed via
 `GET /api/jobs/{id}/events` SSE, and the Datasets tab + Lab preset save are browser-verified.
 
@@ -145,7 +145,7 @@ Docs are written in Korean; keep them in Korean. The user communicates in Korean
   base label for same-kind adjacent marker pairs and may also override 0/1 through optional
   MA/swing ignore rules.
 - When reimplementing legacy behavior, apply backlog group A fixes (float features, no
-  Time column in features, masking-safe padding, symbol-level train/val split, per-class
+  Time column in features, masking-safe padding, class-stratified sample split, per-class
   metrics, …) — see `docs/02_improvement_backlog.md`.
 
 ## Conventions

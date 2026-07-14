@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   api,
   type DatasetRow,
@@ -9,6 +9,7 @@ import {
   type WatchItem,
 } from '../api/client'
 import { MINUTE_UNITS, TICK_UNITS, toTimeframeCode, type TimeframeKind } from '../lib/timeframe'
+import { watchItemsForTimeframe } from '../lib/watchlist'
 
 const TARGET_TEXT: Record<DiagnosticTarget, string> = {
   raw_cache: '원천 캐시',
@@ -43,6 +44,18 @@ export function Diagnostics() {
   const [historyOpen, setHistoryOpen] = useState(true)
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const selectedPreset = presets.find((preset) => preset.id === presetId) ?? null
+  const selectedTimeframe =
+    target === 'preset' && selectedPreset
+      ? toTimeframeCode(
+          selectedPreset.preset.timeframe.type,
+          selectedPreset.preset.timeframe.unit,
+        )
+      : toTimeframeCode(timeframeKind, timeframeUnit)
+  const eligibleWatchlist = useMemo(
+    () => watchItemsForTimeframe(watchlist, selectedTimeframe),
+    [selectedTimeframe, watchlist],
+  )
 
   function refreshReports() {
     api
@@ -58,7 +71,6 @@ export function Diagnostics() {
       .then((items) => {
         const domestic = items.filter((item) => item.region === 'domestic')
         setWatchlist(domestic)
-        setSelectedSymbols(domestic.map((item) => item.symbol))
       })
       .catch((e: Error) => setError(e.message))
     api
@@ -76,6 +88,14 @@ export function Diagnostics() {
       })
       .catch((e: Error) => setError(e.message))
   }, [])
+
+  useEffect(() => {
+    const eligibleSymbols = eligibleWatchlist.map((item) => item.symbol)
+    setSelectedSymbols((current) => {
+      const retained = current.filter((symbol) => eligibleSymbols.includes(symbol))
+      return retained.length > 0 ? retained : eligibleSymbols
+    })
+  }, [eligibleWatchlist])
 
   function toggleSymbol(symbol: string) {
     setSelectedSymbols((current) =>
@@ -148,12 +168,14 @@ export function Diagnostics() {
 
           {target !== 'dataset' && (
             <div className="field">
-              대상 종목 ({selectedSymbols.length}/{watchlist.length})
+              대상 종목 ({selectedSymbols.length}/{eligibleWatchlist.length})
               <div className="batch-symbols">
-                {watchlist.length === 0 ? (
-                  <p className="empty">종목 & 데이터 탭에서 종목을 먼저 추가하세요.</p>
+                {eligibleWatchlist.length === 0 ? (
+                  <p className="empty">
+                    종목 & 데이터 탭에서 {selectedTimeframe} 데이터를 먼저 추가하세요.
+                  </p>
                 ) : (
-                  watchlist.map((item) => (
+                  eligibleWatchlist.map((item) => (
                     <label className="inline-check" key={item.symbol}>
                       <input
                         checked={selectedSymbols.includes(item.symbol)}

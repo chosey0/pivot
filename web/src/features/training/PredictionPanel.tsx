@@ -75,7 +75,7 @@ export function PredictionPanel({ run }: { run: RunSummary }) {
   }, [run.dataset_id])
 
   const splitSymbols = useMemo(
-    () => symbols.filter((row) => row.split === split),
+    () => symbols.filter((row) => row.split === null || row.split === split),
     [symbols, split],
   )
 

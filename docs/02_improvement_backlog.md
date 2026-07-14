@@ -25,8 +25,9 @@ conv + AdaptiveAvgPool로 평균을 내므로, 패딩이 표현에 그대로 섞
 
 ### A5. 검증/테스트 분리 없음
 전체 데이터로 학습하고 학습 acc만 기록. 일반화 성능을 알 수 없다.
-→ **종목 단위** train/val/test 분리 (같은 종목의 시퀀스가 양쪽에 들어가는 누수 방지),
-시계열이므로 기간 기준 분리도 병행 검토.
+→ 현재 확정 계약은 전체 샘플을 클래스별로 train/val/test 60/20/20 계층 분할한다.
+동일 종목의 인접·중첩 시퀀스가 서로 다른 split에 들어갈 수 있으므로, 기간 기준 분리나
+overlap cluster 단위 분리는 후속 비교 실험으로 남긴다.
 
 ### A6. 평가 지표 부재
 3-클래스인데 `binary_accuracy` + 전체 acc만 기록. 클래스 2(무시)가 다수라 acc가 부풀려진다.
@@ -92,7 +93,7 @@ lr=0.01(Adam 기준 높음) 튜닝, 스케줄러, early stopping, 시드 고정.
 [Kronos (Shi et al., arXiv:2508.02739) Appendix B](https://arxiv.org/abs/2508.02739)는
 가격 필드 결측을 경계로 분할하고, 주기별 가격 점프·비유동·가격 정체 구간을 제거하는 전용
 K-line 정제 절차를 제시한다. Pivot은 원천을 수정하지 않는 `kronos_adapted_v1` 정책으로
-이를 적용한다. 기본 `report_only`와 `filter` 데이터셋을 동일 종목 split/seed로 비교해
+이를 적용한다. 기본 `report_only`와 `filter` 데이터셋을 동일 split/seed로 비교해
 클래스 분포, 유효 샘플 수, 클래스별 P/R/F1 변화를 측정한다. 국내 가격제한·분할·거래정지와
 논문에 없는 틱봉 때문에 효과를 가정하지 않고 실험으로 판정한다. 논문의 Volume/Amount 5%
 무작위 마스킹은 클리닝과 분리해 M4 train-only 증강 실험으로 둔다.
@@ -109,5 +110,5 @@ K-line 정제 절차를 제시한다. Pivot은 원천을 수정하지 않는 `kr
   학습-추론 전처리 불일치는 `transforms` 공용 모듈로 차단
 - 데이터 품질 진단: 원천 캐시/라벨/데이터셋이 학습 가능한 상태인지 별도 Diagnostics 탭에서 확인.
   누락·중복 timestamp, OHLC 이상값, MA NaN 비율, 라벨 분포, 90% 이상 overlap cluster,
-  split 누수 여부를 학습 전 점검
+  클래스별 split 비율과 seed 재현성을 학습 전 점검
 - `.pkl` 직렬화(`tobytes`) 대신 parquet/npz 등 검토 — 가변 길이 시퀀스 저장 방식 결정 필요

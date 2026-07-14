@@ -325,6 +325,11 @@ button:disabled {
   font-size: 11px;
 }
 
+.watch-main small.data-range {
+  white-space: normal;
+  line-height: 1.35;
+}
+
 .row-actions {
   display: flex;
   align-items: center;

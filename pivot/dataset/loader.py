@@ -9,12 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 from pivot.dataset.samples import SampleAccessError, _verified_shard_bytes
+from pivot.dataset.batch import SPLIT_METHOD
 from pivot.dataset.transforms import sample_standardize
 from pivot.storage.datasets import DatasetRepository
 
@@ -61,10 +63,15 @@ class ShardDataset(Dataset[TrainingSample]):
                     f"dataset {dataset_id} failed its latest diagnostic report"
                 )
 
+        sample_level_split = (
+            ((dataset.get("preset_snapshot") or {}).get("split") or {}).get("method")
+            == SPLIT_METHOD
+        )
+        symbol_rows = datasets.list_symbols(dataset_id)
         symbols = {
             row["symbol"]: row
-            for row in datasets.list_symbols(dataset_id)
-            if row.get("split") == split
+            for row in symbol_rows
+            if sample_level_split or row.get("split") == split
         }
         if not symbols:
             raise TrainingDatasetError(f"dataset {dataset_id} has no {split} symbols")
@@ -102,11 +109,21 @@ class ShardDataset(Dataset[TrainingSample]):
         self.feature_columns = expected_columns
         self._storage = storage
         self._cache_dir = cache_root / str(dataset_id)
-        self._shards = shards
+        self._shards: list[dict] = []
+        self._row_indices: list[list[int] | None] = []
         self._ends: list[int] = []
         total = 0
         for shard in shards:
-            total += int(shard["row_count"])
+            selected = (
+                self._sample_split_rows(storage, shard, cache_root, split)
+                if sample_level_split
+                else None
+            )
+            if selected == []:
+                continue
+            self._shards.append(shard)
+            self._row_indices.append(selected)
+            total += len(selected) if selected is not None else int(shard["row_count"])
             self._ends.append(total)
         if total == 0:
             raise TrainingDatasetError(
@@ -125,7 +142,11 @@ class ShardDataset(Dataset[TrainingSample]):
         shard_index = bisect.bisect_right(self._ends, index)
         start = 0 if shard_index == 0 else self._ends[shard_index - 1]
         shard = self._shards[shard_index]
-        row = self._table(shard_index).slice(index - start, 1).to_pylist()[0]
+        row_index = index - start
+        selected = self._row_indices[shard_index]
+        if selected is not None:
+            row_index = selected[row_index]
+        row = self._table(shard_index).slice(row_index, 1).to_pylist()[0]
         features = sample_standardize(np.asarray(row["features"], dtype=np.float32))
         return TrainingSample(
             features=features,
@@ -139,7 +160,11 @@ class ShardDataset(Dataset[TrainingSample]):
         """sampler/class weight 계산용 라벨 목록. 피처 컬럼은 읽지 않는다."""
         labels: list[int] = []
         for index in range(len(self._shards)):
-            labels.extend(self._table(index, columns=["label"])["label"].to_pylist())
+            table = self._table(index, columns=["label"])
+            selected = self._row_indices[index]
+            if selected is not None:
+                table = table.take(pa.array(selected))
+            labels.extend(table["label"].to_pylist())
         return [int(label) for label in labels]
 
     def verify(self) -> None:
@@ -169,6 +194,33 @@ class ShardDataset(Dataset[TrainingSample]):
             if len(self._table_cache) > 2:
                 self._table_cache.popitem(last=False)
         return table
+
+    @staticmethod
+    def _sample_split_rows(storage, shard: dict, cache_root: Path, split: str) -> list[int]:
+        data = _verified_shard_bytes(storage, shard, cache_root / str(shard["dataset_id"]))
+        try:
+            table = pq.read_table(io.BytesIO(data), columns=["split"])
+        except Exception as exc:
+            raise TrainingDatasetError(
+                f"shard {shard['symbol']}#{shard['shard_index']} has no sample split"
+            ) from exc
+        if table.num_rows != int(shard["row_count"]):
+            raise SampleAccessError(
+                f"shard {shard['symbol']}#{shard['shard_index']} has {table.num_rows} rows, "
+                f"metadata says {shard['row_count']}"
+            )
+        values = table["split"].to_pylist()
+        invalid = set(values) - set(VALID_SPLITS)
+        if invalid:
+            raise TrainingDatasetError(
+                f"shard {shard['symbol']}#{shard['shard_index']} has invalid splits: "
+                f"{sorted(map(str, invalid))}"
+            )
+        return [
+            index
+            for index, value in enumerate(values)
+            if value == split
+        ]
 
 
 def collate_samples(samples: list[TrainingSample]) -> dict[str, object]:

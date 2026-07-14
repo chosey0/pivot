@@ -210,7 +210,11 @@ def make_dataset_rows(symbols: list[str], *, seed: int = 42):
         "class_counts": {"0": 4 * len(symbols), "1": 4 * len(symbols), "2": 2 * len(symbols)},
         "preset_snapshot": {
             "preset": {"labeling": {"sample_pairing": "adjacent_markers_v1"}},
-            "split": split_config(seed),
+            "split": {
+                "method": "seeded_shuffle_v2",
+                "seed": seed,
+                "ratios": {"train": 0.7, "validation": 0.15, "test": 0.15},
+            },
         },
     }
     symbol_rows = [
@@ -244,6 +248,24 @@ def make_dataset_rows(symbols: list[str], *, seed: int = 42):
 
 
 class TestDatasetDiagnostics:
+    def test_sample_split_counts_are_validated(self):
+        dataset, symbol_rows, shard_rows = make_dataset_rows(["AAA"])
+        dataset["preset_snapshot"]["split"] = split_config()
+        stats = {
+            "counts": {
+                "0": {"train": 6, "validation": 2, "test": 2},
+                "1": {"train": 6, "validation": 2, "test": 2},
+            },
+            "mismatched": [],
+            "total": 20,
+        }
+
+        report = quality.diagnose_dataset(
+            dataset, symbol_rows, shard_rows, sample_split_stats=stats
+        )
+
+        assert checks_by_id(report, "split_leakage")[0]["status"] == "passed"
+
     def test_healthy_dataset_passes(self):
         symbols = [f"S{i:03d}" for i in range(20)]
         dataset, symbol_rows, shard_rows = make_dataset_rows(symbols)
@@ -274,6 +296,18 @@ class TestDatasetDiagnostics:
     def test_empty_validation_split_warns(self):
         dataset, symbol_rows, shard_rows = make_dataset_rows(["AAA", "BBB"])
         report = quality.diagnose_dataset(dataset, symbol_rows, shard_rows)
+        assert checks_by_id(report, "split_leakage")[0]["status"] == "warning"
+
+    def test_legacy_split_rule_remains_verifiable(self):
+        symbols = ["A", "B", "C", "D", "E"]
+        dataset, symbol_rows, shard_rows = make_dataset_rows(symbols)
+        dataset["preset_snapshot"]["split"]["method"] = "seeded_shuffle_v1"
+        legacy = assign_splits(symbols, method="seeded_shuffle_v1")
+        for row in symbol_rows:
+            row["split"] = legacy[row["symbol"]]
+
+        report = quality.diagnose_dataset(dataset, symbol_rows, shard_rows)
+
         assert checks_by_id(report, "split_leakage")[0]["status"] == "warning"
 
     def test_shard_row_mismatch_fails(self):

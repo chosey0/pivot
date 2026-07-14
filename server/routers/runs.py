@@ -226,13 +226,6 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
         raise HTTPException(409, f"run {run_id} is {run['status']!r}, not succeeded")
 
     datasets = dataset_repo()
-    symbols = {
-        row["symbol"]: row["split"] for row in datasets.list_symbols(run["dataset_id"])
-    }
-    if symbols.get(request.symbol) != request.split:
-        raise HTTPException(
-            409, f"symbol {request.symbol} does not belong to {request.split} split"
-        )
     split_dataset = build_split_datasets(
         datasets,
         object_storage(),
@@ -246,7 +239,9 @@ def prediction_evaluation(run_id: int, request: EvaluateRequest) -> dict:
         if split_dataset[index].symbol == request.symbol
     ]
     if not indices:
-        raise HTTPException(409, f"symbol {request.symbol} has no samples")
+        raise HTTPException(
+            409, f"symbol {request.symbol} has no {request.split} samples"
+        )
 
     data = object_storage().download(artifact["bucket"], artifact["object_path"])
     try:

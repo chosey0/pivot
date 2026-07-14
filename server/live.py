@@ -26,6 +26,8 @@ from pivot.ingestion.fetch import (
     Region,
     cache_broker,
     fetch_bars,
+    filter_overseas_day_market,
+    is_supported_overseas_time,
     update_cache,
 )
 from pivot.ingestion.indicators import add_moving_averages
@@ -59,6 +61,10 @@ LIVE_MINUTE_PAGE_DAYS = 7
 LIVE_DAY_PAGE_DAYS = 365
 OVERSEAS_SYMBOL_RE = re.compile(r"^[A-Z0-9.-]{1,20}$")
 logger = logging.getLogger(__name__)
+
+
+def _now(timezone: ZoneInfo) -> dt.datetime:
+    return dt.datetime.now(timezone)
 
 
 class LiveServiceError(RuntimeError):
@@ -443,7 +449,7 @@ class LiveService:
         target = self._desired[symbol]
         source_timezone = target.timezone if target.region == "overseas" else None
         market_before = market_time(before, timeframe, source_timezone)
-        market_now = dt.datetime.now(target.timezone).replace(tzinfo=None)
+        market_now = _now(target.timezone).replace(tzinfo=None)
 
         end = (
             market_before - pd.Timedelta(microseconds=1)
@@ -511,7 +517,9 @@ class LiveService:
             async with factory() as client:
                 bars = await fetch(client)
 
-        source = bars_to_frame(bars)
+        source = filter_overseas_day_market(
+            bars_to_frame(bars), timeframe, target.region
+        )
         if timeframe.type == "day" and before is None:
             self._seed_current_day(symbol, source)
         frame = add_moving_averages(source, windows=ma_windows)
@@ -641,6 +649,10 @@ class LiveService:
             trade = trade_from_tick(event, target)
         except (TypeError, ValueError):
             self.stats["invalid_events"] += 1
+            return
+        if target.region == "overseas" and not is_supported_overseas_time(
+            trade.exchange_ts
+        ):
             return
         self._last_tick_at = dt.datetime.now(dt.UTC)
         self._last_tick_by_symbol[trade.symbol] = self._last_tick_at

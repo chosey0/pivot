@@ -11,7 +11,12 @@ import pandas as pd
 
 from pivot.cleaning.kronos import PAPER_URL, POLICY_VERSION, analyze_kline_quality
 from pivot.config import CleaningConfig, Timeframe
-from pivot.dataset.batch import SPLIT_METHOD, assign_splits
+from pivot.dataset.batch import (
+    LEGACY_SPLIT_METHOD,
+    SPLIT_METHOD,
+    SYMBOL_SPLIT_METHOD,
+    assign_splits,
+)
 
 PASSED = "passed"
 WARNING = "warning"
@@ -386,6 +391,8 @@ def diagnose_dataset(
     *,
     overlap_by_symbol: dict[str, dict] | None = None,
     overlap_error: str | None = None,
+    sample_split_stats: dict | None = None,
+    sample_split_error: str | None = None,
 ) -> dict:
     checks: list[dict] = []
 
@@ -622,7 +629,14 @@ def diagnose_dataset(
             )
         )
 
-    checks.extend(_split_checks(dataset, symbol_rows))
+    checks.extend(
+        _split_checks(
+            dataset,
+            symbol_rows,
+            sample_split_stats=sample_split_stats,
+            sample_split_error=sample_split_error,
+        )
+    )
     return build_report(
         checks,
         {
@@ -634,8 +648,14 @@ def diagnose_dataset(
     )
 
 
-def _split_checks(dataset: dict, symbol_rows: list[dict]) -> list[dict]:
-    """종목 단위 split 누수/규칙 위반 검사 (백로그 A5)."""
+def _split_checks(
+    dataset: dict,
+    symbol_rows: list[dict],
+    *,
+    sample_split_stats: dict | None,
+    sample_split_error: str | None,
+) -> list[dict]:
+    """저장된 split이 스냅샷 규칙과 일치하는지 검사한다."""
     checks: list[dict] = []
     symbols = [row["symbol"] for row in symbol_rows]
     if len(set(symbols)) != len(symbols):
@@ -643,6 +663,41 @@ def _split_checks(dataset: dict, symbol_rows: list[dict]) -> list[dict]:
             check("split_leakage", FAILED, "같은 종목이 여러 행에 존재합니다 — 누수 위험")
         )
         return checks
+    split_conf = (dataset.get("preset_snapshot") or {}).get("split") or {}
+    method = split_conf.get("method")
+    if method == SPLIT_METHOD:
+        if sample_split_error or sample_split_stats is None:
+            return [
+                check(
+                    "split_leakage",
+                    FAILED,
+                    f"샘플 split 검증 실패: {sample_split_error or '통계 없음'}",
+                )
+            ]
+        mismatched = sample_split_stats["mismatched"]
+        counts = sample_split_stats["counts"]
+        totals = {
+            split: sum(int(row.get(split, 0)) for row in counts.values())
+            for split in ("train", "validation", "test")
+        }
+        empty = [split for split, count in totals.items() if count == 0]
+        status = FAILED if mismatched or empty else PASSED
+        return [
+            check(
+                "split_leakage",
+                status,
+                f"클래스별 샘플 split 60/20/20 {totals}"
+                + (f" — 불일치 {len(mismatched)}개" if mismatched else "")
+                + (f" — 빈 split {empty}" if empty else ""),
+                data={
+                    "method": method,
+                    "counts_by_class": counts,
+                    "totals": totals,
+                    "mismatched": mismatched[:100],
+                },
+            )
+        ]
+
     missing = sorted(row["symbol"] for row in symbol_rows if row["split"] is None)
     if missing:
         checks.append(
@@ -655,8 +710,7 @@ def _split_checks(dataset: dict, symbol_rows: list[dict]) -> list[dict]:
         )
         return checks
 
-    split_conf = (dataset.get("preset_snapshot") or {}).get("split") or {}
-    if split_conf.get("method") != SPLIT_METHOD:
+    if method not in {LEGACY_SPLIT_METHOD, SYMBOL_SPLIT_METHOD}:
         checks.append(
             check(
                 "split_leakage",
@@ -667,7 +721,10 @@ def _split_checks(dataset: dict, symbol_rows: list[dict]) -> list[dict]:
         return checks
 
     expected = assign_splits(
-        symbols, seed=int(split_conf["seed"]), ratios=split_conf["ratios"]
+        symbols,
+        seed=int(split_conf["seed"]),
+        ratios=split_conf["ratios"],
+        method=method,
     )
     actual = {row["symbol"]: row["split"] for row in symbol_rows}
     mismatched = sorted(

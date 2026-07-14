@@ -124,9 +124,21 @@ def merge_cache(path: Path, new_frame: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
-def cache_status(path: Path) -> dict | None:
-    df = load_cache(path)
-    if df is None or df.empty:
+def cache_status(
+    path: Path,
+    *,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> dict | None:
+    if not path.exists():
+        return None
+    filters = []
+    if start is not None:
+        filters.append(("Time", ">=", start.to_pydatetime()))
+    if end is not None:
+        filters.append(("Time", "<=", end.to_pydatetime()))
+    df = pd.read_parquet(path, columns=[], filters=filters or None)
+    if len(df) == 0:
         return None
     return {
         "bars": len(df),

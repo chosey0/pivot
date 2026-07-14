@@ -220,6 +220,32 @@ def test_overseas_trade_uses_us_exchange_date_and_timezone():
     assert trade.timezone == US_EASTERN
 
 
+def test_live_overseas_day_market_trade_is_ignored(tmp_path: Path):
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {
+            "AAPL": LiveTarget("AAPL", "Apple", "overseas", "ND")
+        }
+        service._sync_subscription_state()
+
+        await service.handle_sdk_event(
+            SimpleNamespace(
+                tr_id="FE",
+                symbol="AAPL",
+                exchange_ts="20:00:00",
+                received_at="2026-07-15T00:00:00+00:00",
+                received_seq=1,
+                price=Decimal("225.50"),
+                volume=3,
+            )
+        )
+
+        assert service._latest_candles == {}
+        assert service._last_tick_by_symbol == {}
+
+    asyncio.run(scenario())
+
+
 def test_gateway_restores_and_mutates_subscriptions_on_one_session(tmp_path: Path):
     async def scenario():
         store = SubscriptionStore(tmp_path / "live.json")
@@ -424,7 +450,8 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
 def test_live_minute_history_fetches_kiwoom_and_returns_only_today(
     tmp_path: Path, monkeypatch
 ):
-    today = dt.datetime.now(KST).date()
+    now = dt.datetime(2026, 7, 14, 12, tzinfo=KST)
+    today = now.date()
     yesterday = today - dt.timedelta(days=1)
     calls = []
 
@@ -465,6 +492,7 @@ def test_live_minute_history_fetches_kiwoom_and_returns_only_today(
         )
 
     monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    monkeypatch.setattr(live_module, "_now", lambda timezone: now.astimezone(timezone))
     asyncio.run(scenario())
 
     assert calls[0][1:3] == ("005930", "min1")
@@ -601,7 +629,8 @@ def test_live_day_history_seeds_today_before_realtime_updates(
 def test_live_history_uses_active_training_preset_for_fractal_markers(
     tmp_path: Path, monkeypatch
 ):
-    today = dt.datetime.now(KST).date()
+    now = dt.datetime(2026, 7, 14, 12, tzinfo=KST)
+    today = now.date()
     prices = [100, 105, 101, 99, 102]
 
     async def fetch(*args, **kwargs):
@@ -636,6 +665,7 @@ def test_live_history_uses_active_training_preset_for_fractal_markers(
         ]
 
     monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    monkeypatch.setattr(live_module, "_now", lambda timezone: now.astimezone(timezone))
     asyncio.run(scenario())
 
 

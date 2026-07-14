@@ -31,6 +31,9 @@ export interface WatchItem {
   name: string
   region: InstrumentRegion
   exchange: string
+  timeframe: TimeframeCode
+  start: string | null
+  end: string | null
 }
 
 export type InstrumentRegion = 'domestic' | 'overseas'
@@ -71,6 +74,8 @@ export interface IngestOptions {
 export interface ChartOptions {
   limit?: number
   before?: string | number
+  start?: string
+  end?: string
   region?: InstrumentRegion
   exchange?: string
 }
@@ -374,10 +379,18 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(item),
     }),
-  removeWatchItem: (symbol: string) =>
-    fetchJson<WatchItem[]>(`/api/watchlist/${encodeURIComponent(symbol)}`, {
+  removeWatchItem: (item: WatchItem) => {
+    const params = new URLSearchParams({
+      timeframe: item.timeframe,
+      region: item.region,
+      exchange: item.exchange,
+    })
+    if (item.start) params.set('start', item.start)
+    if (item.end) params.set('end', item.end)
+    return fetchJson<WatchItem[]>(`/api/watchlist/${encodeURIComponent(item.symbol)}?${params}`, {
       method: 'DELETE',
-    }),
+    })
+  },
   ingest: (symbols: string[], timeframe: TimeframeCode, options: IngestOptions = {}) =>
     fetchJson<IngestResponse>('/api/ingest', {
       method: 'POST',
@@ -393,7 +406,7 @@ export const api = {
   ingestStatus: (
     symbols: string[],
     timeframe: TimeframeCode,
-    options: Pick<IngestOptions, 'region' | 'exchange'> = {},
+    options: Pick<IngestOptions, 'region' | 'exchange' | 'start' | 'end'> = {},
   ) => {
     const params = new URLSearchParams({
       symbols: symbols.join(','),
@@ -401,6 +414,8 @@ export const api = {
       region: options.region || 'domestic',
       exchange: options.exchange || '',
     })
+    if (options.start) params.set('start', options.start)
+    if (options.end) params.set('end', options.end)
     return fetchJson<Record<string, CacheStatus | null>>(`/api/ingest/status?${params}`)
   },
   chart: (
@@ -413,6 +428,8 @@ export const api = {
     if (maWindows.length > 0) params.set('ma', maWindows.join(','))
     if (options.limit) params.set('limit', String(options.limit))
     if (options.before !== undefined) params.set('before', String(options.before))
+    if (options.start) params.set('start', options.start)
+    if (options.end) params.set('end', options.end)
     params.set('region', options.region || 'domestic')
     if (options.exchange) params.set('exchange', options.exchange)
     return fetchJson<ChartResponse>(`/api/chart/${encodeURIComponent(symbol)}?${params}`)

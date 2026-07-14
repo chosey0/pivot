@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   type DatasetRow,
@@ -9,6 +9,8 @@ import {
   type WatchItem,
 } from '../api/client'
 import { MiniSampleChart } from '../components/chart/MiniSampleChart'
+import { toTimeframeCode } from '../lib/timeframe'
+import { watchItemsForTimeframe } from '../lib/watchlist'
 
 const DATASET_STATUS_TEXT: Record<string, string> = {
   building: '생성 중',
@@ -86,6 +88,18 @@ export function Datasets() {
   const [sampleError, setSampleError] = useState<string | null>(null)
   const [samplesLoading, setSamplesLoading] = useState(false)
   const [sampleDetailLoading, setSampleDetailLoading] = useState(false)
+  const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? null
+  const selectedTimeframe = selectedPreset
+    ? toTimeframeCode(
+        selectedPreset.preset.timeframe.type,
+        selectedPreset.preset.timeframe.unit,
+      )
+    : null
+  const eligibleWatchlist = useMemo(
+    () =>
+      selectedTimeframe ? watchItemsForTimeframe(watchlist, selectedTimeframe) : [],
+    [selectedTimeframe, watchlist],
+  )
 
   const refreshPresets = useCallback(() => {
     setPresetsLoading(true)
@@ -124,13 +138,18 @@ export function Datasets() {
     refreshDatasets()
     api
       .watchlist()
-      .then((items) => {
-        setWatchlist(items)
-        setSelectedSymbols(items.map((item) => item.symbol))
-      })
+      .then(setWatchlist)
       .catch((e: Error) => setError(e.message))
     return () => eventSourceRef.current?.close()
   }, [refreshDatasets, refreshPresets])
+
+  useEffect(() => {
+    const eligibleSymbols = eligibleWatchlist.map((item) => item.symbol)
+    setSelectedSymbols((current) => {
+      const retained = current.filter((symbol) => eligibleSymbols.includes(symbol))
+      return retained.length > 0 ? retained : eligibleSymbols
+    })
+  }, [eligibleWatchlist])
 
   function toggleSymbol(symbol: string) {
     setSelectedSymbols((current) =>
@@ -240,7 +259,7 @@ export function Datasets() {
       const { job_id } = await api.preprocessBatch(
         selectedPresetId,
         datasetName.trim(),
-        watchlist.filter((item) => selectedSymbols.includes(item.symbol)),
+        eligibleWatchlist.filter((item) => selectedSymbols.includes(item.symbol)),
       )
       const started = await api.job(job_id)
       setJob(started)
@@ -423,7 +442,6 @@ export function Datasets() {
 
   const jobRunning = job !== null && (job.status === 'queued' || job.status === 'running')
   const sampleRate = selectedSample ? sampleChangeRate(selectedSample) : null
-  const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? null
   const visiblePresets = showArchivedPresets ? archivedPresets : presets
   const totalPages = page ? Math.max(Math.ceil(page.total / PAGE_SIZE), 1) : 1
   const currentPage = Math.floor(pageOffset / PAGE_SIZE) + 1
@@ -551,12 +569,14 @@ export function Datasets() {
               />
             </label>
             <div className="field">
-              대상 종목 ({selectedSymbols.length}/{watchlist.length})
+              대상 종목 ({selectedSymbols.length}/{eligibleWatchlist.length})
               <div className="batch-symbols">
-                {watchlist.length === 0 ? (
-                  <p className="empty">종목 & 데이터 탭에서 종목을 먼저 추가하세요.</p>
+                {eligibleWatchlist.length === 0 ? (
+                  <p className="empty">
+                    종목 & 데이터 탭에서 {selectedTimeframe ?? '해당 타임프레임'} 데이터를 먼저 추가하세요.
+                  </p>
                 ) : (
-                  watchlist.map((item) => (
+                  eligibleWatchlist.map((item) => (
                     <label
                       className="inline-check"
                       key={`${item.region}:${item.exchange}:${item.symbol}`}
@@ -588,7 +608,7 @@ export function Datasets() {
             </button>
             <p className="hint">
               선택한 프리셋을 로컬 캔들 캐시에 적용해 Supabase에 데이터셋을 생성합니다.
-              종목 단위 train/validation/test split이 자동 배정됩니다.
+              전체 샘플을 클래스별로 train/validation/test 60/20/20으로 자동 배정합니다.
             </p>
           </div>
             </section>

@@ -26,6 +26,7 @@ SHARD_SCHEMA = pa.schema(
     [
         ("sample_index", pa.int32()),
         ("label", pa.int8()),
+        ("split", pa.string()),
         ("kind", pa.string()),
         ("start_time", pa.timestamp("us")),
         ("end_time", pa.timestamp("us")),
@@ -67,12 +68,15 @@ def build_shards(
     samples: list[Sample],
     feature_columns: list[str],
     *,
+    sample_splits: list[str] | None = None,
     target_bytes: int = SHARD_TARGET_BYTES,
 ) -> list[ShardBlob]:
     """run_preprocess 결과를 shard 목록으로 직렬화한다.
 
     sample_index는 종목 내 전역 순번이라 shard가 나뉘어도 이어진다.
     """
+    if sample_splits is not None and len(sample_splits) != len(samples):
+        raise ValueError("sample_splits length must match samples")
     features = frame[feature_columns].astype("float64")
     times = frame.index
 
@@ -90,7 +94,7 @@ def build_shards(
     for shard_index, chunk in enumerate(chunks):
         if not chunk:
             continue  # 샘플 0개면 shard를 만들지 않는다
-        data = _serialize_chunk(chunk, features, times)
+        data = _serialize_chunk(chunk, features, times, sample_splits)
         if len(data) >= SHARD_MAX_BYTES:
             raise ValueError(
                 f"shard {shard_index} is {len(data)} bytes — exceeds the "
@@ -116,12 +120,14 @@ def _serialize_chunk(
     chunk: list[tuple[int, Sample]],
     features: pd.DataFrame,
     times: pd.Index,
+    sample_splits: list[str] | None,
 ) -> bytes:
     rows: dict[str, list] = {name: [] for name in SHARD_SCHEMA.names}
     for index, sample in chunk:
         window = features.iloc[sample.start_position : sample.end_position + 1]
         rows["sample_index"].append(index)
         rows["label"].append(sample.label)
+        rows["split"].append(sample_splits[index] if sample_splits else None)
         rows["kind"].append(sample.kind)
         rows["start_time"].append(times[sample.start_position].to_pydatetime())
         rows["end_time"].append(times[sample.end_position].to_pydatetime())

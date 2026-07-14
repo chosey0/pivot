@@ -9,7 +9,12 @@ from pydantic import BaseModel, field_validator
 
 from pivot.config import Timeframe
 from pivot.dataset.build import run_preprocess
-from pivot.dataset.samples import SampleAccessError, overlap_stats_by_symbol
+from pivot.dataset.samples import (
+    SampleAccessError,
+    overlap_stats_by_symbol,
+    sample_split_stats,
+)
+from pivot.dataset.batch import SPLIT_METHOD
 from pivot.labeling.fractal import confirmation_lag
 from pivot.diagnostics import quality
 from pivot.ingestion.cache import cache_path, load_cache
@@ -123,6 +128,8 @@ def diagnose_dataset(dataset_id: int) -> dict:
         raise HTTPException(404, str(exc)) from exc
     overlap = None
     overlap_error = None
+    split_stats = None
+    split_error = None
     if dataset["status"] == "ready":
         fractal = (
             ((dataset.get("preset_snapshot") or {}).get("preset") or {}).get("fractal")
@@ -138,12 +145,26 @@ def diagnose_dataset(dataset_id: int) -> dict:
             )
         except (SampleAccessError, RuntimeError, ValueError) as exc:
             overlap_error = str(exc)
+        split_config = (dataset.get("preset_snapshot") or {}).get("split") or {}
+        if split_config.get("method") == SPLIT_METHOD:
+            try:
+                split_stats = sample_split_stats(
+                    repo,
+                    object_storage(),
+                    dataset_id,
+                    cache_root=SHARD_CACHE_ROOT,
+                    seed=int(split_config["seed"]),
+                )
+            except (SampleAccessError, RuntimeError, ValueError) as exc:
+                split_error = str(exc)
     report = quality.diagnose_dataset(
         dataset,
         repo.list_symbols(dataset_id),
         repo.list_shards(dataset_id),
         overlap_by_symbol=overlap,
         overlap_error=overlap_error,
+        sample_split_stats=split_stats,
+        sample_split_error=split_error,
     )
     return _save(
         report,
