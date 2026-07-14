@@ -4,7 +4,6 @@ import {
   type CacheStatus,
   type ChartResponse,
   type InstrumentRegion,
-  type SymbolSuggestion,
   type TimeframeCode,
   type WatchItem,
 } from '../api/client'
@@ -13,6 +12,7 @@ import { CandleChart } from '../components/chart/CandleChart'
 import { ChartPanel } from '../components/chart/ChartPanel'
 import { IndicatorSettingsPanel } from '../components/indicators/IndicatorSettingsPanel'
 import { useIndicatorSettings } from '../components/indicators/useIndicatorSettings'
+import { SymbolSearchBox } from '../components/symbols/SymbolSearchBox'
 import { mergeChartPages } from '../lib/chart'
 import { changeTone, formatDateTime, formatPercent, formatPrice, percentChange } from '../lib/format'
 import { chartLimitFor, MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
@@ -41,12 +41,6 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
   const [nameInput, setNameInput] = useState('삼성전자')
   const [region, setRegion] = useState<InstrumentRegion>('domestic')
   const [exchange, setExchange] = useState('ND')
-  const [symbolSuggestions, setSymbolSuggestions] = useState<SymbolSuggestion[]>([])
-  const [symbolSuggestionOpen, setSymbolSuggestionOpen] = useState(false)
-  const [symbolSuggestionIndex, setSymbolSuggestionIndex] = useState(0)
-  const [symbolSearchField, setSymbolSearchField] = useState<'symbol' | 'name'>('symbol')
-  const [symbolSearchTouched, setSymbolSearchTouched] = useState(false)
-  const [symbolSearchLoading, setSymbolSearchLoading] = useState(false)
   const [rangeEnabled, setRangeEnabled] = useState(false)
   const [startDate, setStartDate] = useState(today)
   const [endDate, setEndDate] = useState(today)
@@ -102,11 +96,6 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       }
     })
   }, [displayedOhlc, displayedOhlcPreviousClose])
-  const symbolSearchQuery = useMemo(
-    () => (symbolSearchField === 'symbol' ? symbolInput : nameInput).trim(),
-    [nameInput, symbolInput, symbolSearchField],
-  )
-
   const refreshWatchlist = useCallback(async () => {
     const items = await api.watchlist()
     setWatchlist(items)
@@ -212,63 +201,13 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
     )
   }, [chart, onSubtitleChange])
 
-  useEffect(() => {
-    if (!symbolSearchTouched || symbolSearchQuery.length < 2) {
-      setSymbolSuggestions([])
-      setSymbolSuggestionOpen(false)
-      setSymbolSearchLoading(false)
-      return
-    }
-    const controller = new AbortController()
-    const timer = window.setTimeout(() => {
-      setSymbolSearchLoading(true)
-      api.symbolSearch(symbolSearchQuery, region, controller.signal)
-        .then((items) => {
-          setSymbolSuggestions(items)
-          setSymbolSuggestionIndex(0)
-          setSymbolSuggestionOpen(items.length > 0)
-        })
-        .catch((e: Error) => {
-          if (e.name !== 'AbortError') setError(e.message)
-        })
-        .finally(() => setSymbolSearchLoading(false))
-    }, 180)
-    return () => {
-      window.clearTimeout(timer)
-      controller.abort()
-    }
-  }, [region, symbolSearchQuery, symbolSearchTouched])
-
-  function selectSymbolSuggestion(item: SymbolSuggestion) {
-    setSymbolInput(item.symbol)
-    setNameInput(item.name)
-    if (item.exchange) setExchange(item.exchange)
-    setSymbolSuggestionOpen(false)
-    setSymbolSuggestions([])
-  }
-
-  function handleSymbolSuggestKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (!symbolSuggestionOpen || symbolSuggestions.length === 0) return
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      setSymbolSuggestionIndex((current) => (current + 1) % symbolSuggestions.length)
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      setSymbolSuggestionIndex((current) =>
-        current === 0 ? symbolSuggestions.length - 1 : current - 1,
-      )
-    } else if (event.key === 'Enter') {
-      event.preventDefault()
-      selectSymbolSuggestion(symbolSuggestions[symbolSuggestionIndex])
-    } else if (event.key === 'Escape') {
-      setSymbolSuggestionOpen(false)
-    }
-  }
-
   async function addWatchItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const symbol = symbolInput.trim().toUpperCase()
-    if (!symbol) return
+    if (!symbol) {
+      setError('검색 결과에서 종목을 선택하세요.')
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -280,7 +219,6 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
       })
       setWatchlist(items)
       setSelectedSymbol(symbol)
-      setSymbolSuggestionOpen(false)
       await refreshStatus(items, timeframe)
       setMessage(`${symbol}을 종목 목록에 추가했습니다.`)
     } catch (e) {
@@ -442,26 +380,8 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
 
         <section className="control-section">
           <h2>종목 추가</h2>
-          <div className="range-grid">
-            <label className="field">
-              시장
-              <select
-                onChange={(event) => {
-                  const next = event.target.value as InstrumentRegion
-                  setRegion(next)
-                  setSymbolInput(next === 'domestic' ? '005930' : '')
-                  setNameInput(next === 'domestic' ? '삼성전자' : '')
-                  setSymbolSuggestions([])
-                  setSymbolSuggestionOpen(false)
-                  setSymbolSearchTouched(false)
-                }}
-                value={region}
-              >
-                <option value="domestic">국내</option>
-                <option value="overseas">해외</option>
-              </select>
-            </label>
-            {region === 'overseas' ? (
+          {region === 'overseas' ? (
+            <div className="range-grid">
               <label className="field">
                 거래소
                 <select onChange={(event) => setExchange(event.target.value)} value={exchange}>
@@ -470,83 +390,50 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
                   <option value="NA">AMEX</option>
                 </select>
               </label>
-            ) : null}
-          </div>
-          <div className="symbol-search-box">
-            <form className="add-form" onSubmit={addWatchItem}>
-              <label className="field">
-                종목코드
-                <input
-                  autoComplete="off"
-                  maxLength={20}
-                  onChange={(event) => {
-                    setSymbolSearchField('symbol')
-                    setSymbolSearchTouched(true)
-                    setSymbolInput(event.target.value)
-                  }}
-                  onFocus={() => {
-                    setSymbolSearchField('symbol')
-                    setSymbolSearchTouched(true)
-                    setSymbolSuggestionOpen(symbolSuggestions.length > 0)
-                  }}
-                  onKeyDown={handleSymbolSuggestKeyDown}
-                  placeholder={region === 'domestic' ? '005930' : 'AAPL'}
-                  value={symbolInput}
-                />
-              </label>
-              <label className="field">
-                종목명
-                <input
-                  autoComplete="off"
-                  onChange={(event) => {
-                    setSymbolSearchField('name')
-                    setSymbolSearchTouched(true)
-                    setNameInput(event.target.value)
-                  }}
-                  onFocus={() => {
-                    setSymbolSearchField('name')
-                    setSymbolSearchTouched(true)
-                    setSymbolSuggestionOpen(symbolSuggestions.length > 0)
-                  }}
-                  onKeyDown={handleSymbolSuggestKeyDown}
-                  placeholder={region === 'domestic' ? '삼성전자' : 'Apple'}
-                  value={nameInput}
-                />
-              </label>
-              <button className="primary" disabled={loading} type="submit">
-                추가
-              </button>
-            </form>
-            {(symbolSuggestionOpen || symbolSearchLoading) && (
-              <div className="symbol-suggestions" role="listbox">
-                {symbolSearchLoading && symbolSuggestions.length === 0 ? (
-                  <div className="symbol-suggestion muted">검색 중...</div>
-                ) : (
-                  symbolSuggestions.map((item, index) => (
-                    <button
-                      className={
-                        index === symbolSuggestionIndex
-                          ? 'symbol-suggestion active'
-                          : 'symbol-suggestion'
-                      }
-                      key={`${item.market}:${item.symbol}`}
-                      onMouseDown={(event) => {
-                        event.preventDefault()
-                        selectSymbolSuggestion(item)
-                      }}
-                      onMouseEnter={() => setSymbolSuggestionIndex(index)}
-                      role="option"
-                      type="button"
-                    >
-                      <strong>{item.name}</strong>
-                      <span>{item.symbol}</span>
-                      <em>{item.market}</em>
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
+            </div>
+          ) : null}
+          <form className="add-form" onSubmit={addWatchItem}>
+            <label className="field">
+              시장
+              <select
+                onChange={(event) => {
+                  const next = event.target.value as InstrumentRegion
+                  setRegion(next)
+                  setSymbolInput(next === 'domestic' ? '005930' : '')
+                  setNameInput(next === 'domestic' ? '삼성전자' : '')
+                }}
+                value={region}
+              >
+                <option value="domestic">국내</option>
+                <option value="overseas">해외</option>
+              </select>
+            </label>
+            <label className="field">
+              종목명 또는 코드
+              <SymbolSearchBox
+                onError={setError}
+                onQueryChange={(query) => {
+                  setSymbolInput('')
+                  setNameInput(query)
+                  setError(null)
+                }}
+                onSelect={(item) => {
+                  setSymbolInput(item.symbol)
+                  setNameInput(item.name)
+                  if (item.exchange) setExchange(item.exchange)
+                }}
+                placeholder={
+                  region === 'domestic' ? '삼성전자 또는 005930' : 'Apple 또는 AAPL'
+                }
+                query={nameInput}
+                region={region}
+                selectedSymbol={symbolInput}
+              />
+            </label>
+            <button className="primary" disabled={loading} type="submit">
+              추가
+            </button>
+          </form>
         </section>
 
         <section className="control-section grow">
@@ -563,7 +450,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
           </div>
           <div className="watch-table">
             {watchlist.length === 0 ? (
-              <p className="empty">종목코드와 이름을 직접 입력해 종목을 추가하세요.</p>
+              <p className="empty">종목을 검색해 목록에 추가하세요.</p>
             ) : (
               watchlist.map((item) => {
                 const status = statuses[item.symbol]

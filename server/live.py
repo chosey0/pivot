@@ -422,6 +422,8 @@ class LiveService:
                 bars = await fetch(client)
 
         source = bars_to_frame(bars)
+        if timeframe.type == "day" and before is None:
+            self._seed_current_day(symbol, source)
         frame = add_moving_averages(source, windows=ma_windows)
         if frame.empty:
             page = frame
@@ -653,6 +655,45 @@ class LiveService:
                 observing_since=observed_at,
             )
             self._latest_candles.pop(key, None)
+
+    def _seed_current_day(self, symbol: str, frame: pd.DataFrame) -> None:
+        now = dt.datetime.now(KST)
+        today = pd.Timestamp(now.replace(tzinfo=None)).normalize()
+        if today not in frame.index:
+            return
+        row = frame.loc[today]
+        close = Decimal(str(row["Close"]))
+        volume = int(row["Volume"])
+        amount = (
+            close * volume
+            if pd.isna(row["Amount"])
+            else Decimal(str(row["Amount"]))
+        )
+        key = (symbol, "day")
+        aggregator = self._aggregators.setdefault(
+            key,
+            CandleAggregator(symbol, Timeframe.from_code("day"), observing_since=now),
+        )
+        seeded = aggregator.seed_current(
+            Candle(
+                symbol=symbol,
+                timeframe="day",
+                sequence=0,
+                start_at=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                end_at=now,
+                open=Decimal(str(row["Open"])),
+                high=Decimal(str(row["High"])),
+                low=Decimal(str(row["Low"])),
+                close=close,
+                volume=volume,
+                amount=amount,
+                trade_count=0,
+            )
+        )
+        if seeded is not None:
+            self._latest_candles[key] = self._candle_payload(
+                seeded, provisional=True
+            )
 
     async def _ensure_gateway(self) -> None:
         if not self._desired or self._closed:

@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  api,
-  type ChartResponse,
-  type TimeframeCode,
-  type WatchItem,
-} from '../api/client'
+import { type ChartResponse, type TimeframeCode } from '../api/client'
 import {
   liveApi,
   type LiveConnectionStatus,
@@ -19,6 +14,7 @@ import {
 import { ChartPanel } from '../components/chart/ChartPanel'
 import { IndicatorSettingsPanel } from '../components/indicators/IndicatorSettingsPanel'
 import { useIndicatorSettings } from '../components/indicators/useIndicatorSettings'
+import { SymbolSearchBox } from '../components/symbols/SymbolSearchBox'
 import { ModelPanel } from '../features/live/ModelPanel'
 import { PredictionLog } from '../features/live/PredictionLog'
 import { formatEventTime } from '../features/live/time'
@@ -86,7 +82,7 @@ function mergeLiveHistory(
 export function Live() {
   const { state, socketStatus, applyState, applySubscriptions, dismissError } = useLiveSocket()
   const [stateError, setStateError] = useState<string | null>(null)
-  const [watchlist, setWatchlist] = useState<WatchItem[]>([])
+  const [addQuery, setAddQuery] = useState('')
   const [addSymbol, setAddSymbol] = useState('')
   const [mutating, setMutating] = useState(false)
   const [subscribeError, setSubscribeError] = useState<string | null>(null)
@@ -110,6 +106,10 @@ export function Live() {
     legendText,
   } = indicators
   const maWindowsKey = maWindows.join(',')
+  const subscribedSymbols = useMemo(
+    () => new Set(state.subscriptions.map((row) => row.symbol)),
+    [state.subscriptions],
+  )
 
   // WS snapshot 이전에도 화면을 채울 수 있도록 HTTP 상태를 한 번 읽는다
   useEffect(() => {
@@ -124,12 +124,6 @@ export function Live() {
       .catch((e: Error) => {
         if (!stale) setStateError(e.message)
       })
-    api
-      .watchlist()
-      .then((items) => {
-        if (!stale) setWatchlist(items.filter((item) => item.region === 'domestic'))
-      })
-      .catch(() => undefined) // 관심종목은 구독 추가 보조 UI라 실패해도 페이지는 동작한다
     return () => {
       stale = true
     }
@@ -292,12 +286,6 @@ export function Live() {
     )
   }, [chartTimeframe, historicalChart, merged.candles, selectedSymbol, state.predictions])
 
-  const subscribedSymbols = useMemo(
-    () => new Set(state.subscriptions.map((row) => row.symbol)),
-    [state.subscriptions],
-  )
-  const addCandidates = watchlist.filter((item) => !subscribedSymbols.has(item.symbol))
-
   const subscribe = useCallback(async () => {
     if (!addSymbol) return
     setMutating(true)
@@ -306,6 +294,7 @@ export function Live() {
       const rows = await liveApi.subscribe(addSymbol)
       applySubscriptions(rows)
       setSelectedSymbol(addSymbol)
+      setAddQuery('')
       setAddSymbol('')
     } catch (e) {
       setSubscribeError(e instanceof Error ? e.message : String(e))
@@ -394,18 +383,24 @@ export function Live() {
             <p className="hint">활성 모델이 없어 모든 종목의 추론 상태가 no_model입니다.</p>
           ) : null}
           <div className="live-add-row">
-            <select
-              disabled={addCandidates.length === 0 || mutating}
-              onChange={(event) => setAddSymbol(event.target.value)}
-              value={addSymbol}
-            >
-              <option value="">관심종목에서 선택...</option>
-              {addCandidates.map((item) => (
-                <option key={item.symbol} value={item.symbol}>
-                  {item.name || item.symbol} · {item.symbol}
-                </option>
-              ))}
-            </select>
+            <SymbolSearchBox
+              disabled={mutating}
+              excludeSymbols={subscribedSymbols}
+              onError={setSubscribeError}
+              onQueryChange={(query) => {
+                setAddQuery(query)
+                setAddSymbol('')
+                setSubscribeError(null)
+              }}
+              onSelect={(item) => {
+                setAddQuery(`${item.name} · ${item.symbol}`)
+                setAddSymbol(item.symbol)
+              }}
+              placeholder="종목명 또는 코드"
+              query={addQuery}
+              region="domestic"
+              selectedSymbol={addSymbol}
+            />
             <button
               className="primary"
               disabled={!addSymbol || mutating}
@@ -418,7 +413,7 @@ export function Live() {
           {subscribeError ? <p className="error">구독 오류: {subscribeError}</p> : null}
           {state.subscriptions.length === 0 ? (
             <p className="empty">
-              구독 중인 종목이 없습니다. 관심종목에서 선택해 실시간 구독을 시작하세요.
+              구독 중인 종목이 없습니다. 종목을 검색해 실시간 구독을 시작하세요.
             </p>
           ) : (
             <div className="live-sub-list">

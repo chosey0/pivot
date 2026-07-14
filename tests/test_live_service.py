@@ -354,6 +354,67 @@ def test_live_minute_history_fetches_kiwoom_and_returns_only_today(
     assert calls[0][3]["end_date"] == today
 
 
+def test_live_day_history_seeds_today_before_realtime_updates(
+    tmp_path: Path, monkeypatch
+):
+    today = dt.datetime.now(KST).date()
+
+    async def fetch(*args, **kwargs):
+        return [
+            SimpleNamespace(
+                timestamp=f"{today:%Y%m%d}",
+                open=Decimal("100"),
+                high=Decimal("105"),
+                low=Decimal("90"),
+                close=Decimal("102"),
+                volume=1000,
+                amount=Decimal("100000"),
+            )
+        ]
+
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"005930"}
+        service._client = object()
+
+        history = await service.chart_history(
+            "005930", Timeframe.from_code("day"), (5,)
+        )
+        assert history["candles"][-1] == {
+            "time": today.isoformat(),
+            "open": 100.0,
+            "high": 105.0,
+            "low": 90.0,
+            "close": 102.0,
+        }
+
+        next_trade = dt.datetime.now(KST) + dt.timedelta(seconds=1)
+        await service.handle_sdk_event(
+            SimpleNamespace(
+                tr_id="0B",
+                symbol="005930",
+                exchange_ts=next_trade.time().isoformat(),
+                received_at=next_trade.astimezone(dt.UTC).isoformat(),
+                received_seq=1,
+                price=Decimal("110"),
+                volume=10,
+            )
+        )
+
+        candle = service._latest_candles[("005930", "day")]["candle"]
+        assert candle == {
+            "time": today.isoformat(),
+            "open": 100.0,
+            "high": 110.0,
+            "low": 90.0,
+            "close": 110.0,
+            "volume": 1010,
+        }
+
+    monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    asyncio.run(scenario())
+
+
 def test_live_history_uses_active_training_preset_for_fractal_markers(
     tmp_path: Path, monkeypatch
 ):

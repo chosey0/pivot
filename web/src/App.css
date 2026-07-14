@@ -172,6 +172,10 @@ button:disabled {
   position: relative;
 }
 
+.symbol-search-box > input {
+  width: 100%;
+}
+
 .add-form .primary {
   border-color: #b7ecc1;
   background: #daf9de;

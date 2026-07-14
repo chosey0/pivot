@@ -189,6 +189,39 @@ class CandleAggregator:
     def current(self) -> Candle | None:
         return self._state.snapshot() if self._state else None
 
+    def seed_current(self, candle: Candle) -> Candle | None:
+        """REST 현재 봉을 기준값으로 두고 이후 실시간 체결을 누적한다."""
+        if candle.symbol != self.symbol or candle.timeframe != self.timeframe.code:
+            raise ValueError("seed candle does not match aggregator")
+        if candle.start_at.tzinfo is None or candle.end_at.tzinfo is None:
+            raise ValueError("seed candle timestamps must be timezone-aware")
+        if self._last_closed_start is not None and candle.start_at <= self._last_closed_start:
+            return self.current
+        if self._state is not None and candle.start_at < self._state.start_at:
+            return self.current
+
+        sequence = self._state.sequence if self._state is not None else self._next_sequence
+        self._state = _CandleState(
+            symbol=self.symbol,
+            timeframe=self.timeframe.code,
+            sequence=sequence,
+            start_at=candle.start_at.astimezone(KST),
+            end_at=candle.end_at.astimezone(KST),
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+            volume=candle.volume,
+            amount=candle.amount,
+            trade_count=candle.trade_count,
+            first_order=(candle.start_at.astimezone(KST), -1),
+            last_order=(candle.end_at.astimezone(KST), -1),
+            fixed_start=True,
+            partial_from_subscription=False,
+        )
+        self._next_sequence = max(self._next_sequence, sequence + 1)
+        return self._state.snapshot()
+
     def ingest(self, trade: RealtimeTrade) -> tuple[CandleUpdated | CandleClosed, ...]:
         if trade.symbol != self.symbol:
             raise ValueError(f"trade symbol {trade.symbol!r} does not match {self.symbol!r}")
