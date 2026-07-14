@@ -14,11 +14,13 @@
   },
   "dependencies": {
     "lightweight-charts": "^5.2.0",
+    "plotly.js-basic-dist-min": "^3.7.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@types/node": "^24.13.2",
+    "@types/plotly.js-basic-dist-min": "^2.12.4",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",

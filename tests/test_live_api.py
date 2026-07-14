@@ -1,7 +1,9 @@
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from server.routers.live import router
+from server.routers.live import live_events, router
 from server.live import LiveService
 
 
@@ -66,6 +68,17 @@ class FakeLiveService:
         if len(self.rows) == before:
             raise KeyError(symbol)
 
+    async def chart_history(self, symbol, timeframe, ma_windows, *, before=None):
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe.code,
+            "candles": [],
+            "volumes": [],
+            "ma": {str(window): [] for window in ma_windows},
+            "has_more": False,
+            "next_before": None,
+        }
+
 
 def _client() -> TestClient:
     app = FastAPI()
@@ -119,6 +132,24 @@ def test_live_http_validates_symbol_and_missing_subscription():
     assert missing.status_code == 404
 
 
+def test_live_history_uses_live_api_contract():
+    with _client() as client:
+        response = client.get(
+            "/api/live/history/005930?timeframe=min1&ma=5,20&before=1783904400"
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "symbol": "005930",
+        "timeframe": "min1",
+        "candles": [],
+        "volumes": [],
+        "ma": {"5": [], "20": []},
+        "has_more": False,
+        "next_before": None,
+    }
+
+
 def test_live_http_does_not_expose_private_provider_errors():
     with _client() as client:
         response = client.put("/api/live/model", json={"run_id": 99})
@@ -148,3 +179,23 @@ def test_live_websocket_starts_with_snapshot(tmp_path):
         "latest_candles",
         "recent_predictions",
     }
+
+
+def test_live_websocket_stops_on_disconnect_even_when_send_does_not_fail(tmp_path):
+    service = LiveService(tmp_path)
+
+    class SilentSendWebSocket:
+        app = type("App", (), {"state": type("State", (), {"live": service})()})()
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, event):
+            pass
+
+        async def receive(self):
+            return {"type": "websocket.disconnect"}
+
+    asyncio.run(asyncio.wait_for(live_events(SilentSendWebSocket()), timeout=0.1))
+
+    assert service._listeners == set()

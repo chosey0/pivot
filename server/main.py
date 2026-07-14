@@ -1,5 +1,6 @@
 import datetime
 import random
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from server.routers import (
     watchlist,
 )
 from server.deps import DATA_ROOT
+from server.jobs import stop_processes
 from server.live import LiveService
 
 
@@ -29,7 +31,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await service.close()
+        try:
+            await service.close()
+        finally:
+            await asyncio.to_thread(stop_processes)
 
 
 app = FastAPI(title="pivot workbench", lifespan=lifespan)

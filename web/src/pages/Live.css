@@ -275,6 +275,35 @@
 
 /* ── 차트 보조 ─────────────────────────────────────────────── */
 
+.live-chart-actions,
+.live-timeframe {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-timeframe {
+  padding: 3px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #f9fafb;
+}
+
+.live-timeframe button {
+  padding: 5px 9px;
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.live-timeframe button.selected {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  color: #111827;
+}
+
 .live-provisional-badge {
   padding: 0 6px;
   border-radius: 999px;

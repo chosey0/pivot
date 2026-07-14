@@ -56,6 +56,8 @@ function sampleChangeRate(sample: SampleDetail): number | null {
 
 export function Datasets() {
   const [presets, setPresets] = useState<PresetRow[]>([])
+  const [archivedPresets, setArchivedPresets] = useState<PresetRow[]>([])
+  const [showArchivedPresets, setShowArchivedPresets] = useState(false)
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
   const [datasets, setDatasets] = useState<DatasetRow[]>([])
   const [presetsLoading, setPresetsLoading] = useState(true)
@@ -91,6 +93,15 @@ export function Datasets() {
           current && rows.some((row) => row.id === current) ? current : rows[0]?.id ?? null,
         )
       })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setPresetsLoading(false))
+  }, [])
+
+  const refreshArchivedPresets = useCallback(() => {
+    setPresetsLoading(true)
+    api
+      .presets(true)
+      .then((rows) => setArchivedPresets(rows.filter((row) => row.archived_at !== null)))
       .catch((e: Error) => setError(e.message))
       .finally(() => setPresetsLoading(false))
   }, [])
@@ -146,7 +157,8 @@ export function Datasets() {
     try {
       await api.deletePreset(preset.id)
       setMessage(`프리셋 '${preset.name} v${preset.version}'을 삭제했습니다.`)
-      refreshPresets()
+      if (preset.archived_at) refreshArchivedPresets()
+      else refreshPresets()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -404,6 +416,7 @@ export function Datasets() {
   const jobRunning = job !== null && (job.status === 'queued' || job.status === 'running')
   const sampleRate = selectedSample ? sampleChangeRate(selectedSample) : null
   const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? null
+  const visiblePresets = showArchivedPresets ? archivedPresets : presets
   const totalPages = page ? Math.max(Math.ceil(page.total / PAGE_SIZE), 1) : 1
   const currentPage = Math.floor(pageOffset / PAGE_SIZE) + 1
 
@@ -413,26 +426,49 @@ export function Datasets() {
         <aside className="side-panel lab-symbols">
           <section className="control-section grow">
           <div className="section-title-row">
-            <h2>프리셋</h2>
-            <button onClick={refreshPresets} type="button">
-              새로고침
-            </button>
+            <h2>{showArchivedPresets ? '보관된 프리셋' : '프리셋'}</h2>
+            <span className="row-actions">
+              <button
+                className="ghost"
+                onClick={() => {
+                  const next = !showArchivedPresets
+                  setShowArchivedPresets(next)
+                  if (next) refreshArchivedPresets()
+                }}
+                type="button"
+              >
+                {showArchivedPresets ? '활성 목록' : '보관함'}
+              </button>
+              <button
+                onClick={showArchivedPresets ? refreshArchivedPresets : refreshPresets}
+                type="button"
+              >
+                새로고침
+              </button>
+            </span>
           </div>
-          {presetsLoading && presets.length === 0 ? (
+          {presetsLoading && visiblePresets.length === 0 ? (
             <p className="hint">프리셋을 불러오는 중...</p>
-          ) : presets.length === 0 ? (
+          ) : visiblePresets.length === 0 ? (
             <p className="empty">
-              전처리 실험실에서 파라미터를 튜닝한 뒤 프리셋으로 저장하세요.
+              {showArchivedPresets
+                ? '보관된 프리셋이 없습니다.'
+                : '전처리 실험실에서 파라미터를 튜닝한 뒤 프리셋으로 저장하세요.'}
             </p>
           ) : (
             <div className="watch-table">
-              {presets.map((preset) => (
+              {visiblePresets.map((preset) => (
                 <div
-                  className={preset.id === selectedPresetId ? 'watch-row selected' : 'watch-row'}
+                  className={
+                    !showArchivedPresets && preset.id === selectedPresetId
+                      ? 'watch-row selected'
+                      : 'watch-row'
+                  }
                   key={preset.id}
                 >
                   <button
                     className="watch-main"
+                    disabled={showArchivedPresets}
                     onClick={() => setSelectedPresetId(preset.id)}
                     type="button"
                   >
@@ -445,18 +481,22 @@ export function Datasets() {
                         : `${preset.preset.timeframe.type}${preset.preset.timeframe.unit}`}
                       {' · '}n={preset.preset.fractal.n}
                       {' · '}
-                      {formatDate(preset.created_at)}
+                      {showArchivedPresets && preset.archived_at
+                        ? `보관 ${formatDate(preset.archived_at)}`
+                        : formatDate(preset.created_at)}
                     </span>
                   </button>
                   <span className="row-actions">
-                    <button
-                      className="ghost"
-                      onClick={() => archivePreset(preset)}
-                      title="보관 (batch 대상에서 제외)"
-                      type="button"
-                    >
-                      보관
-                    </button>
+                    {!showArchivedPresets && (
+                      <button
+                        className="ghost"
+                        onClick={() => archivePreset(preset)}
+                        title="보관 (batch 대상에서 제외)"
+                        type="button"
+                      >
+                        보관
+                      </button>
+                    )}
                     <button
                       className="ghost danger"
                       onClick={() => removePreset(preset)}
@@ -470,7 +510,7 @@ export function Datasets() {
               ))}
             </div>
           )}
-          {selectedPreset && (
+          {!showArchivedPresets && selectedPreset && (
             <div className="feature-preview">
               <strong>features</strong>
               <span>{selectedPreset.preset.features.join(', ')}</span>

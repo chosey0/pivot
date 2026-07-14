@@ -40,7 +40,7 @@ class RealtimeTrade:
 
     @property
     def order(self) -> TradeOrder:
-        return self.received_at, self.received_seq
+        return self.exchange_ts, self.received_seq
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class Candle:
     volume: int
     amount: Decimal
     trade_count: int
+    partial_from_subscription: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,7 @@ class _CandleState:
     first_order: TradeOrder
     last_order: TradeOrder
     fixed_start: bool
+    partial_from_subscription: bool
 
     @classmethod
     def create(
@@ -103,6 +105,7 @@ class _CandleState:
         sequence: int,
         start_at: datetime,
         fixed_start: bool,
+        partial_from_subscription: bool,
     ) -> _CandleState:
         return cls(
             symbol=trade.symbol,
@@ -120,6 +123,7 @@ class _CandleState:
             first_order=trade.order,
             last_order=trade.order,
             fixed_start=fixed_start,
+            partial_from_subscription=partial_from_subscription,
         )
 
     def add(self, trade: RealtimeTrade) -> None:
@@ -152,17 +156,27 @@ class _CandleState:
             volume=self.volume,
             amount=self.amount,
             trade_count=self.trade_count,
+            partial_from_subscription=self.partial_from_subscription,
         )
 
 
 class CandleAggregator:
     """단일 종목·타임프레임의 현재 봉과 마감 이벤트를 관리한다."""
 
-    def __init__(self, symbol: str, timeframe: Timeframe) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        *,
+        observing_since: datetime | None = None,
+    ) -> None:
         if not symbol.strip():
             raise ValueError("symbol is required")
         self.symbol = symbol.strip()
         self.timeframe = timeframe
+        self.observing_since = (
+            observing_since.astimezone(KST) if observing_since is not None else None
+        )
         self.stats = AggregationStats()
         self._state: _CandleState | None = None
         self._last_closed_start: datetime | None = None
@@ -234,12 +248,19 @@ class CandleAggregator:
     def _start(
         self, trade: RealtimeTrade, start_at: datetime, *, fixed_start: bool
     ) -> Candle:
+        partial = (
+            self.timeframe.type == "minute"
+            and self._next_sequence == 0
+            and self.observing_since is not None
+            and self.observing_since > start_at
+        )
         self._state = _CandleState.create(
             trade,
             timeframe=self.timeframe.code,
             sequence=self._next_sequence,
             start_at=start_at,
             fixed_start=fixed_start,
+            partial_from_subscription=partial,
         )
         self._next_sequence += 1
         return self._state.snapshot()

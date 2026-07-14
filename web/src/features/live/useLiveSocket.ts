@@ -45,6 +45,10 @@ export interface LiveSocketState {
   ignoredEvents: number
 }
 
+export function liveCandleKey(symbol: string, timeframe: string): string {
+  return `${symbol}:${timeframe}`
+}
+
 const EMPTY_CONNECTION: LiveConnection = {
   status: 'connecting',
   message: null,
@@ -88,19 +92,20 @@ function applyCandleEvent(
   data: CandleEventData,
   closed: boolean,
 ): Record<string, SymbolCandles> {
-  const current = candles[data.symbol] ?? { closed: [], provisional: null }
+  const key = liveCandleKey(data.symbol, data.timeframe)
+  const current = candles[key] ?? { closed: [], provisional: null }
   if (closed) {
     const nextClosed = upsertClosedCandle(current.closed, data.candle)
     const provisional =
       current.provisional && compareTimes(current.provisional.time, data.candle.time) > 0
         ? current.provisional
         : null
-    return { ...candles, [data.symbol]: { closed: nextClosed, provisional } }
+    return { ...candles, [key]: { closed: nextClosed, provisional } }
   }
   // 이미 마감된 시각보다 오래된 잠정 봉은 차트를 되감지 않도록 무시한다
   const lastClosed = current.closed[current.closed.length - 1]
   if (lastClosed && compareTimes(data.candle.time, lastClosed.time) < 0) return candles
-  return { ...candles, [data.symbol]: { ...current, provisional: data.candle } }
+  return { ...candles, [key]: { ...current, provisional: data.candle } }
 }
 
 function upsertSubscription(

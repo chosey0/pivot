@@ -12,54 +12,13 @@ import { CandleChart } from '../components/chart/CandleChart'
 import { ChartPanel } from '../components/chart/ChartPanel'
 import { IndicatorSettingsPanel } from '../components/indicators/IndicatorSettingsPanel'
 import { useIndicatorSettings } from '../components/indicators/useIndicatorSettings'
+import { mergeChartPages } from '../lib/chart'
 import { changeTone, formatDateTime, formatPercent, formatPrice, percentChange } from '../lib/format'
 import { chartLimitFor, MINUTE_UNITS, TICK_UNITS, toTimeframeCode } from '../lib/timeframe'
 
 function isMissingCacheError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes('404 Not Found') && message.includes('no cached data')
-}
-
-function mergeOlderChart(current: ChartResponse, older: ChartResponse): ChartResponse {
-  const candleByTime = new Map<string | number, ChartResponse['candles'][number]>()
-  for (const candle of [...older.candles, ...current.candles]) {
-    candleByTime.set(candle.time, candle)
-  }
-  const candles = [...candleByTime.values()].sort((a, b) =>
-    typeof a.time === 'number' && typeof b.time === 'number'
-      ? a.time - b.time
-      : String(a.time).localeCompare(String(b.time)),
-  )
-  const times = new Set(candles.map((candle) => candle.time))
-  const volumeByTime = new Map<string | number, ChartResponse['volumes'][number]>()
-  for (const point of [...older.volumes, ...current.volumes]) {
-    if (times.has(point.time)) volumeByTime.set(point.time, point)
-  }
-  const volumes = [...volumeByTime.values()].sort((a, b) =>
-    typeof a.time === 'number' && typeof b.time === 'number'
-      ? a.time - b.time
-      : String(a.time).localeCompare(String(b.time)),
-  )
-  const ma: Record<string, ChartResponse['ma'][string]> = {}
-  for (const window of new Set([...Object.keys(older.ma), ...Object.keys(current.ma)])) {
-    const lineByTime = new Map<string | number, ChartResponse['ma'][string][number]>()
-    for (const point of [...(older.ma[window] ?? []), ...(current.ma[window] ?? [])]) {
-      if (times.has(point.time)) lineByTime.set(point.time, point)
-    }
-    ma[window] = [...lineByTime.values()].sort((a, b) =>
-      typeof a.time === 'number' && typeof b.time === 'number'
-        ? a.time - b.time
-        : String(a.time).localeCompare(String(b.time)),
-    )
-  }
-  return {
-    ...current,
-    candles,
-    volumes,
-    ma,
-    has_more: older.has_more,
-    next_before: older.next_before,
-  }
 }
 
 interface WatchlistProps {
@@ -202,7 +161,7 @@ export function Watchlist({ active, onSubtitleChange }: WatchlistProps) {
         limit: chartLimitFor(timeframe),
         before: first.time,
       })
-      setChart((current) => (current ? mergeOlderChart(current, older) : older))
+      setChart((current) => (current ? mergeChartPages(current, older) : older))
     } catch (e) {
       if (!isMissingCacheError(e)) {
         setError(e instanceof Error ? e.message : String(e))

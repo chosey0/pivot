@@ -18,7 +18,8 @@ spec, and we reimplement it with known defects fixed.
 
 **M1 (data ingestion + real chart) done**: broker-modules Kiwoom day/min/tick candles,
 watchlist JSON storage, parquet cache/status, `/api/chart` real candles with MA/volume,
-and Vite/React Watchlist UI are implemented and verified.
+Vite/React Watchlist UI, and Supabase domestic plus NASDAQ/NYSE/AMEX symbol masters are
+implemented and verified.
 
 **M2 (preprocessing lab) core done**: `pivot/labeling/fractal.py` (Williams fractal,
 pandas-center-rolling alignment fixed by tests, lag `(n-1)//2`, labels 0/1/2, filters),

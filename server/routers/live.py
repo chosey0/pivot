@@ -1,6 +1,12 @@
+import asyncio
+import contextlib
+
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Query
 from pydantic import BaseModel
 
+from pivot.config import Timeframe
+from server.routers.chart import _parse_before, _parse_ma_windows
 from server.live import ListenerClosed, LiveService, LiveServiceError
 
 router = APIRouter(tags=["live"])
@@ -66,15 +72,63 @@ async def unsubscribe(symbol: str, request: Request) -> list[dict]:
         raise HTTPException(503, str(exc)) from exc
 
 
+@router.get("/api/live/history/{symbol}")
+async def history(
+    symbol: str,
+    request: Request,
+    timeframe: str = "day",
+    ma: str | None = Query(None, description="comma-separated moving average windows"),
+    before: str | None = Query(
+        None, description="exclusive upper bound: yyyy-mm-dd or unix seconds"
+    ),
+) -> dict:
+    try:
+        tf = Timeframe.from_code(timeframe)
+        return await _service(request).chart_history(
+            symbol,
+            tf,
+            _parse_ma_windows(ma),
+            before=_parse_before(before, tf),
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, "Kiwoom chart request failed") from exc
+
+
 @router.websocket("/ws/live")
 async def live_events(websocket: WebSocket) -> None:
     await websocket.accept()
     service: LiveService = websocket.app.state.live
     listener = await service.add_listener()
+    sender = asyncio.create_task(_send_events(websocket, listener))
+    receiver = asyncio.create_task(_wait_for_disconnect(websocket))
     try:
-        while True:
-            await websocket.send_json(await listener.get())
+        done, _ = await asyncio.wait(
+            {sender, receiver}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            await task
     except (WebSocketDisconnect, ListenerClosed):
         pass
     finally:
+        for task in (sender, receiver):
+            task.cancel()
+        for task in (sender, receiver):
+            with contextlib.suppress(
+                asyncio.CancelledError, WebSocketDisconnect, ListenerClosed
+            ):
+                await task
         await service.remove_listener(listener)
+
+
+async def _send_events(websocket: WebSocket, listener) -> None:
+    while True:
+        await websocket.send_json(await listener.get())
+
+
+async def _wait_for_disconnect(websocket: WebSocket) -> None:
+    while (await websocket.receive())["type"] != "websocket.disconnect":
+        pass

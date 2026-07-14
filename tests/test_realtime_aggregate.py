@@ -61,8 +61,8 @@ def test_minute_aggregator_closes_on_next_boundary():
 
 def test_same_bucket_order_is_deterministic_and_duplicate_is_ignored():
     aggregator = CandleAggregator("005930", Timeframe(type="minute", unit=1))
-    later = trade("09:00:20", "102", 2, seq=2, received_at="09:00:20")
-    earlier = trade("09:00:10", "100", 1, seq=1, received_at="09:00:10")
+    later = trade("09:00:20", "102", 2, seq=1, received_at="09:00:10")
+    earlier = trade("09:00:10", "100", 1, seq=2, received_at="09:00:20")
 
     aggregator.ingest(later)
     current = aggregator.ingest(earlier)[0].candle

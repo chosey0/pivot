@@ -1,4 +1,10 @@
-import { fetchJson, type SamplePairing } from './client'
+import {
+  fetchJson,
+  type ChartOptions,
+  type ChartResponse,
+  type SamplePairing,
+  type TimeframeCode,
+} from './client'
 
 // docs/08_m5_implementation_plan.md §6의 확정된 HTTP/WebSocket 계약.
 
@@ -60,6 +66,16 @@ export interface LiveCandle {
   low: number
   close: number
   volume: number
+}
+
+export interface LiveFractalMarker {
+  time: string | number
+  kind: 'low' | 'high'
+  label: 0 | 1 | 2
+}
+
+export interface LiveHistoryResponse extends ChartResponse {
+  fractal_markers: LiveFractalMarker[]
 }
 
 export interface CandleEventData {
@@ -170,6 +186,19 @@ export const liveApi = {
       `/api/live/subscriptions/${encodeURIComponent(symbol)}`,
       { method: 'DELETE' },
     ),
+  history: (
+    symbol: string,
+    timeframe: TimeframeCode,
+    maWindows: number[] = [],
+    options: ChartOptions = {},
+  ) => {
+    const params = new URLSearchParams({ timeframe })
+    if (maWindows.length > 0) params.set('ma', maWindows.join(','))
+    if (options.before !== undefined) params.set('before', String(options.before))
+    return fetchJson<LiveHistoryResponse>(
+      `/api/live/history/${encodeURIComponent(symbol)}?${params}`,
+    )
+  },
   socketUrl: () =>
     `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws/live`,
 }

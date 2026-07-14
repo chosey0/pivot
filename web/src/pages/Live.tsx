@@ -8,16 +8,33 @@ import {
 import {
   liveApi,
   type LiveConnectionStatus,
+  type LiveHistoryResponse,
   type LiveSubscription,
 } from '../api/live'
-import { CandleChart, type ChartMarker } from '../components/chart/CandleChart'
+import {
+  CandleChart,
+  type ChartMarker,
+  type OhlcPoint,
+} from '../components/chart/CandleChart'
 import { ChartPanel } from '../components/chart/ChartPanel'
+import { IndicatorSettingsPanel } from '../components/indicators/IndicatorSettingsPanel'
+import { useIndicatorSettings } from '../components/indicators/useIndicatorSettings'
 import { ModelPanel } from '../features/live/ModelPanel'
 import { PredictionLog } from '../features/live/PredictionLog'
 import { formatEventTime } from '../features/live/time'
-import { useLiveSocket, type SocketStatus } from '../features/live/useLiveSocket'
-import { formatDateTime } from '../lib/format'
-import { chartLimitFor } from '../lib/timeframe'
+import {
+  liveCandleKey,
+  useLiveSocket,
+  type SocketStatus,
+} from '../features/live/useLiveSocket'
+import { mergeChartPages } from '../lib/chart'
+import {
+  changeTone,
+  formatDateTime,
+  formatPercent,
+  formatPrice,
+  percentChange,
+} from '../lib/format'
 import './Live.css'
 
 const CONNECTION_TEXT: Record<LiveConnectionStatus, string> = {
@@ -52,6 +69,20 @@ function compareTimes(a: string | number, b: string | number): number {
   return String(a).localeCompare(String(b))
 }
 
+function mergeLiveHistory(
+  current: LiveHistoryResponse,
+  older: LiveHistoryResponse,
+): LiveHistoryResponse {
+  const chart = mergeChartPages(current, older)
+  const fractalMarkers = new Map(
+    [...older.fractal_markers, ...current.fractal_markers].map((row) => [
+      `${row.time}:${row.kind}`,
+      row,
+    ]),
+  )
+  return { ...chart, fractal_markers: [...fractalMarkers.values()] }
+}
+
 export function Live() {
   const { state, socketStatus, applyState, applySubscriptions, dismissError } = useLiveSocket()
   const [stateError, setStateError] = useState<string | null>(null)
@@ -60,11 +91,25 @@ export function Live() {
   const [mutating, setMutating] = useState(false)
   const [subscribeError, setSubscribeError] = useState<string | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
-  const [chart, setChart] = useState<ChartResponse | null>(null)
+  const [chartTimeframe, setChartTimeframe] = useState<TimeframeCode>('day')
+  const [chart, setChart] = useState<LiveHistoryResponse | null>(null)
   const [chartLoading, setChartLoading] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const [chartError, setChartError] = useState<string | null>(null)
+  const [chartMessage, setChartMessage] = useState<string | null>(null)
+  const [selectedOhlc, setSelectedOhlc] = useState<OhlcPoint | null>(null)
 
-  const timeframe = state.deployment?.timeframe ?? 'day'
+  const indicators = useIndicatorSettings({ onMessage: setChartMessage })
+  const {
+    maSettings,
+    setMaSettings,
+    volumeChart,
+    setVolumeChart,
+    visibleIndicators,
+    maWindows,
+    legendText,
+  } = indicators
+  const maWindowsKey = maWindows.join(',')
 
   // WS snapshot 이전에도 화면을 채울 수 있도록 HTTP 상태를 한 번 읽는다
   useEffect(() => {
@@ -98,23 +143,24 @@ export function Live() {
     })
   }, [state.subscriptions])
 
-  // 과거 봉은 기존 차트 API(로컬 parquet 캐시)에서 읽는다. 재연결 snapshot마다
-  // 재조회해 단절 동안의 마감 봉을 delta 재생 없이 복구한다 (docs/08 §6.2).
+  // 과거 봉은 Live 전용 Kiwoom REST 조회로 읽는다. 재연결 snapshot마다 재조회해
+  // 단절 동안의 마감 봉을 delta 재생 없이 복구한다 (docs/08 §6.2).
   useEffect(() => {
     if (!selectedSymbol) {
       setChart(null)
+      setSelectedOhlc(null)
       return
     }
     let stale = false
     setChartLoading(true)
     setChartError(null)
-    api
-      .chart(selectedSymbol, timeframe as TimeframeCode, [], {
-        limit: chartLimitFor(timeframe as TimeframeCode),
-      })
+    setChartMessage(null)
+    liveApi
+      .history(selectedSymbol, chartTimeframe, maWindows)
       .then((next) => {
         if (stale) return
         setChart(next)
+        setSelectedOhlc(next.candles.at(-1) ?? null)
       })
       .catch((e: Error) => {
         if (stale) return
@@ -127,15 +173,18 @@ export function Live() {
     return () => {
       stale = true
     }
-  }, [selectedSymbol, timeframe, state.snapshotNonce])
+  }, [chartTimeframe, maWindows, maWindowsKey, selectedSymbol, state.snapshotNonce])
 
-  const liveCandles = selectedSymbol ? state.candles[selectedSymbol] : undefined
+  const liveCandles = selectedSymbol
+    ? state.candles[liveCandleKey(selectedSymbol, chartTimeframe)]
+    : undefined
+  const historicalChart = chart?.timeframe === chartTimeframe ? chart : null
 
   const merged = useMemo(() => {
     const candleByTime = new Map<string | number, ChartResponse['candles'][number]>()
     const volumeByTime = new Map<string | number, ChartResponse['volumes'][number]>()
-    for (const candle of chart?.candles ?? []) candleByTime.set(candle.time, candle)
-    for (const point of chart?.volumes ?? []) volumeByTime.set(point.time, point)
+    for (const candle of historicalChart?.candles ?? []) candleByTime.set(candle.time, candle)
+    for (const point of historicalChart?.volumes ?? []) volumeByTime.set(point.time, point)
     for (const candle of liveCandles?.closed ?? []) {
       candleByTime.set(candle.time, candle)
       volumeByTime.set(candle.time, { time: candle.time, value: candle.volume })
@@ -157,21 +206,91 @@ export function Live() {
     return {
       candles: sortByTime([...candleByTime.values()]),
       volumes: sortByTime([...volumeByTime.values()]),
+      ma: historicalChart?.ma ?? {},
     }
-  }, [chart, liveCandles])
+  }, [historicalChart, liveCandles])
 
-  // 판정 마커 — 차트에 존재하는 시각만 표시한다 (시간축 불일치 방지)
+  const loadOlderChart = useCallback(async () => {
+    if (!historicalChart || !selectedSymbol || !historicalChart.has_more || loadingOlder) return
+    const first = historicalChart.candles[0]
+    if (!first) return
+    setLoadingOlder(true)
+    setChartError(null)
+    try {
+      const older = await liveApi.history(selectedSymbol, chartTimeframe, maWindows, {
+        before: first.time,
+      })
+      setChart((current) => (current ? mergeLiveHistory(current, older) : older))
+    } catch (e) {
+      setChartError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [chartTimeframe, historicalChart, loadingOlder, maWindows, selectedSymbol])
+
+  useEffect(() => {
+    setSelectedOhlc((current) => {
+      if (current && merged.candles.some((candle) => candle.time === current.time)) {
+        return current
+      }
+      return merged.candles.at(-1) ?? null
+    })
+  }, [merged.candles])
+
+  const displayedOhlc = selectedOhlc ?? merged.candles.at(-1) ?? null
+  const displayedOhlcPreviousClose = useMemo(() => {
+    if (!displayedOhlc) return null
+    const index = merged.candles.findIndex((candle) => candle.time === displayedOhlc.time)
+    return index > 0 ? merged.candles[index - 1].close : null
+  }, [displayedOhlc, merged.candles])
+  const ohlcItems = useMemo(() => {
+    if (!displayedOhlc) return []
+    return [
+      { label: '시작', value: displayedOhlc.open },
+      { label: '고가', value: displayedOhlc.high },
+      { label: '저가', value: displayedOhlc.low },
+      { label: '종가', value: displayedOhlc.close },
+    ].map((item) => {
+      const change = percentChange(item.value, displayedOhlcPreviousClose)
+      return { ...item, change, tone: changeTone(change) }
+    })
+  }, [displayedOhlc, displayedOhlcPreviousClose])
+
+  // 실제 프랙탈과 모델 판정을 같은 차트에 표시하되 모양과 문구를 구분한다.
   const markers = useMemo<ChartMarker[]>(() => {
     if (!selectedSymbol) return []
     const times = new Set(merged.candles.map((candle) => candle.time))
-    return state.predictions
-      .filter((row) => row.symbol === selectedSymbol && times.has(row.time))
-      .map((row) => ({
+    const predictions = state.predictions.filter(
+      (row) => row.symbol === selectedSymbol && row.timeframe === chartTimeframe,
+    )
+    const calculated = new Map<string, ChartMarker>()
+    for (const row of predictions.flatMap((prediction) => prediction.candidate_windows)) {
+      if (!times.has(row.anchor_time)) continue
+      calculated.set(`${row.anchor_time}:${row.anchor_kind}`, {
+        time: row.anchor_time,
+        kind: row.anchor_kind,
+        label: row.anchor_kind === 'low' ? 0 : 1,
+        source: 'calculated',
+      })
+    }
+    for (const row of historicalChart?.fractal_markers ?? []) {
+      if (!times.has(row.time)) continue
+      calculated.set(`${row.time}:${row.kind}`, { ...row, source: 'calculated' })
+    }
+    const inferred = predictions
+      .filter(
+        (row) => times.has(row.time),
+      )
+      .map<ChartMarker>((row) => ({
         time: row.time,
         kind: row.selected_class === 1 ? 'high' : 'low',
         label: row.selected_class,
+        source: 'prediction',
       }))
-  }, [merged.candles, selectedSymbol, state.predictions])
+    return [...calculated.values(), ...inferred].sort((a, b) =>
+      compareTimes(a.time, b.time),
+    )
+  }, [chartTimeframe, historicalChart, merged.candles, selectedSymbol, state.predictions])
 
   const subscribedSymbols = useMemo(
     () => new Set(state.subscriptions.map((row) => row.symbol)),
@@ -216,7 +335,6 @@ export function Live() {
     state.subscriptions.find((row) => row.symbol === selectedSymbol) ?? null
   const selectedWarmup = selectedSymbol ? state.warmups[selectedSymbol] : undefined
   const provisional = liveCandles?.provisional ?? null
-  const lastBar = merged.candles[merged.candles.length - 1] ?? null
   const symbolPredictions = state.predictions.filter((row) => row.symbol === selectedSymbol)
 
   return (
@@ -357,42 +475,132 @@ export function Live() {
 
       <section className="live-main">
         <ChartPanel
+          actions={
+            <div className="live-chart-actions">
+              <div className="live-timeframe" aria-label="차트 타임프레임">
+                <button
+                  className={chartTimeframe === 'day' ? 'selected' : ''}
+                  onClick={() => setChartTimeframe('day')}
+                  type="button"
+                >
+                  일봉
+                </button>
+                <button
+                  className={chartTimeframe === 'min1' ? 'selected' : ''}
+                  onClick={() => setChartTimeframe('min1')}
+                  type="button"
+                >
+                  1분봉
+                </button>
+              </div>
+              <button
+                className="indicator-button"
+                onClick={indicators.openIndicatorPanel}
+                type="button"
+              >
+                + 보조지표
+              </button>
+            </div>
+          }
           emptyText={
             state.subscriptions.length === 0
               ? '구독 종목이 없습니다. 왼쪽에서 종목을 구독하면 실시간 차트가 표시됩니다.'
-              : '캐시된 과거 봉이 없습니다. 종목 & 데이터 탭에서 먼저 수집하세요.'
+              : chartTimeframe === 'min1'
+                ? '오늘 수신된 분봉이 없습니다.'
+                : '조회된 일봉이 없습니다.'
           }
           error={chartError}
           hasContent={merged.candles.length > 0}
           legend={
-            lastBar ? (
+            displayedOhlc ? (
               <div className="chart-legend">
                 <div className="ohlc-row">
                   <span className="ohlc-item">
-                    <strong>{formatEventTime(lastBar.time)}</strong>
-                    {provisional && compareTimes(provisional.time, lastBar.time) === 0 ? (
+                    <strong>{formatEventTime(displayedOhlc.time)}</strong>
+                    {provisional && compareTimes(provisional.time, displayedOhlc.time) === 0 ? (
                       <span className="live-provisional-badge">잠정</span>
                     ) : null}
                   </span>
-                  <span className="ohlc-item">
-                    <strong>시</strong> <span>{lastBar.open.toLocaleString('ko-KR')}</span>
-                  </span>
-                  <span className="ohlc-item">
-                    <strong>고</strong> <span>{lastBar.high.toLocaleString('ko-KR')}</span>
-                  </span>
-                  <span className="ohlc-item">
-                    <strong>저</strong> <span>{lastBar.low.toLocaleString('ko-KR')}</span>
-                  </span>
-                  <span className="ohlc-item">
-                    <strong>종</strong> <span>{lastBar.close.toLocaleString('ko-KR')}</span>
-                  </span>
+                  {ohlcItems.map((item) => (
+                    <span className="ohlc-item" key={item.label}>
+                      <strong>{item.label}</strong>
+                      <span>{formatPrice(item.value)}</span>
+                      {item.change === null ? null : (
+                        <span className={`ohlc-change ${item.tone}`}>
+                          ({formatPercent(item.change)})
+                        </span>
+                      )}
+                    </span>
+                  ))}
                 </div>
+                {maSettings.some((setting) => setting.chart) ? (
+                  <div className="legend-row">
+                    <span>이동평균선</span>
+                    {maSettings
+                      .filter((setting) => setting.chart)
+                      .map((setting) => (
+                        <span className="legend-chip" key={setting.id}>
+                          <strong style={{ color: setting.color }}>{setting.window}</strong>
+                          <button
+                            aria-label={`MA${setting.window} 삭제`}
+                            onClick={() =>
+                              setMaSettings((current) =>
+                                current.length <= 1
+                                  ? current
+                                  : current.filter((item) => item.id !== setting.id),
+                              )
+                            }
+                            type="button"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                  </div>
+                ) : null}
+                {volumeChart ? (
+                  <div className="legend-row">
+                    <span>거래량</span>
+                    <button
+                      aria-label="거래량 숨기기"
+                      className="legend-mini-button"
+                      onClick={() => setVolumeChart(false)}
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ) : null}
+                {state.deployment?.timeframe === chartTimeframe ? (
+                  <div className="legend-row">
+                    <span>H/L 학습 기준 프랙탈</span>
+                    <span>● 모델 예측</span>
+                  </div>
+                ) : null}
               </div>
             ) : null
           }
           loading={chartLoading}
-          subtitle={`${timeframe} · 과거 캐시 + 실시간 봉${
-            state.deployment ? '' : ' · 활성 모델 없음'
+          message={chartMessage}
+          overlay={
+            <>
+              {loadingOlder && historicalChart ? (
+                <p className="chart-loading-more">과거 데이터 불러오는 중...</p>
+              ) : null}
+              {indicators.indicatorPanelOpen ? (
+                <IndicatorSettingsPanel
+                  barCount={merged.candles.length}
+                  settings={indicators}
+                />
+              ) : null}
+            </>
+          }
+          subtitle={`${chartTimeframe} · 캔들${
+            visibleIndicators.movingAverages.length > 0
+              ? ` + 이동평균선 ${legendText}`
+              : ''
+          }${visibleIndicators.volume ? ' + 거래량' : ''} · 추론 ${
+            state.deployment?.timeframe ?? '모델 없음'
           }`}
           title={
             selectedSubscription
@@ -402,10 +610,15 @@ export function Live() {
         >
           {merged.candles.length > 0 ? (
             <CandleChart
+              canLoadMoreOlder={Boolean(historicalChart?.has_more)}
               candles={merged.candles}
-              fitContentKey={`${selectedSymbol}:${timeframe}`}
+              fitContentKey={`${selectedSymbol}:${chartTimeframe}`}
+              isLoadingOlder={loadingOlder}
+              ma={merged.ma}
               markers={markers}
-              visibleIndicators={{ movingAverages: [], volume: true }}
+              onLoadMoreOlder={loadOlderChart}
+              onOhlcChange={setSelectedOhlc}
+              visibleIndicators={visibleIndicators}
               volumes={merged.volumes}
             />
           ) : null}

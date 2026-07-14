@@ -61,7 +61,8 @@
 - M1 실측(2026-07-09, 005930):
   - `min1`: 95,639봉, 2025-07-01 09:00:00 ~ 2026-07-09 15:30:00, 최초 전체 수집 약 28초
   - `tick30`: 240,762봉, 2026-06-11 09:00:14 ~ 2026-07-09 15:19:57, 최초 전체 수집 약 95초
-  - 두 캐시는 timestamp 오름차순이며 중복 timestamp 0건. `/api/chart` 응답도 분/틱 time을 unix 초 숫자로 반환
+  - 두 캐시는 timestamp 오름차순이며 중복 timestamp 0건. `/api/chart` 응답은 분/틱의
+    KST 벽시계를 UTC 필드로 복원할 수 있는 unix 초 숫자로 반환하며, Live REST/WS도 같은 형식을 쓴다.
 - 이평선 기준 결정 필요: 해당 타임프레임 기준 rolling(기본) vs 일봉 이평선 병합(구 프로젝트의
   `*_ma.csv` merge 방식) — 프리셋 옵션 `ma_source: self | daily`로 둘 다 지원
 
@@ -84,11 +85,12 @@ broker-modules = { git = "https://github.com/chosey0/broker-modules.git" }
 ```bash
 export KIWOOM_APP_KEY="..."
 export KIWOOM_SECRET_KEY="..."
-export KIS_APP_KEY="..."        # KIS 종목마스터 갱신용 (M5 WebSocket에는 사용하지 않음)
-export KIS_APP_SECRET="..."
 ```
 
 토큰 발급/캐시/만료 전 갱신은 SDK가 자동 처리한다.
+KIS 국내·미국 종목마스터는 인증이 필요 없는 정적 master 파일에서 내려받으므로 KIS 키를
+요구하지 않는다. 미국 마스터는 NASDAQ/NYSE/AMEX 전체를 `public.overseas_master`에 동기화하며,
+`./scripts/update-overseas-master.sh`로 갱신한다.
 
 ## 4. 조회 예시 (국내 일봉, Kiwoom)
 

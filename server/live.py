@@ -17,8 +17,11 @@ import pandas as pd
 import torch
 
 from pivot.config import Timeframe
+from pivot.dataset.build import run_preprocess
 from pivot.ingestion.cache import cache_path, load_cache_window
-from pivot.ingestion.fetch import BROKER, update_cache
+from pivot.ingestion.fetch import BROKER, fetch_bars, update_cache
+from pivot.ingestion.indicators import add_moving_averages
+from pivot.ingestion.schema import bars_to_frame
 from pivot.realtime.aggregate import Candle, CandleAggregator, CandleClosed, CandleUpdated
 from pivot.realtime.aggregate import KST, RealtimeTrade
 from pivot.realtime.infer import LiveInferenceEngine, LivePrediction, LiveWarmupError
@@ -26,10 +29,14 @@ from pivot.storage.deployments import DeploymentRepository
 from pivot.storage.runs import RunRepository
 from pivot.storage.supabase import StorageObjectClient
 from pivot.training.checkpoint import load_verified_checkpoint
+from server.serialize import chart_payload, time_value
 
 LIVE_HISTORY_LIMIT = 5_000
 RECENT_PREDICTIONS = 200
 CLIENT_QUEUE_SIZE = 256
+LIVE_DISPLAY_TIMEFRAMES = ("day", "min1")
+LIVE_MINUTE_PAGE_DAYS = 7
+LIVE_DAY_PAGE_DAYS = 365
 logger = logging.getLogger(__name__)
 
 
@@ -84,16 +91,19 @@ class LiveListener:
             event_type = event["type"]
             if event_type == "candle_update":
                 symbol = event["data"]["symbol"]
+                timeframe = event["data"].get("timeframe")
                 for index in range(len(self.events) - 1, -1, -1):
                     current = self.events[index]
                     if (
                         current["type"] == "candle_closed"
                         and current["data"]["symbol"] == symbol
+                        and current["data"].get("timeframe") == timeframe
                     ):
                         break
                     if (
                         current["type"] == "candle_update"
                         and current["data"]["symbol"] == symbol
+                        and current["data"].get("timeframe") == timeframe
                     ):
                         self.events[index] = event
                         self.condition.notify()
@@ -153,9 +163,9 @@ class LiveService:
 
         self._desired: set[str] = set()
         self._subscription_state: dict[str, dict] = {}
-        self._aggregators: dict[str, CandleAggregator] = {}
-        self._closed_overlay: dict[str, deque[Candle]] = {}
-        self._latest_candles: dict[str, dict] = {}
+        self._aggregators: dict[tuple[str, str], CandleAggregator] = {}
+        self._closed_overlay: dict[tuple[str, str], deque[Candle]] = {}
+        self._latest_candles: dict[tuple[str, str], dict] = {}
         self._predictions: deque[dict] = deque(maxlen=RECENT_PREDICTIONS)
         self._listeners: set[LiveListener] = set()
         self._engine: LiveInferenceEngine | None = None
@@ -202,7 +212,22 @@ class LiveService:
         await self._ensure_gateway()
 
     async def close(self) -> None:
+        if self._closed:
+            return
         self._closed = True
+
+        for listener in list(self._listeners):
+            await listener.close()
+
+        session = self._session
+        if session is not None:
+            try:
+                await session.close()
+            except Exception as exc:
+                logger.warning(
+                    "Kiwoom realtime session close failed (%s)", type(exc).__name__
+                )
+
         tasks = [
             task
             for task in (
@@ -217,8 +242,11 @@ class LiveService:
         for task in tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        for listener in list(self._listeners):
-            await listener.close()
+        self._gateway_task = None
+        self._bootstrap_task = None
+        self._maintenance_task = None
+        self._session = None
+        self._client = None
         self._connection = "closed"
 
     async def activate_model(
@@ -267,6 +295,7 @@ class LiveService:
             try:
                 await session.subscribe_trades(symbol)
                 self._set_subscription_status(symbol, "subscribed")
+                self._reset_aggregators(symbol, dt.datetime.now(KST))
             except Exception as exc:
                 logger.error(
                     "cannot subscribe live symbol %s (%s)",
@@ -302,9 +331,13 @@ class LiveService:
             self._desired.remove(symbol)
             self.subscription_store.save(self._desired)
             self._subscription_state.pop(symbol, None)
-            self._aggregators.pop(symbol, None)
-            self._closed_overlay.pop(symbol, None)
-            self._latest_candles.pop(symbol, None)
+            for mapping in (
+                self._aggregators,
+                self._closed_overlay,
+                self._latest_candles,
+            ):
+                for key in [key for key in mapping if key[0] == symbol]:
+                    mapping.pop(key, None)
         await self._broadcast_snapshot()
         if not self._desired and self._gateway_task is not None:
             self._gateway_task.cancel()
@@ -312,15 +345,123 @@ class LiveService:
                 await self._gateway_task
             await self._set_connection("closed", "")
 
+    async def chart_history(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        ma_windows: tuple[int, ...],
+        *,
+        before: pd.Timestamp | None = None,
+    ) -> dict:
+        symbol = _symbol(symbol)
+        if timeframe.code not in LIVE_DISPLAY_TIMEFRAMES:
+            raise ValueError("live chart timeframe must be day or min1")
+        if symbol not in self._desired:
+            raise ValueError(f"{symbol} is not subscribed")
+
+        end = (
+            before - pd.Timedelta(microseconds=1)
+            if before is not None
+            else pd.Timestamp(dt.datetime.now(KST).replace(tzinfo=None))
+        )
+        if timeframe.type == "minute" and before is None:
+            display_start = end.normalize()
+        else:
+            page_days = (
+                LIVE_MINUTE_PAGE_DAYS
+                if timeframe.type == "minute"
+                else LIVE_DAY_PAGE_DAYS
+            )
+            display_start = end.normalize() - pd.Timedelta(days=page_days - 1)
+
+        engine = self._engine
+        preset = (
+            engine.preset
+            if engine is not None and engine.preset.timeframe.code == timeframe.code
+            else None
+        )
+        training_windows = (
+            [preset.fractal.n, *preset.required_ma_windows] if preset is not None else []
+        )
+        max_window = max([*ma_windows, *training_windows], default=1)
+        lookback_days = (
+            max(7, ((max_window + 389) // 390) * 7)
+            if timeframe.type == "minute"
+            else max(180, max_window * 2)
+        )
+        fetch_start = display_start - pd.Timedelta(days=lookback_days)
+        start_date = fetch_start.date().isoformat()
+        if timeframe.type == "minute":
+            start_date = f"{start_date} 000000"
+
+        future_bars = (preset.fractal.n - 1) // 2 if preset is not None else 0
+        future_days = (
+            max(1, ((future_bars + 389) // 390) * 7)
+            if timeframe.type == "minute"
+            else future_bars * 2
+        )
+        fetch_end = min(
+            end.normalize() + pd.Timedelta(days=future_days),
+            pd.Timestamp(dt.datetime.now(KST).replace(tzinfo=None)),
+        )
+
+        async def fetch(client) -> list:
+            return await fetch_bars(
+                client,
+                symbol,
+                timeframe,
+                start_date=start_date,
+                end_date=fetch_end.date(),
+            )
+
+        if self._client is not None:
+            bars = await fetch(self._client)
+        else:
+            factory = self.client_factory or _kiwoom_client
+            async with factory() as client:
+                bars = await fetch(client)
+
+        source = bars_to_frame(bars)
+        frame = add_moving_averages(source, windows=ma_windows)
+        if frame.empty:
+            page = frame
+            has_more = False
+        else:
+            page = frame.loc[(frame.index >= display_start) & (frame.index <= end)]
+            has_more = bool((frame.index < display_start).any())
+        fractal_markers = []
+        if preset is not None and not source.empty:
+            result = await asyncio.to_thread(run_preprocess, source, preset)
+            visible_times = set(page.index)
+            fractal_markers = [
+                {
+                    "time": time_value(pd.Timestamp(time), timeframe),
+                    "kind": str(row.kind),
+                    "label": int(row.label),
+                }
+                for time, row in result.points.iterrows()
+                if time in visible_times
+            ]
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe.code,
+            "has_more": has_more,
+            "next_before": None if page.empty or not has_more else page.index[0].isoformat(),
+            "fractal_markers": fractal_markers,
+            **chart_payload(page, timeframe, ma_windows),
+        }
+
     def state(self) -> dict:
-        aggregator_stats = {
-            symbol: {
+        aggregator_stats = {}
+        for symbol in self._desired:
+            aggregator = self._aggregators.get((symbol, "min1"))
+            if aggregator is None:
+                continue
+            aggregator_stats[symbol] = {
                 "accepted": aggregator.stats.accepted,
                 "duplicates": aggregator.stats.duplicates,
                 "late": aggregator.stats.late,
             }
-            for symbol, aggregator in self._aggregators.items()
-        }
         counters = {
             **self.stats,
             "accepted": sum(item["accepted"] for item in aggregator_stats.values()),
@@ -343,18 +484,27 @@ class LiveService:
     def snapshot(self) -> dict:
         candles = []
         for symbol in sorted(self._desired):
-            candles.extend(
-                self._candle_payload(candle, provisional=False)
-                for candle in self._closed_overlay.get(symbol, ())
+            keys = sorted(
+                {
+                    key
+                    for mapping in (self._closed_overlay, self._latest_candles)
+                    for key in mapping
+                    if key[0] == symbol
+                }
             )
-            latest = self._latest_candles.get(symbol)
-            if latest is not None and (
-                not candles
-                or candles[-1]["symbol"] != symbol
-                or candles[-1]["candle"]["time"] != latest["candle"]["time"]
-                or candles[-1]["provisional"] != latest["provisional"]
-            ):
-                candles.append(latest)
+            for key in keys:
+                group = [
+                    self._candle_payload(candle, provisional=False)
+                    for candle in self._closed_overlay.get(key, ())
+                ]
+                latest = self._latest_candles.get(key)
+                if latest is not None and (
+                    not group
+                    or group[-1]["candle"]["time"] != latest["candle"]["time"]
+                    or group[-1]["provisional"] != latest["provisional"]
+                ):
+                    group.append(latest)
+                candles.extend(group)
         return {
             **self.state(),
             "latest_candles": candles,
@@ -396,19 +546,38 @@ class LiveService:
         engine = self._engine
         if engine is None:
             self._set_inference_status(trade.symbol, "no_model")
-            return
-        aggregator = self._aggregators.setdefault(
-            trade.symbol, CandleAggregator(trade.symbol, self._timeframe())
-        )
-        for result in aggregator.ingest(trade):
-            if engine is not self._engine:
-                return
-            if isinstance(result, CandleUpdated):
-                payload = self._candle_payload(result.candle, provisional=True)
-                self._latest_candles[trade.symbol] = payload
-                await self._broadcast("candle_update", payload)
-            elif isinstance(result, CandleClosed):
-                await self._handle_closed(result.candle, engine=engine)
+        timeframe_codes = set(LIVE_DISPLAY_TIMEFRAMES)
+        if engine is not None:
+            timeframe_codes.add(engine.preset.timeframe.code)
+        for code in sorted(timeframe_codes):
+            key = (trade.symbol, code)
+            aggregator = self._aggregators.setdefault(
+                key,
+                CandleAggregator(
+                    trade.symbol,
+                    Timeframe.from_code(code),
+                    observing_since=trade.received_at,
+                ),
+            )
+            for result in aggregator.ingest(trade):
+                if engine is not None and engine is not self._engine:
+                    return
+                if result.candle.partial_from_subscription:
+                    continue
+                if isinstance(result, CandleUpdated):
+                    payload = self._candle_payload(result.candle, provisional=True)
+                    self._latest_candles[key] = payload
+                    await self._broadcast("candle_update", payload)
+                elif isinstance(result, CandleClosed):
+                    inference_engine = (
+                        engine
+                        if engine is not None and code == engine.preset.timeframe.code
+                        else None
+                    )
+                    await self._handle_closed(
+                        result.candle,
+                        engine=inference_engine,
+                    )
 
     async def _bootstrap(self) -> None:
         try:
@@ -464,13 +633,26 @@ class LiveService:
         async with self._lock:
             self._engine = engine
             self._deployment = deployment
-            self._aggregators = {
-                symbol: CandleAggregator(symbol, engine.preset.timeframe)
-                for symbol in self._desired
-            }
+            self._aggregators.clear()
+            observed_at = dt.datetime.now(KST)
+            for symbol in self._desired:
+                self._reset_aggregators(symbol, observed_at)
             self._closed_overlay.clear()
             self._latest_candles.clear()
             self._sync_subscription_state()
+
+    def _reset_aggregators(self, symbol: str, observed_at: dt.datetime) -> None:
+        codes = set(LIVE_DISPLAY_TIMEFRAMES)
+        if self._engine is not None:
+            codes.add(self._engine.preset.timeframe.code)
+        for code in codes:
+            key = (symbol, code)
+            self._aggregators[key] = CandleAggregator(
+                symbol,
+                Timeframe.from_code(code),
+                observing_since=observed_at,
+            )
+            self._latest_candles.pop(key, None)
 
     async def _ensure_gateway(self) -> None:
         if not self._desired or self._closed:
@@ -489,6 +671,7 @@ class LiveService:
                         self._session = session
                         for symbol in sorted(self._desired):
                             await session.subscribe_trades(symbol)
+                            self._reset_aggregators(symbol, dt.datetime.now(KST))
                             self._set_subscription_status(symbol, "subscribed")
                             await self._broadcast(
                                 "subscription",
@@ -503,6 +686,8 @@ class LiveService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                if self._closed:
+                    break
                 logger.error(
                     "Kiwoom realtime gateway failed (%s)", type(exc).__name__
                 )
@@ -551,24 +736,29 @@ class LiveService:
             return
         if now.time() < dt.time(15, 30):
             return
-        for aggregator in list(self._aggregators.values()):
+        for (symbol, code), aggregator in list(self._aggregators.items()):
+            if code != "day":
+                continue
             current = aggregator.current
             if current is None or current.start_at.date() != now.date():
                 continue
             closed = aggregator.close_day()
             if closed is not None:
-                await self._handle_closed(closed.candle, engine=self._engine)
+                engine = self._engine if self._timeframe().code == code else None
+                await self._handle_closed(closed.candle, engine=engine)
 
     async def _handle_closed(
-        self, candle: Candle, *, engine: LiveInferenceEngine
+        self, candle: Candle, *, engine: LiveInferenceEngine | None
     ) -> None:
+        key = (candle.symbol, candle.timeframe)
         payload = self._candle_payload(candle, provisional=False)
-        self._latest_candles[candle.symbol] = payload
-        self._closed_overlay.setdefault(
-            candle.symbol, deque(maxlen=LIVE_HISTORY_LIMIT)
-        ).append(candle)
+        self._latest_candles[key] = payload
+        self._closed_overlay.setdefault(key, deque(maxlen=LIVE_HISTORY_LIMIT)).append(
+            candle
+        )
         await self._broadcast("candle_closed", payload)
-        await self._infer(candle.symbol, engine=engine)
+        if engine is not None:
+            await self._infer(candle.symbol, engine=engine)
 
     async def _infer(
         self,
@@ -636,7 +826,7 @@ class LiveService:
             columns=["Open", "High", "Low", "Close", "Volume", "Amount"],
         )
         frames = [] if frame is None else [frame]
-        overlays = self._closed_overlay.get(symbol)
+        overlays = self._closed_overlay.get((symbol, timeframe.code))
         if overlays:
             frames.append(_candles_frame(list(overlays)))
         if not frames:
@@ -765,11 +955,7 @@ class LiveService:
 
     def _candle_payload(self, candle: Candle, *, provisional: bool) -> dict:
         timeframe = Timeframe.from_code(candle.timeframe)
-        time: str | int = (
-            candle.start_at.date().isoformat()
-            if timeframe.type == "day"
-            else int(candle.start_at.timestamp())
-        )
+        time = _live_time_value(candle.start_at, timeframe)
         return {
             "symbol": candle.symbol,
             "timeframe": candle.timeframe,
@@ -786,11 +972,7 @@ class LiveService:
 
     def _prediction_payload(self, prediction: LivePrediction) -> dict:
         timeframe = Timeframe.from_code(prediction.timeframe)
-        time: str | int = (
-            prediction.closed_time.date().isoformat()
-            if timeframe.type == "day"
-            else int(prediction.closed_time.timestamp())
-        )
+        time = _live_time_value(prediction.closed_time, timeframe)
         return {
             "symbol": prediction.symbol,
             "timeframe": prediction.timeframe,
@@ -801,10 +983,12 @@ class LiveService:
                 {
                     "pairing_rule": item.candidate.pairing_rule,
                     "anchor_position": item.candidate.anchor_position,
-                    "anchor_time": item.candidate.anchor_time.isoformat(),
+                    "anchor_time": _live_time_value(
+                        item.candidate.anchor_time, timeframe
+                    ),
                     "anchor_kind": item.candidate.anchor_kind,
-                    "start": item.candidate.anchor_time.isoformat(),
-                    "end": item.candidate.end_time.isoformat(),
+                    "start": _live_time_value(item.candidate.anchor_time, timeframe),
+                    "end": _live_time_value(item.candidate.end_time, timeframe),
                     "shared_window": item.candidate.shared_window,
                 }
                 for item in prediction.candidates
@@ -864,6 +1048,14 @@ def _symbol(value: Any) -> str:
     if len(symbol) != 6 or not symbol.isdigit():
         raise ValueError("domestic symbol must contain six digits")
     return symbol
+
+
+def _live_time_value(value: dt.datetime | pd.Timestamp, timeframe: Timeframe) -> str | int:
+    """실시간 aware 시각을 기존 차트의 KST 벽시계 인코딩으로 맞춘다."""
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert(KST).tz_localize(None)
+    return time_value(timestamp, timeframe)
 
 
 def _candles_frame(candles: list[Candle]) -> pd.DataFrame:

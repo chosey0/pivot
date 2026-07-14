@@ -8,6 +8,7 @@ import pytest
 import pandas as pd
 
 from pivot.config import PreprocessPreset, Timeframe
+from pivot.realtime.aggregate import CandleAggregator
 from pivot.realtime.infer import LivePrediction
 from server import live as live_module
 from server.live import KST, LiveListener, LiveService, SubscriptionStore, trade_from_tick
@@ -72,12 +73,16 @@ class FakeSession:
         self.subscribed: list[str] = []
         self.unsubscribed: list[str] = []
         self.events: asyncio.Queue = asyncio.Queue()
+        self.closed = False
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *args):
         return None
+
+    async def close(self):
+        self.closed = True
 
     async def subscribe_trades(self, symbol: str):
         self.subscribed.append(symbol)
@@ -213,6 +218,36 @@ def test_gateway_restores_and_mutates_subscriptions_on_one_session(tmp_path: Pat
         finally:
             await service.close()
 
+        assert session.closed
+
+    asyncio.run(scenario())
+
+
+def test_close_releases_session_before_cancelling_gateway(tmp_path: Path):
+    async def scenario():
+        session = FakeSession()
+        cancelled_after_close = False
+
+        async def gateway():
+            nonlocal cancelled_after_close
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled_after_close = session.closed
+                raise
+
+        service = LiveService(tmp_path)
+        service._session = session
+        service._gateway_task = asyncio.create_task(gateway())
+        await asyncio.sleep(0)
+
+        await service.close()
+
+        assert session.closed
+        assert cancelled_after_close
+        assert service._gateway_task is None
+        assert service._connection == "closed"
+
     asyncio.run(scenario())
 
 
@@ -268,6 +303,100 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
     asyncio.run(scenario())
 
 
+def test_live_minute_history_fetches_kiwoom_and_returns_only_today(
+    tmp_path: Path, monkeypatch
+):
+    today = dt.datetime.now(KST).date()
+    yesterday = today - dt.timedelta(days=1)
+    calls = []
+
+    def bar(day: dt.date, minute: str, price: str):
+        return SimpleNamespace(
+            timestamp=f"{day:%Y%m%d}{minute}",
+            open=Decimal(price),
+            high=Decimal(price),
+            low=Decimal(price),
+            close=Decimal(price),
+            volume=10,
+            amount=Decimal("1000"),
+        )
+
+    async def fetch(client, symbol, timeframe, **kwargs):
+        calls.append((client, symbol, timeframe.code, kwargs))
+        return [
+            bar(yesterday, "153000", "99"),
+            bar(today, "090000", "100"),
+            bar(today, "090100", "101"),
+        ]
+
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"005930"}
+        service._client = object()
+
+        result = await service.chart_history(
+            "005930", Timeframe.from_code("min1"), (2,)
+        )
+
+        assert result["timeframe"] == "min1"
+        assert len(result["candles"]) == 2
+        assert result["has_more"] is True
+        assert len(result["ma"]["2"]) == 2
+        assert result["candles"][-1]["time"] == int(
+            dt.datetime.combine(today, dt.time(9, 1), tzinfo=dt.UTC).timestamp()
+        )
+
+    monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    asyncio.run(scenario())
+
+    assert calls[0][1:3] == ("005930", "min1")
+    assert calls[0][3]["start_date"].endswith(" 000000")
+    assert calls[0][3]["end_date"] == today
+
+
+def test_live_history_uses_active_training_preset_for_fractal_markers(
+    tmp_path: Path, monkeypatch
+):
+    today = dt.datetime.now(KST).date()
+    prices = [100, 105, 101, 99, 102]
+
+    async def fetch(*args, **kwargs):
+        return [
+            SimpleNamespace(
+                timestamp=f"{today:%Y%m%d}09{index:02d}00",
+                open=Decimal(price),
+                high=Decimal(price),
+                low=Decimal(price),
+                close=Decimal(price),
+                volume=10,
+                amount=Decimal("1000"),
+            )
+            for index, price in enumerate(prices)
+        ]
+
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"005930"}
+        service._client = object()
+        service._engine = StubEngine()
+        service._engine.preset = PreprocessPreset(
+            timeframe=Timeframe.from_code("min1"),
+            fractal={"n": 3, "tie_policy": "plateau_last"},
+        )
+
+        result = await service.chart_history(
+            "005930", Timeframe.from_code("min1"), ()
+        )
+
+        assert [(row["kind"], row["label"]) for row in result["fractal_markers"]] == [
+            ("high", 1),
+            ("low", 0),
+        ]
+
+    monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    asyncio.run(scenario())
+
+
 def test_minute_boundary_emits_closed_before_next_update(tmp_path: Path):
     async def scenario():
         service = LiveService(
@@ -291,12 +420,21 @@ def test_minute_boundary_emits_closed_before_next_update(tmp_path: Path):
                 "activated_at": None,
             },
         )
+        service._aggregators[("005930", "min1")] = CandleAggregator(
+            "005930",
+            Timeframe.from_code("min1"),
+            observing_since=dt.datetime(2026, 7, 13, 8, 59, tzinfo=KST),
+        )
         listener = await service.add_listener()
 
         await service.handle_sdk_event(_tick("005930", "09:00:01", 1, "70000"))
         await service.handle_sdk_event(_tick("005930", "09:01:01", 2, "70100"))
 
-        events = [await listener.get() for _ in range(4)]
+        events = [
+            event
+            for event in list(listener.events)
+            if event["type"] == "snapshot" or event["data"].get("timeframe") == "min1"
+        ]
         assert [event["type"] for event in events] == [
             "snapshot",
             "candle_update",
@@ -305,6 +443,34 @@ def test_minute_boundary_emits_closed_before_next_update(tmp_path: Path):
         ]
         assert events[2]["data"]["candle"]["close"] == 70000.0
         assert events[3]["data"]["candle"]["open"] == 70100.0
+        assert events[1]["data"]["candle"]["time"] == int(
+            dt.datetime(2026, 7, 13, 9, 0, tzinfo=dt.UTC).timestamp()
+        )
+
+        snapshot = service.snapshot()["latest_candles"]
+        assert {entry["timeframe"] for entry in snapshot} == {"day", "min1"}
+
+    asyncio.run(scenario())
+
+
+def test_partial_first_minute_is_suppressed_until_next_bucket(tmp_path: Path):
+    async def scenario():
+        service = LiveService(tmp_path)
+        service._desired = {"005930"}
+        service._sync_subscription_state()
+        listener = await service.add_listener()
+
+        await service.handle_sdk_event(_tick("005930", "09:00:30", 30, "70000"))
+        await service.handle_sdk_event(_tick("005930", "09:01:01", 31, "70100"))
+
+        events = [
+            event
+            for event in listener.events
+            if event["type"].startswith("candle_")
+            and event["data"].get("timeframe") == "min1"
+        ]
+        assert [event["type"] for event in events] == ["candle_update"]
+        assert events[0]["data"]["candle"]["open"] == 70100.0
 
     asyncio.run(scenario())
 
@@ -362,6 +528,7 @@ def test_recorded_ticks_replay_deterministically_without_duplicate_prediction(
             _tick("005930", "09:00:01", 1, "70000"),
             _tick("005930", "09:00:20", 2, "70200"),
             _tick("005930", "09:01:01", 3, "70100"),
+            _tick("005930", "09:02:01", 4, "70300"),
         ]
         for tick in ticks:
             await service.handle_sdk_event(tick)

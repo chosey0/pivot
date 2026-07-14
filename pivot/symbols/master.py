@@ -11,6 +11,7 @@ from brokers.kis.symbols import download_symbol_master
 from brokers.kis.models.symbol import SymbolRecord
 
 DOMESTIC_MARKETS = ("KOSPI", "KOSDAQ")
+US_MARKETS = ("NASDAQ", "NYSE", "AMEX")
 DOMESTIC_SYMBOL_RE = re.compile(r"^\d{6}$")
 
 
@@ -39,6 +40,27 @@ class DomesticMasterEntry:
         }
 
 
+@dataclass(frozen=True)
+class OverseasMasterEntry:
+    market: str
+    symbol: str
+    realtime_symbol: str
+    korean_name: str
+    english_name: str
+    security_type: str
+    currency: str
+    exchange_id: str
+    exchange_code: str
+    exchange_name: str
+    country_code: str
+    base_price: int | None
+    lot_size: int | None
+    updated_at: str
+
+    def to_supabase_row(self) -> dict[str, Any]:
+        return {**self.__dict__, "active": True}
+
+
 def load_domestic_common_stocks(
     markets: tuple[str, ...] = DOMESTIC_MARKETS,
 ) -> list[DomesticMasterEntry]:
@@ -51,6 +73,17 @@ def load_domestic_common_stocks(
     return sorted(entries, key=lambda item: (item.market, item.symbol))
 
 
+def load_us_symbol_master(markets: tuple[str, ...] = US_MARKETS) -> list[OverseasMasterEntry]:
+    """KIS NASDAQ/NYSE/AMEX 전체 종목마스터를 내려받아 정규화한다."""
+
+    downloaded_at = datetime.now(UTC).isoformat()
+    entries: list[OverseasMasterEntry] = []
+    for market in markets:
+        records = download_symbol_master(market, downloaded_at=downloaded_at)
+        entries.extend(_overseas_entry(record) for record in records if record.symbol)
+    return sorted(entries, key=lambda item: (item.market, item.symbol))
+
+
 def _entry_from_record(record: SymbolRecord) -> DomesticMasterEntry:
     return DomesticMasterEntry(
         symbol=record.symbol,
@@ -60,6 +93,25 @@ def _entry_from_record(record: SymbolRecord) -> DomesticMasterEntry:
         security_type=record.security_type,
         listed_date=record.listed_date,
         raw=record.raw,
+    )
+
+
+def _overseas_entry(record: SymbolRecord) -> OverseasMasterEntry:
+    return OverseasMasterEntry(
+        market=record.market,
+        symbol=record.symbol,
+        realtime_symbol=record.realtime_symbol,
+        korean_name=record.korean_name,
+        english_name=record.english_name,
+        security_type=record.security_type,
+        currency=record.currency,
+        exchange_id=record.exchange_id,
+        exchange_code=record.exchange_code,
+        exchange_name=record.exchange_name,
+        country_code=record.country_code,
+        base_price=record.base_price,
+        lot_size=record.lot_size,
+        updated_at=record.downloaded_at,
     )
 
 

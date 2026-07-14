@@ -7,13 +7,16 @@ CPU 작업이라 이벤트 루프 밖 스레드에서 돌린다.
 
 import asyncio
 import json
-import threading
 import multiprocessing
+import threading
 from collections.abc import AsyncIterator, Callable
 
 from pivot.storage.jobs import TERMINAL_STATUSES, JobRepository
 
 POLL_INTERVAL_SECONDS = 1.0
+PROCESS_STOP_TIMEOUT_SECONDS = 5.0
+_processes: set[multiprocessing.Process] = set()
+_process_lock = threading.Lock()
 
 
 def start_background(target: Callable[[], None]) -> None:
@@ -28,14 +31,34 @@ def start_process(
         target=target, args=args, daemon=False
     )
     process.start()
+    with _process_lock:
+        _processes.add(process)
     if on_exit is not None:
 
         def monitor() -> None:
             process.join()
+            with _process_lock:
+                _processes.discard(process)
             on_exit(process.exitcode or 0)
 
         threading.Thread(target=monitor, daemon=True).start()
     return process.pid
+
+
+def stop_processes() -> None:
+    """API 종료 시 spawn한 학습 프로세스를 고아로 남기지 않는다."""
+    with _process_lock:
+        processes = list(_processes)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    for process in processes:
+        process.join(PROCESS_STOP_TIMEOUT_SECONDS)
+        if process.is_alive():
+            process.kill()
+            process.join()
+    with _process_lock:
+        _processes.difference_update(processes)
 
 
 def _sse(event_type: str, payload: dict, *, event_id: int | None = None) -> str:
