@@ -162,10 +162,15 @@ button:disabled {
 }
 
 .add-form {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr auto;
   align-items: end;
   gap: 8px;
+}
+
+.add-form .symbol-search-box {
+  position: static;
 }
 
 .symbol-search-box {
