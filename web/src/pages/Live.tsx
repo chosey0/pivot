@@ -507,13 +507,15 @@ export function Live({ active }: { active: boolean }) {
   return (
     <>
       <aside className="side-panel live-side">
-        <section className="control-section">
-          <div className="section-title-row">
+        {/* 접어도 연결 배지는 summary에 남아 상태를 계속 볼 수 있다 */}
+        <details className="live-accordion" open>
+          <summary>
             <h2>연결 상태</h2>
             <span className={`live-ws-badge ${socketStatus}`}>
               {SOCKET_TEXT[socketStatus]}
             </span>
-          </div>
+          </summary>
+          <div className="live-accordion-body">
           {stateError ? <p className="error">상태 조회 오류: {stateError}</p> : null}
           <dl className="live-conn-meta">
             <div>
@@ -551,7 +553,8 @@ export function Live({ active }: { active: boolean }) {
               </button>
             </p>
           ) : null}
-        </section>
+          </div>
+        </details>
 
         <ModelPanel deployment={state.deployment} onActivated={applyState} />
 

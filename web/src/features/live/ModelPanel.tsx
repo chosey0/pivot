@@ -133,8 +133,19 @@ export function ModelPanel({ deployment, onActivated }: Props) {
   const selectedRun = succeededRuns.find((run) => run.id === selectedRunId) ?? null
 
   return (
-    <section className="control-section">
-      <h2>활성 모델</h2>
+    // 접어도 어떤 run이 붙어 있는지는 summary에 남긴다
+    <details className="live-accordion" open>
+      <summary>
+        <h2>활성 모델</h2>
+        {deployment ? (
+          <span className={`live-deploy-status ${deployment.status}`}>
+            #{deployment.run_id} {deployment.run_name}
+          </span>
+        ) : (
+          <span className="live-summary-empty">없음</span>
+        )}
+      </summary>
+      <div className="live-accordion-body">
       {deployment ? (
         <>
           <dl className="live-model-meta">
@@ -238,6 +249,7 @@ export function ModelPanel({ deployment, onActivated }: Props) {
           </button>
         </>
       )}
-    </section>
+      </div>
+    </details>
   )
 }

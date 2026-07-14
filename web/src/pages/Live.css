@@ -39,6 +39,98 @@
   overflow: hidden;
 }
 
+/* flex 항목의 기본 min-width는 auto라, 아코디언을 펼치면 안쪽 콘텐츠(긴 run 이름·select 옵션)의
+   최소 폭에 밀려 패널이 넓어졌다 축소되기를 반복한다. 폭을 고정하고 내용을 줄이거나 감싼다. */
+.live-side {
+  min-width: 0;
+}
+
+.live-side .field select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* ── 아코디언 (연결 상태 · 활성 모델) ──────────────────────────── */
+
+.live-accordion {
+  flex: none;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.live-accordion > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.live-accordion > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* .control-section h2 규칙이 details에는 걸리지 않아 기본 1.5em(21px)이 나온다 — 옆 섹션과 같은 14px로 맞춘다 */
+.live-accordion > summary h2 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* 펼침 표시 — 접힘 ∨, 펼침 ∧ */
+.live-accordion > summary::after {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid #9ca3af;
+  border-bottom: 1.5px solid #9ca3af;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform 0.15s ease;
+  content: '';
+}
+
+.live-accordion[open] > summary::after {
+  transform: translateY(1px) rotate(-135deg);
+}
+
+.live-accordion > summary:hover {
+  background: #f9fafb;
+  border-radius: 8px;
+}
+
+.live-accordion-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border-top: 1px solid #f1f5f9;
+}
+
+/* 접힌 상태에서 run 이름이 길어도 헤더가 깨지지 않게 자른다 */
+.live-accordion > summary .live-deploy-status {
+  overflow: hidden;
+  max-width: 60%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-summary-empty {
+  flex: none;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-accordion > summary::after {
+    transition: none;
+  }
+}
+
 /* ── 연결 상태 ─────────────────────────────────────────────── */
 
 .live-ws-badge,
