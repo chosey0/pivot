@@ -4,6 +4,106 @@
   font-size: 14px;
   line-height: 1.5;
   color-scheme: light;
+
+  /* 표면 · 경계 · 텍스트 */
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --surface-3: #f3f4f6;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --border-subtle: #f1f5f9;
+  --text: #111827;
+  --text-2: #374151;
+  --muted: #6b7280;
+  --muted-2: #9ca3af;
+
+  /* 강조(파랑) */
+  --accent: #2563eb;
+  --accent-fg: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --tint-blue-bg: #dbeafe;
+  --tint-blue-border: #bfdbfe;
+
+  /* 상태 틴트 — 배경/전경/테두리 쌍 */
+  --tint-green-bg: #dcfce7;
+  --tint-green-soft-bg: #ecfdf5;
+  --tint-green-fg: #15803d;
+  --tint-green-soft-fg: #047857;
+  --tint-green-border: #b7ecc1;
+  --tint-red-bg: #fee2e2;
+  --tint-red-soft-bg: #fef2f2;
+  --tint-red-fg: #b91c1c;
+  --tint-red-border: #fecaca;
+  --tint-amber-bg: #fef3c7;
+  --tint-amber-soft-bg: #fffbeb;
+  --tint-amber-fg: #b45309;
+  --tint-amber-border: #fde68a;
+  --tint-violet-bg: #f5f3ff;
+  --tint-violet-fg: #6d28d9;
+  --tint-violet-border: #7c3aed;
+
+  /* 그림자 · 유리 · 오버레이 */
+  --shadow-sm: rgba(15, 23, 42, 0.06);
+  --shadow-md: rgba(15, 23, 42, 0.16);
+  --shadow-lg: rgba(15, 23, 42, 0.32);
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --overlay: rgb(255 255 255 / 68%);
+
+  /* 차트 — lightweight-charts·plotly가 JS에서 읽어간다 (lib/theme.ts) */
+  --chart-grid: rgba(107, 114, 128, 0.12);
+  --chart-axis-text: #6b7280;
+}
+
+/* 다크는 App이 <html data-theme>로 지정한다. 시스템 설정은 초기값으로만 쓴다 (lib/theme.ts) */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #0f1216;
+  --surface: #181b21;
+  --surface-2: #1f232b;
+  --surface-3: #272c35;
+  --border: #2f353f;
+  --border-strong: #3d4553;
+  --border-subtle: #242932;
+  --text: #e8eaee;
+  --text-2: #c3cad4;
+  --muted: #98a1ae;
+  --muted-2: #7c8595;
+
+  --accent: #3b82f6;
+  --accent-fg: #93c5fd;
+  --accent-soft: #1b2436;
+  --tint-blue-bg: #1e2c44;
+  --tint-blue-border: #2d4a75;
+
+  --tint-green-bg: #12331f;
+  --tint-green-soft-bg: #0f2a20;
+  --tint-green-fg: #4ade80;
+  --tint-green-soft-fg: #34d399;
+  --tint-green-border: #1f5b34;
+  --tint-red-bg: #3a1d20;
+  --tint-red-soft-bg: #2b1719;
+  --tint-red-fg: #f87171;
+  --tint-red-border: #6b2b2b;
+  --tint-amber-bg: #3a2e14;
+  --tint-amber-soft-bg: #2c2513;
+  --tint-amber-fg: #fbbf24;
+  --tint-amber-border: #6b5219;
+  --tint-violet-bg: #241f3a;
+  --tint-violet-fg: #c4b5fd;
+  --tint-violet-border: #8b5cf6;
+
+  --shadow-sm: rgba(0, 0, 0, 0.4);
+  --shadow-md: rgba(0, 0, 0, 0.5);
+  --shadow-lg: rgba(0, 0, 0, 0.6);
+  --glass-bg: rgba(30, 34, 42, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --overlay: rgb(15 18 22 / 72%);
+
+  --chart-grid: rgba(148, 163, 184, 0.16);
+  --chart-axis-text: #98a1ae;
 }
 
 * {
@@ -12,4 +112,6 @@
 
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--text);
 }

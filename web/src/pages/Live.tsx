@@ -899,7 +899,10 @@ export function Live({ active }: { active: boolean }) {
               canLoadMoreOlder={Boolean(historicalChart?.has_more)}
               candles={merged.candles}
               fitContentKey={`${selectedSymbol}:${chartTimeframe}`}
+              isLoading={chartLoading}
               isLoadingOlder={loadingOlder}
+              initialVisibleBars={120}
+              key={`${selectedSymbol}:${chartTimeframe}`}
               ma={merged.ma}
               markers={markers}
               onLoadMoreOlder={loadOlderChart}

@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Data, Layout, PlotHoverEvent } from 'plotly.js-basic-dist-min'
 import type { EpochRow } from '../../api/training'
+import { chartTheme, useTheme } from '../../lib/theme'
 
 const TRAIN_COLOR = '#2563eb'
 const VALIDATION_COLOR = '#e5484d'
-const GRID_COLOR = 'rgba(107, 114, 128, 0.12)'
-const AXIS_FONT = { size: 10, color: '#6b7280' }
 
 type PlotlyModule = typeof import('plotly.js-basic-dist-min')
 
@@ -39,12 +38,16 @@ interface HoverState {
 
 /** x축이 epoch 순번인 소형 라인 차트. */
 function EpochLineChart({ series, digits }: { series: SeriesSpec[]; digits: number }) {
+  const theme = useTheme()
   const containerRef = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<HoverState | null>(null)
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
+    // plotly도 CSS 변수를 못 읽으므로 테마 토큰을 값으로 넣는다 (theme 의존성으로 다시 그린다)
+    const palette = chartTheme()
+    const axisFont = { size: 10, color: palette.axisText }
     const data: Data[] = series.map((spec) => ({
       type: 'scatter',
       mode: 'lines+markers',
@@ -73,20 +76,20 @@ function EpochLineChart({ series, digits }: { series: SeriesSpec[]; digits: numb
         tickformat: 'd',
         zeroline: false,
         showgrid: false,
-        linecolor: GRID_COLOR,
-        tickfont: AXIS_FONT,
+        linecolor: palette.grid,
+        tickfont: axisFont,
         showspikes: true,
         spikemode: 'across',
         spikedash: 'dot',
         spikethickness: 1,
-        spikecolor: 'rgba(107, 114, 128, 0.7)',
+        spikecolor: palette.muted,
       },
       yaxis: {
         tickformat: `.${digits}f`,
         zeroline: false,
-        gridcolor: GRID_COLOR,
-        linecolor: GRID_COLOR,
-        tickfont: AXIS_FONT,
+        gridcolor: palette.grid,
+        linecolor: palette.grid,
+        tickfont: axisFont,
       },
     }
 
@@ -111,7 +114,7 @@ function EpochLineChart({ series, digits }: { series: SeriesSpec[]; digits: numb
               .sort((a, b) => a.curveNumber - b.curveNumber)
               .map((point) => ({
                 name: point.data.name ?? '',
-                color: String(point.data.line?.color ?? '#6b7280'),
+                color: String(point.data.line?.color ?? palette.muted),
                 value: Number(point.y),
               })),
             left,
@@ -126,7 +129,7 @@ function EpochLineChart({ series, digits }: { series: SeriesSpec[]; digits: numb
       setHover(null)
       if (plotted) plotly?.purge(container)
     }
-  }, [series, digits])
+  }, [digits, series, theme])
 
   return (
     <div className="metric-chart-frame">

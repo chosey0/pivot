@@ -6,6 +6,7 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts'
 import { chartPriceFormat, formatChartPrice, type PriceDecimals } from '../../lib/chartPrice'
+import { chartTheme, useTheme } from '../../lib/theme'
 
 // 샘플 피처에 Time이 없으므로(백로그 A2) x축은 봉 순번이다 — 시간축은 숨긴다
 const BASE_COLUMNS = ['Open', 'High', 'Low', 'Close']
@@ -20,6 +21,7 @@ interface Props {
 
 /** 샘플 브라우저용 축소판 차트 — 원본 피처 시퀀스를 정적으로 그린다 (docs/04 §5). */
 export function MiniSampleChart({ columns, features, priceDecimals = 0 }: Props) {
+  const theme = useTheme()
   const containerRef = useRef<HTMLDivElement>(null)
   const hasOhlc = BASE_COLUMNS.every((name) => columns.includes(name))
   const lineColumns = columns.filter(
@@ -31,12 +33,13 @@ export function MiniSampleChart({ columns, features, priceDecimals = 0 }: Props)
     const container = containerRef.current
     if (!container || features.length === 0) return
 
+    const palette = chartTheme()
     const chart = createChart(container, {
       autoSize: true,
-      layout: { background: { color: 'transparent' }, textColor: '#6b7280' },
+      layout: { background: { color: 'transparent' }, textColor: palette.axisText },
       grid: {
         vertLines: { visible: false },
-        horzLines: { color: 'rgba(107, 114, 128, 0.12)' },
+        horzLines: { color: palette.grid },
       },
       timeScale: { visible: false },
       rightPriceScale: { borderVisible: false },
@@ -93,7 +96,8 @@ export function MiniSampleChart({ columns, features, priceDecimals = 0 }: Props)
 
     chart.timeScale().fitContent()
     return () => chart.remove()
-  }, [columns, features, priceDecimals])
+    // theme: 테마가 바뀌면 축·격자 색을 다시 넣기 위해 차트를 새로 그린다
+  }, [columns, features, priceDecimals, theme])
 
   return (
     <div className="mini-chart-panel">

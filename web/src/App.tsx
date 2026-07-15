@@ -5,6 +5,7 @@ import { Lab } from './pages/Lab'
 import { Live } from './pages/Live'
 import { Training } from './pages/Training'
 import { Watchlist } from './pages/Watchlist'
+import { toggleTheme, useTheme } from './lib/theme'
 import './App.css'
 
 type TabId = 'watchlist' | 'lab' | 'datasets' | 'diagnostics' | 'training' | 'live'
@@ -26,6 +27,7 @@ function storedTab(): TabId {
 }
 
 function App() {
+  const theme = useTheme()
   const [activeTab, setActiveTab] = useState<TabId>(storedTab)
   const [liveVisited, setLiveVisited] = useState(activeTab === 'live')
   const [subtitle, setSubtitle] = useState<string | null>(null)
@@ -53,6 +55,16 @@ function App() {
             </button>
           ))}
         </nav>
+        <button
+          aria-label={theme === 'dark' ? '라이트 모드로 전환' : '다크 모드로 전환'}
+          aria-pressed={theme === 'dark'}
+          className="theme-toggle"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? '라이트 모드' : '다크 모드'}
+          type="button"
+        >
+          {theme === 'dark' ? '☀' : '☾'}
+        </button>
       </header>
 
       <main className="app-main">

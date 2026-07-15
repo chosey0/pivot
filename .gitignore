@@ -244,3 +244,5 @@ web/dist/
 
 # Playwright MCP artifacts
 .playwright-mcp/
+
+portfolio/

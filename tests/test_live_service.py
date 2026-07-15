@@ -501,12 +501,55 @@ def test_dynamic_subscription_reconciles_cache_for_active_model(
                 "005930",
                 "min1",
                 tmp_path,
-                {"region": "domestic", "exchange": ""},
+                {
+                    "start": dt.datetime(2026, 7, 13, 12),
+                    "region": "domestic",
+                    "exchange": "",
+                },
             )
         ]
         assert service.stats["reconciliations"] == 1
 
     monkeypatch.setattr(live_module, "update_cache", update)
+    monkeypatch.setattr(
+        live_module,
+        "_now",
+        lambda _timezone: dt.datetime(2026, 7, 14, 12, tzinfo=KST),
+    )
+    asyncio.run(scenario())
+
+
+def test_dynamic_subscription_keeps_incremental_fetch_for_cached_minutes(
+    tmp_path: Path, monkeypatch
+):
+    reconciled = []
+
+    async def update(client, symbol, timeframe, data_root, **kwargs):
+        reconciled.append(kwargs)
+        return pd.DataFrame()
+
+    async def scenario():
+        service = LiveService(
+            tmp_path,
+            deployments=EmptyDeployments(),
+            runs=object(),
+            storage=object(),
+        )
+        service._client = object()
+        service._sessions = {"KRX": FakeSession()}
+        service._gateway_task = asyncio.current_task()
+        await service._install_engine(StubEngine(), {"id": 1, "run_id": 1})
+
+        await service.subscribe("005930")
+
+        assert reconciled == [{"start": None, "region": "domestic", "exchange": ""}]
+
+    monkeypatch.setattr(live_module, "update_cache", update)
+    monkeypatch.setattr(
+        live_module,
+        "load_cache_window",
+        lambda *args, **kwargs: (pd.DataFrame(index=pd.DatetimeIndex(["2026-07-14"])), False),
+    )
     asyncio.run(scenario())
 
 
@@ -564,6 +607,60 @@ def test_live_rest_calls_share_the_kiwoom_client_serially(tmp_path: Path, monkey
 
     monkeypatch.setattr(live_module, "update_cache", update)
     monkeypatch.setattr(live_module, "fetch_bars", fetch)
+    asyncio.run(scenario())
+
+
+def test_subscribe_reconcile_finishing_after_unsubscribe_is_ignored(
+    tmp_path: Path, monkeypatch
+):
+    reconcile_started = asyncio.Event()
+    release_reconcile = asyncio.Event()
+
+    async def update(*args, **kwargs):
+        reconcile_started.set()
+        await release_reconcile.wait()
+        return pd.DataFrame()
+
+    async def scenario():
+        service = LiveService(
+            tmp_path,
+            deployments=EmptyDeployments(),
+            runs=object(),
+            storage=object(),
+        )
+        service._client = object()
+        service._sessions = {"US": FakeSession("US")}
+        await service._install_engine(
+            StubEngine(),
+            {
+                "id": 1,
+                "run_id": 1,
+                "artifact_id": 1,
+                "run_name": "stub",
+                "timeframe": "min1",
+                "feature_columns": [],
+                "model": "stub",
+                "activated_at": None,
+            },
+        )
+        listener = await service.add_listener()
+
+        subscribing = asyncio.create_task(
+            service.subscribe("BJDX", region="overseas", exchange="ND")
+        )
+        await reconcile_started.wait()
+        await service.unsubscribe("BJDX")
+        release_reconcile.set()
+
+        assert await subscribing == {}
+        assert "BJDX" not in service._subscription_state
+        assert all(
+            event["type"] != "subscription" or event["data"]["symbol"] != "BJDX"
+            for event in listener.events
+        )
+        await service.close()
+
+    monkeypatch.setattr(live_module, "update_cache", update)
     asyncio.run(scenario())
 
 

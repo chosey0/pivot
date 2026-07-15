@@ -20,6 +20,7 @@ import {
 } from 'lightweight-charts'
 import type { Candle, LinePoint, VolumePoint } from '../../api/client'
 import { chartPriceFormat, formatChartPrice, type PriceDecimals } from '../../lib/chartPrice'
+import { chartTheme, useTheme } from '../../lib/theme'
 
 // 국내 관례: 상승 빨강 / 하락 파랑
 const UP_COLOR = '#e5484d'
@@ -64,6 +65,10 @@ interface Props {
   onLoadMoreOlder?: () => void
   canLoadMoreOlder?: boolean
   isLoadingOlder?: boolean
+  /** 새 데이터셋의 초기 이력이 도착할 때까지 viewport 재설정을 미룬다. */
+  isLoading?: boolean
+  /** 새 데이터셋을 열 때 표시할 최신 봉 수. */
+  initialVisibleBars?: number
   fitContentKey?: string
   priceDecimals?: PriceDecimals
 }
@@ -232,9 +237,12 @@ export function CandleChart({
   onLoadMoreOlder,
   canLoadMoreOlder = false,
   isLoadingOlder = false,
+  isLoading = false,
+  initialVisibleBars,
   fitContentKey = '',
   priceDecimals = 0,
 }: Props) {
+  const theme = useTheme()
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -249,6 +257,7 @@ export function CandleChart({
   const isLoadingOlderRef = useRef(isLoadingOlder)
   const dataLengthRef = useRef(0)
   const fitContentKeyRef = useRef<string | null>(null)
+  const userNavigatedRef = useRef(false)
 
   useEffect(() => {
     onOhlcChangeRef.current = onOhlcChange
@@ -258,19 +267,29 @@ export function CandleChart({
     isLoadingOlderRef.current = isLoadingOlder
   }, [onOhlcChange, onTimeClick, onLoadMoreOlder, canLoadMoreOlder, isLoadingOlder])
 
+  // 차트는 CSS 변수를 읽지 못하므로 테마가 바뀌면 축·격자 색을 값으로 다시 넣는다
+  useEffect(() => {
+    const palette = chartTheme()
+    chartRef.current?.applyOptions({
+      layout: { textColor: palette.axisText },
+      grid: { vertLines: { color: palette.grid }, horzLines: { color: palette.grid } },
+    })
+  }, [theme])
+
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
 
+    const palette = chartTheme()
     const chart = createChart(container, {
       autoSize: true,
       layout: {
         background: { color: 'transparent' },
-        textColor: '#6b7280',
+        textColor: palette.axisText,
       },
       grid: {
-        vertLines: { color: 'rgba(107, 114, 128, 0.12)' },
-        horzLines: { color: 'rgba(107, 114, 128, 0.12)' },
+        vertLines: { color: palette.grid },
+        horzLines: { color: palette.grid },
       },
       localization: {
         timeFormatter: formatTimeLabel,
@@ -311,9 +330,21 @@ export function CandleChart({
       if (param.time === undefined) return
       onTimeClickRef.current?.(timeToKey(param.time))
     })
+    const markUserNavigation = () => {
+      userNavigatedRef.current = true
+    }
+    container.addEventListener('pointerdown', markUserNavigation)
+    container.addEventListener('wheel', markUserNavigation, { passive: true })
     const rangeHandler = () => {
       const currentRange = chart.timeScale().getVisibleLogicalRange()
-      if (!currentRange || !canLoadMoreOlderRef.current || isLoadingOlderRef.current) return
+      if (
+        !currentRange ||
+        !userNavigatedRef.current ||
+        !canLoadMoreOlderRef.current ||
+        isLoadingOlderRef.current
+      ) {
+        return
+      }
       const barsInfo = series.barsInLogicalRange(currentRange)
       if (barsInfo && barsInfo.barsBefore < 50) {
         onLoadMoreOlderRef.current?.()
@@ -322,6 +353,8 @@ export function CandleChart({
     chart.timeScale().subscribeVisibleLogicalRangeChange(rangeHandler)
 
     return () => {
+      container.removeEventListener('pointerdown', markUserNavigation)
+      container.removeEventListener('wheel', markUserNavigation)
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(rangeHandler)
       chart.remove()
       chartRef.current = null
@@ -427,6 +460,7 @@ export function CandleChart({
     ) as Record<string, LineData<Time>[]>
     const addedBefore = Math.max(candleData.length - previousLength, 0)
     const replacingContent = fitContentKeyRef.current !== fitContentKey
+    if (replacingContent) userNavigatedRef.current = false
 
     // setData는 연결된 marker primitive를 즉시 재계산한다. 종목/기간 교체 시
     // 이전 marker 시간이 새 candle에 없을 수 있으므로 데이터보다 먼저 비운다.
@@ -446,8 +480,17 @@ export function CandleChart({
       series.setData(maDataByWindow[window] ?? [])
     }
     if (replacingContent) {
-      chart.timeScale().fitContent()
-      fitContentKeyRef.current = fitContentKey
+      if (!isLoading) {
+        if (initialVisibleBars && candleData.length > initialVisibleBars) {
+          chart.timeScale().setVisibleLogicalRange({
+            from: candleData.length - initialVisibleBars,
+            to: candleData.length - 0.5,
+          })
+        } else {
+          chart.timeScale().fitContent()
+        }
+        fitContentKeyRef.current = fitContentKey
+      }
     } else if (previousRange && addedBefore > 0) {
       chart.timeScale().setVisibleLogicalRange({
         from: previousRange.from + addedBefore,
@@ -458,7 +501,17 @@ export function CandleChart({
     markersApiRef.current?.setMarkers(
       markers.filter((marker) => validTimes.has(marker.time)).map(toSeriesMarker),
     )
-  }, [candles, volumes, ma, visibleIndicators, markers, fitContentKey, priceDecimals])
+  }, [
+    candles,
+    volumes,
+    ma,
+    visibleIndicators,
+    markers,
+    fitContentKey,
+    priceDecimals,
+    isLoading,
+    initialVisibleBars,
+  ])
 
   useEffect(() => {
     highlightRef.current?.setRange(highlightRange)

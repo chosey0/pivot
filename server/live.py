@@ -467,8 +467,11 @@ class LiveService:
         if self._client is not None and self._engine is not None:
             if not await self._reconcile_symbol(symbol, self._engine):
                 self._last_reconcile_at = None
-        await self._broadcast("subscription", self._subscription_event(symbol))
-        return self._subscription_state[symbol].copy()
+        event = self._subscription_event(symbol)
+        if event is None:
+            return {}
+        await self._broadcast("subscription", event)
+        return event.copy()
 
     async def unsubscribe(self, symbol: str) -> None:
         symbol = str(symbol).strip().upper()
@@ -990,10 +993,9 @@ class LiveService:
                             )
                             self._reset_aggregators(symbol, dt.datetime.now(dt.UTC))
                             self._set_subscription_status(symbol, "subscribed")
-                            await self._broadcast(
-                                "subscription",
-                                self._subscription_event(symbol),
-                            )
+                            event = self._subscription_event(symbol)
+                            if event is not None:
+                                await self._broadcast("subscription", event)
                         await self._set_connection("connected", "")
                         await self._reconcile_all()
                         queue: asyncio.Queue = asyncio.Queue()
@@ -1205,11 +1207,27 @@ class LiveService:
             return False
         try:
             async with self._rest_lock:
+                timeframe = engine.preset.timeframe
+                cached, _ = load_cache_window(
+                    cache_path(
+                        self.data_root,
+                        cache_broker(target.region, target.exchange),
+                        timeframe.code,
+                        symbol,
+                    ),
+                    limit=1,
+                    columns=[],
+                )
                 frame = await update_cache(
                     self._client,
                     symbol,
-                    engine.preset.timeframe,
+                    timeframe,
                     self.data_root,
+                    start=(
+                        (_now(target.timezone) - dt.timedelta(days=1)).replace(tzinfo=None)
+                        if timeframe.type == "minute" and cached is None
+                        else None
+                    ),
                     region=target.region,
                     exchange=target.exchange,
                 )
@@ -1252,9 +1270,12 @@ class LiveService:
     def _set_subscription_status(
         self, symbol: str, status: str, error: str | None = None
     ) -> None:
-        state = self._subscription_state.setdefault(
-            symbol, self._new_subscription_state(symbol)
-        )
+        if symbol not in self._desired:
+            return
+        state = self._subscription_state.get(symbol)
+        if state is None:
+            state = self._new_subscription_state(symbol)
+            self._subscription_state[symbol] = state
         state.update({"status": status, "error": error})
 
     def _sync_subscription_state(self) -> None:
@@ -1280,14 +1301,19 @@ class LiveService:
         }
 
     def _set_inference_status(self, symbol: str, status: str) -> None:
-        state = self._subscription_state.setdefault(
-            symbol, self._new_subscription_state(symbol)
-        )
+        if symbol not in self._desired:
+            return
+        state = self._subscription_state.get(symbol)
+        if state is None:
+            state = self._new_subscription_state(symbol)
+            self._subscription_state[symbol] = state
         state["inference_status"] = status
         state["last_tick_at"] = _iso(self._last_tick_by_symbol.get(symbol))
 
-    def _subscription_event(self, symbol: str) -> dict:
-        state = self._subscription_state[symbol]
+    def _subscription_event(self, symbol: str) -> dict | None:
+        state = self._subscription_state.get(symbol)
+        if state is None or symbol not in self._desired:
+            return None
         return {
             key: state[key]
             for key in (

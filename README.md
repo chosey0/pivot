@@ -8,7 +8,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white)
 ![Vite](https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-Postgres%20%2B%20Storage-3FCF8E?logo=supabase&logoColor=white)
-![Milestone](https://img.shields.io/badge/Milestone-M4%20완료-2EA44F)
+![Milestone](https://img.shields.io/badge/Milestone-M5%20운영검증%20대기-F59E0B)
 
 ## 개요
 
@@ -18,23 +18,35 @@ Pivot은 이 지표로 과거 캔들에 고점/저점 라벨을 자동 생성하
 분류 문제로 바꾼다.
 
 로컬의 구 `../Fractal` 프로젝트 후속으로, 코드를 이식하지 않고 **파이프라인을 문서
-명세로 정리한 뒤 알려진 결함을 고치며 재구현**한다. 원천 데이터는 HTS 수동 CSV 대신
-[broker-modules](https://github.com/chosey0/broker-modules) 증권사 OpenAPI SDK(키움 일/분/틱봉)로 직접 조회한다.
+명세로 정리한 뒤 알려진 결함을 고치며 재구현**했다. 원천 데이터는 HTS 수동 CSV 대신
+[broker-modules](https://github.com/chosey0/broker-modules)의 Kiwoom API로 국내·미국
+일/분/틱봉과 실시간 체결을 직접 조회한다.
 
-현재 **M1–M4와 프랙탈 샘플 페어링 계약 구현이 완료**되어 수집부터 학습·평가까지
-동작한다. 다음 구현 순서는 **M5 Kiwoom WebSocket 실시간 추론**이다.
+현재 **M0–M4는 완료**, **M5 실시간 추론은 core와 UI 통합까지 완료**된 상태다. 남은 완료
+조건은 성공한 checkpoint의 실제 활성화와 국내·미국 정규장 중 수신·봉 마감·재접속 보정
+실측이다. 장외에서도 recorded tick 회귀 테스트와 snapshot-first 재연결 흐름은 검증되어 있다.
+
+## 한 번에 보는 작업 흐름
+
+1. 국내 또는 미국 종목을 검색하고 타임프레임·기간별 캔들을 로컬 parquet로 수집한다.
+2. 전처리 실험실에서 프랙탈, 클리닝, 샘플 페어링, 학습 피처를 검수해 프리셋으로 저장한다.
+3. 여러 종목·타임프레임·수집 구간을 일괄 처리해 Supabase private shard 데이터셋을 만든다.
+4. 데이터 품질 리포트와 샘플을 확인한 뒤 CNN1D 모델을 학습·평가한다.
+5. 검증된 best checkpoint를 활성화하고 Kiwoom 실시간 체결로 마감 봉 단위 추론을 확인한다.
 
 ### 핵심 개념
 
 
-| 개념     | 내용                                                                                                   |
-| ------ | ---------------------------------------------------------------------------------------------------- |
-| 프랙탈 라벨 | 크기 `n`의 center rolling window에서 중심 봉이 창 내 최고가/최저가면 고점/저점. 확정에 미래 `(n-1)//2`봉 필요 — 미확정 구간은 절대 라벨하지 않음 |
-| 라벨 규약  | `0` 저점 · `1` 고점 · `2` 무시. 기존 `MA20 < MA120` 무시 조건은 선택 옵션으로 유지                                      |
-| 입력 윈도우 | 시간순 인접 마커 pair의 양 끝을 포함하는 가변 길이 구간. 같은 종류 pair는 `2`, 다른 종류 pair는 도착 마커 기준 `0`/`1` |
-| 프리셋    | 신규 기본값은 `adjacent_markers_v1`. 필드가 없는 기존 저장 프리셋·데이터셋·run은 `latest_opposite_v1`으로 해석          |
-| 파이프라인 | 단건 미리보기와 batch는 같은 `pivot/` 함수를 사용하고, 학습과 실시간 추론은 동일한 변환 코드를 재사용                                    |
-| 타임프레임  | `day` / `min{N}` / `tick{N}` 1급 개념. 수집 이후 전 파이프라인은 봉 종류에 무관(agnostic)                                |
+| 개념 | 내용 |
+|---|---|
+| 프랙탈 라벨 | 크기 `n`의 center rolling window에서 중심 봉이 창 내 최고가/최저가면 고점/저점. 미래 `(n-1)//2`봉이 있어야 확정한다. |
+| 라벨 규약 | `0` 저점 · `1` 고점 · `2` 무시. 같은 종류의 인접 마커 pair와 선택적 MA/스윙 무시 규칙이 클래스 2를 만든다. |
+| 입력 윈도우 | 시간순 인접 마커 pair의 양 끝을 포함하는 가변 길이 시퀀스. 다른 종류 pair는 도착 마커 기준 `0`/`1`이다. |
+| 극값·페어링 | 신규 프리셋은 `plateau_last`와 `adjacent_markers_v1`이 기본이며, legacy snapshot은 저장 당시 규칙을 유지한다. |
+| 클리닝 | 원천 parquet는 바꾸지 않는다. `kronos_adapted_v1` filter는 품질 경계별로 지표·라벨·샘플을 다시 계산한다. |
+| 데이터 분할 | 전체 샘플을 클래스별로 결정적 shuffle한 뒤 train/validation/test를 `60/20/20`으로 나눈다. |
+| 타임프레임 | `day` / `min{N}` / `tick{N}`가 1급 개념이며 한 데이터셋에 여러 타임프레임과 수집 구간을 포함할 수 있다. |
+| 실시간 추론 | 미완성 봉은 차트만 갱신하고 모델은 봉 마감 시 한 번 추론한다. 사용자가 종목별 입력 시작 앵커를 지정할 수도 있다. |
 
 `cls2_drop`은 클래스 2 샘플만 제외하며, 마커 자체는 다음 인접 pair의 기준으로 남긴다.
 예를 들어 `L1 → L2 → L3 → H`이면 `L1→L2 = 2`, `L2→L3 = 2`, `L3→H = 1`이다.
@@ -51,8 +63,9 @@ pivot/          순수 도메인 패키지 (웹 비의존)
 ├─ diagnostics/   원천·라벨·데이터셋 품질 진단
 ├─ models/        legacy/temporal CNN1D
 ├─ training/      학습·평가·체크포인트 처리
+├─ realtime/      국내·미국 체결 집계, 공용 transform 기반 추론
 ├─ storage/       Supabase Postgres/Storage 저장소 경계
-└─ symbols/       KIS 국내 종목마스터 정규화·검색
+└─ symbols/       KIS 국내·미국 종목마스터 정규화·검색
 
 server/         FastAPI 오케스트레이션, job/SSE, 별도 학습 프로세스
 web/            Vite + React + TS — lightweight-charts v5 차트 워크벤치
@@ -67,14 +80,14 @@ Supabase        프리셋·job·dataset·run 메타데이터와 private shard/ch
 ## 화면 구성 (6탭)
 
 
-| 탭        | 기능                                                                        | 상태    |
-| -------- | ------------------------------------------------------------------------- | ----- |
-| 종목 & 데이터 | 종목 검색(Supabase 자동완성)·타임프레임/기간 선택 수집·캐시 상태·실데이터 차트(MA/거래량, 보조지표 패널, 구간 로딩) | ✅     |
-| 전처리 실험실  | 프랙탈 파라미터 튜닝 → 디바운스 재계산, 라벨 마커(▲▼●), 통계 diff, 스윙 윈도우 하이라이트, 학습 피처 선택       | ✅     |
-| 데이터셋     | 프리셋 CRUD, batch job/SSE, shard, 샘플 검수, 삭제·정리                                | ✅ M3 |
-| 데이터 진단   | 원천/preview/dataset 품질 게이트, K-line 분석                                          | ✅ M3 |
-| 학습 & 평가  | run/SSE, CNN1D 학습, confusion matrix, 클래스 지표, 예측 마커                         | ✅ M4 |
-| 실시간 추론   | Kiwoom `0B` 체결 → 봉 집계 → 봉 마감 추론                                             | 🔜 M5 |
+| 탭 | 기능 | 상태 |
+|---|---|---|
+| 종목 & 데이터 | 국내·미국 퍼지 검색, 타임프레임/기간별 수집 큐, parquet 관리, MA·거래량 차트와 구간 로딩 | 완료 |
+| 전처리 실험실 | 프랙탈·클리닝·페어링 파라미터 재계산, 라벨 마커, 샘플 하이라이트, 피처 검수 | 완료 |
+| 데이터셋 | 프리셋 버전/보관함, batch job/SSE, mixed-timeframe shard, 샘플 검수와 lifecycle | 완료 |
+| 데이터 진단 | 원천·preview·dataset 품질 게이트, K-line 분석, overlap cluster 통계 | 완료 |
+| 학습 & 평가 | run/SSE, CNN1D 학습, confusion matrix, 클래스 지표, 예측 차트 | 완료 |
+| 실시간 추론 | 국내 `0B`·미국 `FE`, REST 이력+실시간 봉, 모델 활성화, 판정 로그, 수동 시작 앵커 | 장중 검증 대기 |
 
 
 ### 마일스톤
@@ -85,16 +98,16 @@ Supabase        프리셋·job·dataset·run 메타데이터와 private shard/ch
 - [x] **M3-A** 프리셋 + batch dataset
 - [x] **M3-B** 샘플 검수 + 데이터 진단 + lifecycle
 - [x] **M4** 학습 & 평가
-- [ ] **M5** Kiwoom WebSocket 실시간 추론
+- [ ] **M5** Kiwoom WebSocket 실시간 추론 — core/UI 완료, 모델 활성화와 국내·미국 장중 실측 대기
 
 ## 시작하기
 
 ### 요구사항
 
 - Python **3.12+**, [uv](https://docs.astral.sh/uv/), Node.js **20.19+ 또는 22.12+**
-- 키움증권 OpenAPI 앱 키 (캔들 수집, 향후 M5 실시간 체결)
+- 키움증권 OpenAPI 앱 키 (국내·미국 캔들 및 실시간 체결)
 - Supabase 프로젝트 (프리셋, dataset, 진단, run, artifact 저장)
-- KIS 앱 키 (국내 종목마스터를 갱신할 때만 필요)
+- KIS 종목마스터는 공개 정적 파일을 사용하므로 별도 KIS 인증키가 필요하지 않다.
 
 ### 설치 & 실행
 
@@ -104,8 +117,8 @@ npm --prefix web ci --include=optional --offline=false
 
 # .env 작성 (git 미추적 — 키는 절대 커밋하지 않는다)
 # KIWOOM_APP_KEY / KIWOOM_SECRET_KEY
-# SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY  (서버 전용)
-# KIS_APP_KEY / KIS_APP_SECRET_KEY          (종목마스터 갱신 시)
+# SUPABASE_URL
+# SUPABASE_SERVICE_ROLE_KEY 또는 SUPABASE_SECRET_KEY  (서버 전용)
 
 # macOS / Linux / Windows 공통 (API :8000 + 웹 :5173)
 uv run --extra server --extra train python scripts/dev.py all
@@ -122,15 +135,19 @@ uv run python scripts/dev.py web
 `npm --prefix web ci --include=optional --offline=false`로 현재 OS용 네이티브
 패키지를 다시 설치한다.
 
-브라우저에서 `http://localhost:5173` 접속 → 종목 추가 → 타임프레임 선택 → 수집 →
-전처리 실험실에서 파라미터를 조작하며 라벨링 결과를 확인한다.
+브라우저에서 `http://localhost:5173`에 접속한다. `Ctrl+C`로 공통 런처를 종료하면 API와
+Vite 자식 프로세스 및 Kiwoom WebSocket 세션도 함께 종료된다.
 
-Supabase의 `supabase/migrations/`를 순서대로 적용한다. 국내 종목 검색을 쓰려면
-종목마스터도 갱신한다:
+Supabase의 `supabase/migrations/`를 순서대로 적용한다. 종목 검색을 쓰려면 국내·미국
+종목마스터를 갱신한다:
 
 ```bash
 scripts/update-domestic-master.sh
+scripts/update-overseas-master.sh
 ```
+
+첫 실행 순서는 **종목 검색 → 수집 대상 추가 → 수집 → 전처리 preview → 프리셋 저장 →
+데이터셋 생성·진단 → 학습 → best checkpoint 활성화 → 실시간 구독**이다.
 
 ### 테스트
 
@@ -140,6 +157,9 @@ npm --prefix web run lint
 npm --prefix web run build
 ```
 
+`tests/test_supabase_smoke.py`는 실제 Supabase에 임시 데이터를 만들고 정리하는 네트워크 smoke
+테스트다. 로컬 단위·통합 테스트만 실행할 때는 `--ignore=tests/test_supabase_smoke.py`를 붙인다.
+
 ## 저장 구조 (로컬 + Supabase)
 
 ```
@@ -148,7 +168,8 @@ data/
 │  └─ {year=YYYY|date=YYYY-MM-DD}/part.parquet
 ├─ raw/kiwoom/overseas/{exchange}/{symbol}/{timeframe}/
 │  └─ {year=YYYY|date=YYYY-MM-DD}/part.parquet
-├─ meta/watchlist.json                         # 로컬 UI 운영 상태
+├─ meta/watchlist.json                         # 수집 대상 UI 상태
+├─ meta/live_subscriptions.json                # 실시간 구독 복원 상태
 └─ tmp/                                        # 재생성 가능한 다운로드/업로드 작업 캐시
 
 Supabase Postgres                              # 프리셋·job·데이터셋 메타·진단·run·평가
