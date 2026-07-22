@@ -1,9 +1,12 @@
 """일괄 전처리 파이프라인 검증 — preview/batch 동일성, 부분 실패, split 결정성."""
 
 from pathlib import Path
+from threading import Event, Lock, Thread
+from unittest.mock import patch
 
 import pandas as pd
 
+import pivot.dataset.batch as batch_module
 from pivot.config import (
     CleaningConfig,
     FractalConfig,
@@ -198,6 +201,36 @@ class TestRunBatch:
             assert row["end_time"] == preview.frame.index[sample.end_position]
             assert row["start_position"] == sample.start_position
             assert row["end_position"] == sample.end_position
+
+    def test_preprocesses_two_targets_in_parallel_and_reuses_results(self, tmp_path):
+        h = Harness(tmp_path, ["AAA", "BBB"], cached=["AAA", "BBB"])
+        original = batch_module._preprocess_target
+        both_started = Event()
+        release = Event()
+        lock = Lock()
+        started = 0
+
+        def blocked_preprocess(*args, **kwargs):
+            nonlocal started
+            with lock:
+                started += 1
+                if started == 2:
+                    both_started.set()
+            assert release.wait(timeout=5)
+            return original(*args, **kwargs)
+
+        with patch.object(
+            batch_module, "_preprocess_target", side_effect=blocked_preprocess
+        ) as preprocess:
+            worker = Thread(target=h.run)
+            worker.start()
+            assert both_started.wait(timeout=2)
+            release.set()
+            worker.join(timeout=10)
+
+        assert not worker.is_alive()
+        assert preprocess.call_count == 2
+        assert h.jobs.get(h.job["id"])["status"] == "succeeded"
 
     def test_same_symbol_multiple_timeframes_share_dataset_without_collisions(
         self, tmp_path

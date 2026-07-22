@@ -183,6 +183,7 @@ class LabelingConfig(BaseModel):
     ] = "adjacent_markers_v1"
     ignore_rule: Literal["ma20<ma120", "none"] = "ma20<ma120"
     ignore_swing_pct: float | None = None
+    min_sequence_length: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def _check_ignore_swing_pct(self) -> Self:

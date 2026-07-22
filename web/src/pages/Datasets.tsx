@@ -21,6 +21,7 @@ const DATASET_STATUS_TEXT: Record<string, string> = {
 
 const LABEL_TEXT: Record<number, string> = { 0: '저점', 1: '고점', 2: '무시' }
 const PAGE_SIZE = 20
+const DATASET_PAGE_SIZE = 10
 
 interface SymbolProgress {
   status: 'running' | 'succeeded' | 'failed'
@@ -101,6 +102,7 @@ export function Datasets() {
   const [watchlist, setWatchlist] = useState<WatchItem[]>([])
   const [targetStatuses, setTargetStatuses] = useState<Record<string, CacheStatus | null>>({})
   const [datasets, setDatasets] = useState<DatasetRow[]>([])
+  const [datasetPage, setDatasetPage] = useState(0)
   const [presetsLoading, setPresetsLoading] = useState(true)
   const [datasetsLoading, setDatasetsLoading] = useState(true)
   const [selectedPresetId, setSelectedPresetId] = useState<number | null>(null)
@@ -129,6 +131,15 @@ export function Datasets() {
   const [samplesLoading, setSamplesLoading] = useState(false)
   const [sampleDetailLoading, setSampleDetailLoading] = useState(false)
   const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? null
+  const datasetPageCount = Math.max(Math.ceil(datasets.length / DATASET_PAGE_SIZE), 1)
+  const visibleDatasets = useMemo(
+    () => datasets.slice(datasetPage * DATASET_PAGE_SIZE, (datasetPage + 1) * DATASET_PAGE_SIZE),
+    [datasetPage, datasets],
+  )
+
+  useEffect(() => {
+    setDatasetPage((current) => Math.min(current, datasetPageCount - 1))
+  }, [datasetPageCount])
 
   const refreshPresets = useCallback(() => {
     setPresetsLoading(true)
@@ -811,66 +822,91 @@ export function Datasets() {
           ) : datasets.length === 0 ? (
             <p className="empty">아직 생성된 데이터셋이 없습니다.</p>
           ) : (
-            <div className="dataset-table" role="table">
-              <div className="dataset-row dataset-head" role="row">
-                <span role="columnheader">이름</span>
-                <span role="columnheader">상태</span>
-                <span role="columnheader">프리셋</span>
-                <span role="columnheader">샘플</span>
-                <span role="columnheader">클래스 분포</span>
-                <span role="columnheader">생성일</span>
-                <span role="columnheader">동작</span>
+            <>
+              <div className="dataset-pager">
+                <span>
+                  {datasetPage + 1}/{datasetPageCount} 페이지 · 총 {datasets.length.toLocaleString()}개
+                </span>
+                <span className="row-actions">
+                  <button
+                    className="ghost"
+                    disabled={datasetPage === 0}
+                    onClick={() => setDatasetPage((current) => current - 1)}
+                    type="button"
+                  >
+                    이전
+                  </button>
+                  <button
+                    className="ghost"
+                    disabled={datasetPage >= datasetPageCount - 1}
+                    onClick={() => setDatasetPage((current) => current + 1)}
+                    type="button"
+                  >
+                    다음
+                  </button>
+                </span>
               </div>
-              {datasets.map((dataset) => (
-                <div className="dataset-row" key={dataset.id} role="row">
-                  <span role="cell">
-                    <strong>{dataset.name}</strong>
-                    <em className="muted-text"> · {dataset.timeframe}</em>
-                  </span>
-                  <span className={`dataset-status ${dataset.status}`} role="cell">
-                    {DATASET_STATUS_TEXT[dataset.status] ?? dataset.status}
-                    {dataset.failure_message ? (
-                      <em title={dataset.failure_message}> ⓘ</em>
-                    ) : null}
-                  </span>
-                  <span role="cell">
-                    {dataset.preset_snapshot?.preset_name ?? dataset.preset_id}
-                    {dataset.preset_snapshot?.preset_version
-                      ? ` v${dataset.preset_snapshot.preset_version}`
-                      : ''}
-                  </span>
-                  <span role="cell">
-                    {dataset.sample_count.toLocaleString()} ({dataset.symbol_count}종목)
-                  </span>
-                  <span role="cell">{classCountsText(dataset.class_counts)}</span>
-                  <span role="cell">{formatDate(dataset.created_at)}</span>
-                  <span className="dataset-actions" role="cell">
-                    {dataset.status === 'ready' && (
+              <div className="dataset-table" role="table">
+                <div className="dataset-row dataset-head" role="row">
+                  <span role="columnheader">이름</span>
+                  <span role="columnheader">상태</span>
+                  <span role="columnheader">프리셋</span>
+                  <span role="columnheader">샘플</span>
+                  <span role="columnheader">클래스 분포</span>
+                  <span role="columnheader">생성일</span>
+                  <span role="columnheader">동작</span>
+                </div>
+                {visibleDatasets.map((dataset) => (
+                  <div className="dataset-row" key={dataset.id} role="row">
+                    <span role="cell">
+                      <strong>{dataset.name}</strong>
+                      <em className="muted-text"> · {dataset.timeframe}</em>
+                    </span>
+                    <span className={`dataset-status ${dataset.status}`} role="cell">
+                      {DATASET_STATUS_TEXT[dataset.status] ?? dataset.status}
+                      {dataset.failure_message ? (
+                        <em title={dataset.failure_message}> ⓘ</em>
+                      ) : null}
+                    </span>
+                    <span role="cell">
+                      {dataset.preset_snapshot?.preset_name ?? dataset.preset_id}
+                      {dataset.preset_snapshot?.preset_version
+                        ? ` v${dataset.preset_snapshot.preset_version}`
+                        : ''}
+                    </span>
+                    <span role="cell">
+                      {dataset.sample_count.toLocaleString()} ({dataset.symbol_count}종목)
+                    </span>
+                    <span role="cell">{classCountsText(dataset.class_counts)}</span>
+                    <span role="cell">{formatDate(dataset.created_at)}</span>
+                    <span className="dataset-actions" role="cell">
+                      {dataset.status === 'ready' && (
+                        <button
+                          className="ghost"
+                          onClick={() => openBrowser(dataset)}
+                          type="button"
+                        >
+                          검수
+                        </button>
+                      )}
                       <button
-                        className="ghost"
-                        onClick={() => openBrowser(dataset)}
+                        className="ghost danger"
+                        disabled={dataset.status === 'building'}
+                        onClick={() => removeDataset(dataset)}
+                        title={
+                          dataset.status === 'building'
+                            ? '생성 중인 데이터셋은 job 취소 후 삭제할 수 있습니다'
+                            : 'Storage 객체 삭제 후 메타데이터를 삭제합니다'
+                        }
                         type="button"
                       >
-                        검수
+                        삭제
                       </button>
-                    )}
-                    <button
-                      className="ghost danger"
-                      disabled={dataset.status === 'building'}
-                      onClick={() => removeDataset(dataset)}
-                      title={
-                        dataset.status === 'building'
-                          ? '생성 중인 데이터셋은 job 취소 후 삭제할 수 있습니다'
-                          : 'Storage 객체 삭제 후 메타데이터를 삭제합니다'
-                      }
-                      type="button"
-                    >
-                      삭제
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </div>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
           )}
             </section>
           </>

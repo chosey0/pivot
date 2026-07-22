@@ -284,6 +284,7 @@ def diagnose_preview(results: dict[str, dict], *, input_snapshot: dict) -> dict:
                 samples
                 + int(pairing["dropped_label2"])
                 + int(result["dropped_nan"])
+                + int(result.get("dropped_short", 0))
                 + int(pairing["dropped_invalid_position"])
             )
             pairing_ok = marker_counts_ok and sample_counts_ok
@@ -300,6 +301,7 @@ def diagnose_preview(results: dict[str, dict], *, input_snapshot: dict) -> dict:
                         "points": points,
                         "samples": samples,
                         "dropped_nan": int(result["dropped_nan"]),
+                        "dropped_short": int(result.get("dropped_short", 0)),
                     },
                 )
             )
@@ -518,6 +520,7 @@ def diagnose_dataset(
                     sample_counts[symbol]
                     + int(pairing["dropped_label2"])
                     + int(length_stats["dropped_nan"])
+                    + int(length_stats.get("dropped_short", 0))
                     + int(pairing["dropped_invalid_position"])
                 ):
                     broken.append(symbol)

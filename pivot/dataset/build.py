@@ -44,6 +44,7 @@ class Sample:
 class SampleBuildResult:
     samples: list[Sample]
     dropped_nan: int
+    dropped_short: int
     dropped_unpaired: int
     dropped_ignore: int
     swing_ignored: int
@@ -76,15 +77,19 @@ def build_samples(
     labeling = labeling or LabelingConfig()
     if labeling.sample_pairing == "adjacent_markers_v1":
         return _build_adjacent_samples(df, points, feature_columns, labeling)
-    return _build_latest_opposite_samples(df, points, feature_columns)
+    return _build_latest_opposite_samples(df, points, feature_columns, labeling)
 
 
 def _build_latest_opposite_samples(
-    df: pd.DataFrame, points: pd.DataFrame, feature_columns: list[str]
+    df: pd.DataFrame,
+    points: pd.DataFrame,
+    feature_columns: list[str],
+    labeling: LabelingConfig,
 ) -> SampleBuildResult:
     features = df[feature_columns]
     samples: list[Sample] = []
     dropped_nan = 0
+    dropped_short = 0
     dropped_unpaired = 0
     incoming: list[dict] = []
     last_position: dict[str, int | None] = {"low": None, "high": None}
@@ -97,6 +102,10 @@ def _build_latest_opposite_samples(
         if start is None or start >= end:
             dropped_unpaired += 1
             incoming.append(_incoming(None, False, None, "unpaired"))
+            continue
+        if end - start + 1 < labeling.min_sequence_length:
+            dropped_short += 1
+            incoming.append(_incoming(int(row.label), False, None, "short"))
             continue
         window = features.iloc[start : end + 1]
         if window.isna().any().any():
@@ -119,6 +128,7 @@ def _build_latest_opposite_samples(
     return SampleBuildResult(
         samples=samples,
         dropped_nan=dropped_nan,
+        dropped_short=dropped_short,
         dropped_unpaired=dropped_unpaired,
         dropped_ignore=0,
         swing_ignored=0,
@@ -143,6 +153,7 @@ def _build_adjacent_samples(
     samples: list[Sample] = []
     incoming: list[dict] = []
     dropped_nan = 0
+    dropped_short = 0
     dropped_invalid = 0
     dropped_label2 = 0
     swing_ignored = 0
@@ -181,6 +192,12 @@ def _build_adjacent_samples(
             previous = row
             continue
 
+        if end - start + 1 < labeling.min_sequence_length:
+            dropped_short += 1
+            incoming.append(_incoming(label, False, None, "short"))
+            previous = row
+            continue
+
         window = features.iloc[start : end + 1]
         if window.isna().any().any():
             dropped_nan += 1
@@ -206,6 +223,7 @@ def _build_adjacent_samples(
     return SampleBuildResult(
         samples=samples,
         dropped_nan=dropped_nan,
+        dropped_short=dropped_short,
         dropped_unpaired=unpaired,
         dropped_ignore=dropped_label2,
         swing_ignored=swing_ignored,
@@ -308,6 +326,7 @@ def _run_segment(df: pd.DataFrame, preset: PreprocessPreset) -> PreprocessResult
         "samples": len(built.samples),
         "class_counts": class_counts,
         "dropped_nan": built.dropped_nan,
+        "dropped_short": built.dropped_short,
         "dropped_unpaired": built.dropped_unpaired,
         **label_stats,
         "pairing_stats": built.pairing_stats,
@@ -336,6 +355,7 @@ def _run_clean_segments(
         "points": 0,
         "samples": 0,
         "dropped_nan": 0,
+        "dropped_short": 0,
         "dropped_unpaired": 0,
         "dropped_filters": 0,
         "dropped_ignore": 0,

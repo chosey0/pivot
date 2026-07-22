@@ -322,6 +322,35 @@ class TestBuildSamples:
         }
         assert built.incoming[2]["incoming_sample_index"] == 0
 
+    def test_min_sequence_length_drops_short_pair_but_keeps_next_anchor(self):
+        df = self.make_swing_df(50)
+        points = pd.DataFrame(
+            [
+                {"position": 10, "kind": "low", "price": 90.0, "label": 0},
+                {"position": 14, "kind": "high", "price": 110.0, "label": 1},
+                {"position": 30, "kind": "low", "price": 80.0, "label": 0},
+            ],
+            index=df.index[[10, 14, 30]],
+        )
+
+        for pairing in ("adjacent_markers_v1", "latest_opposite_v1"):
+            built = build_samples(
+                df,
+                points,
+                ["Close"],
+                labeling=LabelingConfig(
+                    ignore_rule="none",
+                    min_sequence_length=10,
+                    sample_pairing=pairing,
+                ),
+            )
+
+            assert [
+                (sample.start_position, sample.end_position) for sample in built.samples
+            ] == [(14, 30)]
+            assert built.dropped_short == 1
+            assert built.incoming[1]["incoming_sample_drop_reason"] == "short"
+
     def test_adjacent_pairing_counts_same_position_as_invalid(self):
         df = self.make_swing_df(40)
         points = pd.DataFrame(
@@ -384,6 +413,7 @@ class TestRunPreprocess:
             stats["samples"]
             + pairing["dropped_label2"]
             + stats["dropped_nan"]
+            + stats["dropped_short"]
             + pairing["dropped_invalid_position"]
         )
         assert stats["confirmation_lag"] == confirmation_lag(20)

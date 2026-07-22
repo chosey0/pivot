@@ -1099,11 +1099,21 @@ button:disabled {
 .dataset-table {
   display: flex;
   flex-direction: column;
+  min-width: 940px;
+  min-height: 484px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
-  /* 좁은 폭에서 열을 자르지 않고 가로로 스크롤한다 (기존 hidden은 '동작' 열을 통째로 감췄다) */
-  overflow: auto hidden;
+  overflow: hidden;
+}
+
+.dataset-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .dataset-row {
@@ -1113,6 +1123,8 @@ button:disabled {
   align-items: center;
   /* 열 최소 폭 합계 — 스크롤 컨테이너 안에서 행이 좁아져 헤더와 어긋나는 것을 막는다 */
   min-width: 940px;
+  min-height: 44px;
+  box-sizing: border-box;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-subtle);
   font-size: 13px;

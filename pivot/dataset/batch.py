@@ -13,13 +13,14 @@ import logging
 import random
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Protocol
 
 import pandas as pd
 
 from pivot.config import PreprocessPreset, Timeframe
-from pivot.dataset.build import Sample, run_preprocess
+from pivot.dataset.build import PreprocessResult, Sample, run_preprocess
 from pivot.dataset.shards import build_shards, feature_schema, object_path
 from pivot.ingestion.cache import cache_path, load_cache
 from pivot.ingestion.fetch import filter_overseas_day_market
@@ -32,6 +33,7 @@ LEGACY_SPLIT_METHOD = "seeded_shuffle_v1"
 SPLIT_RATIOS = {"train": 0.6, "validation": 0.2, "test": 0.2}
 SYMBOL_SPLIT_RATIOS = {"train": 0.7, "validation": 0.15, "test": 0.15}
 DEFAULT_SPLIT_SEED = 42
+PREPROCESS_MAX_WORKERS = 2
 
 logger = logging.getLogger(__name__)
 
@@ -226,43 +228,60 @@ def run_batch(
         emit("job_cancelled", {"dataset_id": dataset_id, "message": message})
 
     try:
-        processable: list[dict] = []
+        processed: dict[str, PreprocessResult] = {}
         sample_records: list[tuple[str, int, int]] = []
         completed = 0
-        for target in targets:
-            if cancelled():
-                handle_cancelled()
-                return
-            symbol = target["symbol"]
-            key = target_key(target)
-            try:
-                preview = _preprocess_target(target, preset, data_root)
-            except Exception as exc:  # 종목 실패는 기록하고 계속 진행
-                failed[key] = str(exc)
-                emit(
-                    "symbol_failed",
-                    {"target_key": key, "symbol": symbol, "error": str(exc)},
-                )
-                completed += 1
+        # 결과 DataFrame은 shard 직렬화에도 쓰므로 thread 간 전송 비용 없이 이 작업 안에
+        # 보관한다. 저장소 변경은 이후 주 스레드에서만 수행한다.
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(PREPROCESS_MAX_WORKERS, len(targets)))
+        ) as executor:
+            futures = {
+                executor.submit(_preprocess_target, target, preset, data_root): target
+                for target in targets
+            }
+            for future in as_completed(futures):
+                if cancelled():
+                    for pending in futures:
+                        pending.cancel()
+                    handle_cancelled()
+                    return
+
+                target = futures[future]
+                symbol = target["symbol"]
+                key = target_key(target)
                 try:
-                    jobs.set_progress(job_id, completed)
-                except Exception:
-                    logger.exception("failed to persist progress for job %s", job_id)
-            else:
-                processable.append(target)
-                sample_records.extend(
-                    (key, index, sample.label)
-                    for index, sample in enumerate(preview.samples)
-                )
-                emit(
-                    "symbol_analyzed",
-                    {
-                        "target_key": key,
-                        "symbol": symbol,
-                        "timeframe": target["timeframe"],
-                        "samples": len(preview.samples),
-                    },
-                )
+                    processed[key] = future.result()
+                except Exception as exc:  # 종목 실패는 기록하고 계속 진행
+                    failed[key] = str(exc)
+                    emit(
+                        "symbol_failed",
+                        {"target_key": key, "symbol": symbol, "error": str(exc)},
+                    )
+                    completed += 1
+                    try:
+                        jobs.set_progress(job_id, completed)
+                    except Exception:
+                        logger.exception("failed to persist progress for job %s", job_id)
+                else:
+                    emit(
+                        "symbol_analyzed",
+                        {
+                            "target_key": key,
+                            "symbol": symbol,
+                            "timeframe": target["timeframe"],
+                            "samples": len(processed[key].samples),
+                        },
+                    )
+
+        # Future 완료 순서는 비결정적이므로 split/shard 순서는 요청한 target 순서를 유지한다.
+        processable = [target for target in targets if target_key(target) in processed]
+        for target in processable:
+            key = target_key(target)
+            sample_records.extend(
+                (key, index, sample.label)
+                for index, sample in enumerate(processed[key].samples)
+            )
 
         sample_splits = assign_sample_splits(sample_records, seed=split_seed)
         summaries: dict[str, list[dict]] = {symbol: [] for symbol in symbols}
@@ -293,6 +312,7 @@ def run_batch(
                     target=target,
                     preset=preset,
                     data_root=data_root,
+                    preprocessed=processed[key],
                     sample_splits=sample_splits,
                     shard_index_offset=shard_offsets[symbol],
                     is_cancelled=cancelled,
@@ -461,13 +481,16 @@ def _process_target(
     target: dict,
     preset: PreprocessPreset,
     data_root: Path,
+    preprocessed: PreprocessResult | None = None,
     sample_splits: dict[tuple[str, int], str] | None = None,
     shard_index_offset: int = 0,
     is_cancelled: Callable[[], bool] = lambda: False,
 ) -> dict:
     symbol = target["symbol"]
     key = target_key(target)
-    result = _preprocess_target(target, preset, data_root)
+    result = preprocessed if preprocessed is not None else _preprocess_target(
+        target, preset, data_root
+    )
     if sample_splits is None:
         sample_splits = assign_sample_splits(
             [(key, index, sample.label) for index, sample in enumerate(result.samples)]
@@ -514,12 +537,14 @@ def _process_target(
             **_length_stats(result.samples),
             "points": result.stats["points"],
             "dropped_nan": result.stats["dropped_nan"],
+            "dropped_short": result.stats["dropped_short"],
             "pairing_stats": result.stats["pairing_stats"],
             "overlap_clusters": result.stats["overlap_clusters"],
         },
         "shard_count": len(shards),
         "bars": result.stats["bars"],
         "dropped_nan": result.stats["dropped_nan"],
+        "dropped_short": result.stats["dropped_short"],
         "dropped_unpaired": result.stats["dropped_unpaired"],
         "cleaning": result.stats["cleaning"],
         "target": {
@@ -629,6 +654,9 @@ def _combined_symbol_summary(summaries: list[dict]) -> dict:
             "points": sum(summary["length_stats"]["points"] for summary in summaries),
             "dropped_nan": sum(
                 summary["length_stats"]["dropped_nan"] for summary in summaries
+            ),
+            "dropped_short": sum(
+                summary["length_stats"].get("dropped_short", 0) for summary in summaries
             ),
             "pairing_stats": pairing_stats,
             "overlap_clusters": _combined_overlap(summaries),

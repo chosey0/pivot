@@ -60,6 +60,7 @@ export function Lab() {
   const [samplePairing, setSamplePairing] = useState<SamplePairing>('adjacent_markers_v1')
   const [ignoreRuleOn, setIgnoreRuleOn] = useState(false)
   const [ignoreSwingPctInput, setIgnoreSwingPctInput] = useState('')
+  const [minSequenceLengthInput, setMinSequenceLengthInput] = useState('')
   const [maAlignment, setMaAlignment] = useState<'' | '20>120' | '5>20>120'>('')
   const [minAmountInput, setMinAmountInput] = useState('')
   const [cleaningMode, setCleaningMode] = useState<CleaningMode>('report_only')
@@ -110,6 +111,7 @@ export function Lab() {
         ignore_rule: ignoreRuleOn ? 'ma20<ma120' : 'none',
         ignore_swing_pct:
           ignoreSwingPctInput.trim() === '' ? null : Number(ignoreSwingPctInput),
+        min_sequence_length: Math.max(1, Number(minSequenceLengthInput) || 1),
       },
       filters: {
         ma_alignment: maAlignment === '' ? null : maAlignment,
@@ -134,6 +136,7 @@ export function Lab() {
       labelMode,
       maAlignment,
       minAmountInput,
+      minSequenceLengthInput,
       samplePairing,
       timeframe,
       timeframeConfig,
@@ -419,6 +422,7 @@ export function Lab() {
                 <div className="lab-stat muted">
                   <span>
                     라벨 지점 {stats.points.toLocaleString()} · NaN 제외 {stats.dropped_nan.toLocaleString()}
+                    {stats.dropped_short > 0 ? ` · 짧은 시퀀스 제외 ${stats.dropped_short.toLocaleString()}` : ''}
                     {stats.dropped_unpaired > 0 ? ` · 짝 없음 제외 ${stats.dropped_unpaired.toLocaleString()}` : ''}
                     {stats.dropped_filters > 0 ? ` · 필터 제외 ${stats.dropped_filters.toLocaleString()}` : ''}
                     {stats.dropped_ignore > 0 ? ` · 무시 샘플 제외 ${stats.dropped_ignore.toLocaleString()}` : ''}
@@ -556,6 +560,27 @@ export function Lab() {
           <p className="hint">
             adjacent는 같은 종류의 연속 마커를 무시(2) 샘플로 만들고, 도착 마커를 다음
             샘플의 시작점으로 유지합니다.
+          </p>
+          <label className="field">
+            최소 시퀀스 길이 (봉)
+            <input
+              inputMode="numeric"
+              onBlur={() => {
+                if (minSequenceLengthInput !== '' && Number(minSequenceLengthInput) < 1) {
+                  setMinSequenceLengthInput('1')
+                }
+              }}
+              onChange={(event) =>
+                setMinSequenceLengthInput(event.target.value.replace(/\D/g, ''))
+              }
+              pattern="[0-9]*"
+              placeholder="미입력 시 1봉"
+              type="text"
+              value={minSequenceLengthInput}
+            />
+          </label>
+          <p className="hint">
+            이 값보다 짧은 pair는 제외하지만 도착 마커는 다음 입력 시퀀스의 시작점으로 유지합니다.
           </p>
           <label className="field">
             모드

@@ -89,7 +89,7 @@ export interface PreviewMarker {
   incoming_sample_label: 0 | 1 | 2 | null
   incoming_sample_included: boolean
   incoming_sample_index: number | null
-  incoming_sample_drop_reason: 'unpaired' | 'invalid_position' | 'label2' | 'nan' | null
+  incoming_sample_drop_reason: 'unpaired' | 'invalid_position' | 'label2' | 'nan' | 'short' | null
 }
 
 export interface PreviewSample {
@@ -109,6 +109,7 @@ export interface PreviewStats {
   samples: number
   class_counts: Record<string, number>
   dropped_nan: number
+  dropped_short: number
   dropped_unpaired: number
   dropped_filters: number
   dropped_ignore: number
@@ -184,6 +185,7 @@ export interface PreviewParams {
     sample_pairing: SamplePairing
     ignore_rule: 'ma20<ma120' | 'none'
     ignore_swing_pct: number | null
+    min_sequence_length: number
   }
   filters: { ma_alignment: '20>120' | '5>20>120' | null; min_amount: number | null }
   cleaning: {
