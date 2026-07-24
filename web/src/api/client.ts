@@ -256,6 +256,7 @@ export interface DatasetRow {
   preset_snapshot: {
     preset_name?: string
     preset_version?: number
+    extended_from_dataset_id?: number
     split?: { method: string; seed: number; ratios: Record<string, number> }
     sources?: Record<string, { region: InstrumentRegion; exchange: string }>
     targets?: Array<{
@@ -483,6 +484,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({
         preset_id: presetId,
+        dataset_name: datasetName,
+        symbols: [],
+        targets: items.map((item) => ({
+          symbol: item.symbol,
+          timeframe: item.timeframe,
+          region: item.region,
+          exchange: item.exchange,
+          start: item.start,
+          end: item.end,
+        })),
+      }),
+    }),
+  extendDataset: (datasetId: number, datasetName: string, items: WatchItem[]) =>
+    fetchJson<BatchStartResponse>('/api/preprocess/batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        base_dataset_id: datasetId,
         dataset_name: datasetName,
         symbols: [],
         targets: items.map((item) => ({

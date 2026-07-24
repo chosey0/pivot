@@ -143,9 +143,10 @@ def build_snapshot(
     preset: PreprocessPreset | None = None,
     sources: dict[str, dict] | None = None,
     targets: list[dict] | None = None,
+    extended_from_dataset_id: int | None = None,
 ) -> dict:
     """datasets.preset_snapshot 봉투 — 프리셋 전체 + split 규칙 (docs/06 §2)."""
-    return {
+    snapshot = {
         "schema_version": preset_row["schema_version"],
         "preset_id": preset_row["id"],
         "preset_name": preset_row["name"],
@@ -156,6 +157,9 @@ def build_snapshot(
         "sources": sources or {},
         "targets": targets or [],
     }
+    if extended_from_dataset_id is not None:
+        snapshot["extended_from_dataset_id"] = extended_from_dataset_id
+    return snapshot
 
 
 def target_key(target: dict) -> str:

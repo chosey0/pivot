@@ -1,6 +1,8 @@
 import type { TimeframeCode, WatchItem } from '../api/client'
 
-export function watchItemKey(item: WatchItem) {
+export function watchItemKey(
+  item: Pick<WatchItem, 'region' | 'exchange' | 'symbol' | 'timeframe' | 'start' | 'end'>,
+) {
   return [
     item.region,
     item.exchange,

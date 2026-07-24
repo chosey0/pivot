@@ -2,7 +2,7 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  min-width: 960px;
+  min-width: 980px;
   background: var(--bg);
   color: var(--text);
 }
@@ -1019,6 +1019,21 @@ button:disabled {
   align-self: flex-start;
 }
 
+.dataset-extension-base {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.dataset-extension-base span,
+.dataset-extension-base small {
+  color: var(--muted);
+}
+
 /* 항목마다 폭이 달라 flex-wrap으로는 열이 어긋난다 — 고정 열 그리드로 정렬한다 */
 .batch-symbols {
   display: grid;
@@ -1099,7 +1114,7 @@ button:disabled {
 .dataset-table {
   display: flex;
   flex-direction: column;
-  min-width: 940px;
+  min-width: 960px;
   min-height: 484px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1118,11 +1133,11 @@ button:disabled {
 
 .dataset-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.4fr) 80px minmax(110px, 1fr) 120px minmax(150px, 1.2fr) 140px 110px;
+  grid-template-columns: minmax(150px, 1.4fr) 80px minmax(110px, 1fr) 120px minmax(150px, 1.2fr) 140px 150px;
   gap: 10px;
   align-items: center;
   /* 열 최소 폭 합계 — 스크롤 컨테이너 안에서 행이 좁아져 헤더와 어긋나는 것을 막는다 */
-  min-width: 940px;
+  min-width: 980px;
   min-height: 44px;
   box-sizing: border-box;
   padding: 10px 12px;
@@ -1161,6 +1176,10 @@ button:disabled {
 .dataset-actions {
   display: flex;
   gap: 6px;
+}
+
+.dataset-actions button {
+  white-space: nowrap;
 }
 
 .dataset-actions .ghost.active {

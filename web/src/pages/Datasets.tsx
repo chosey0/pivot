@@ -41,6 +41,14 @@ function formatDate(value: string) {
   return value.slice(0, 19).replace('T', ' ')
 }
 
+function nextExtensionName(baseName: string, datasets: DatasetRow[]) {
+  const names = new Set(datasets.map((dataset) => dataset.name))
+  for (let version = 2; ; version += 1) {
+    const candidate = `${baseName}-v${version}`
+    if (!names.has(candidate)) return candidate
+  }
+}
+
 function formatFeatureValue(value: number, digits: number) {
   return value.toLocaleString('ko-KR', {
     minimumFractionDigits: digits,
@@ -103,6 +111,7 @@ export function Datasets() {
   const [targetStatuses, setTargetStatuses] = useState<Record<string, CacheStatus | null>>({})
   const [datasets, setDatasets] = useState<DatasetRow[]>([])
   const [datasetPage, setDatasetPage] = useState(0)
+  const [extensionBase, setExtensionBase] = useState<DatasetRow | null>(null)
   const [presetsLoading, setPresetsLoading] = useState(true)
   const [datasetsLoading, setDatasetsLoading] = useState(true)
   const [selectedPresetId, setSelectedPresetId] = useState<number | null>(null)
@@ -114,6 +123,7 @@ export function Datasets() {
   const [symbolProgress, setSymbolProgress] = useState<Record<string, SymbolProgress>>({})
   const eventSourceRef = useRef<EventSource | null>(null)
   const sampleListRef = useRef<HTMLDivElement | null>(null)
+  const datasetsMainRef = useRef<HTMLElement | null>(null)
 
   // 샘플 브라우저 상태 — position은 라벨 필터 적용 후 목록에서의 순번
   const [browse, setBrowse] = useState<{
@@ -216,14 +226,23 @@ export function Datasets() {
     () => watchlist.map(watchItemKey).filter((key) => targetStatuses[key]),
     [targetStatuses, watchlist],
   )
-  const usableKeySet = useMemo(() => new Set(usableKeys), [usableKeys])
+  const baseTargetKeys = useMemo(
+    () => new Set((extensionBase?.preset_snapshot.targets ?? []).map(watchItemKey)),
+    [extensionBase],
+  )
+  const selectableKeys = useMemo(
+    () => usableKeys.filter((key) => !baseTargetKeys.has(key)),
+    [baseTargetKeys, usableKeys],
+  )
+  const selectableKeySet = useMemo(() => new Set(selectableKeys), [selectableKeys])
 
   useEffect(() => {
     setSelectedTargets((current) => {
-      const retained = current.filter((key) => usableKeySet.has(key))
-      return retained.length > 0 ? retained : usableKeys
+      const retained = current.filter((key) => selectableKeySet.has(key))
+      if (extensionBase) return retained
+      return retained.length > 0 ? retained : selectableKeys
     })
-  }, [usableKeySet, usableKeys])
+  }, [extensionBase, selectableKeySet, selectableKeys])
 
   function toggleTarget(key: string) {
     setSelectedTargets((current) =>
@@ -232,7 +251,28 @@ export function Datasets() {
   }
 
   function toggleAllTargets() {
-    setSelectedTargets((current) => (current.length === usableKeys.length ? [] : usableKeys))
+    setSelectedTargets((current) =>
+      current.length === selectableKeys.length ? [] : selectableKeys,
+    )
+  }
+
+  function beginExtension(dataset: DatasetRow) {
+    if (!dataset.preset_snapshot.targets?.length) {
+      setError('이 데이터셋에는 재현 가능한 대상 스냅샷이 없어 확장할 수 없습니다.')
+      return
+    }
+    setError(null)
+    setMessage(null)
+    setExtensionBase(dataset)
+    setSelectedTargets([])
+    setDatasetName(nextExtensionName(dataset.name, datasets))
+    datasetsMainRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function cancelExtension() {
+    setExtensionBase(null)
+    setDatasetName('')
+    setSelectedTargets(usableKeys)
   }
 
   async function archivePreset(preset: PresetRow) {
@@ -331,18 +371,25 @@ export function Datasets() {
   }
 
   async function startBatch() {
-    if (!selectedPresetId || selectedTargets.length === 0 || !datasetName.trim()) return
+    if (
+      (!extensionBase && !selectedPresetId) ||
+      selectedTargets.length === 0 ||
+      !datasetName.trim()
+    )
+      return
     setError(null)
     setMessage(null)
     setSymbolProgress({})
     try {
-      const { job_id } = await api.preprocessBatch(
-        selectedPresetId,
-        datasetName.trim(),
-        sortedWatchlist.filter((item) => selectedTargets.includes(watchItemKey(item))),
+      const selectedItems = sortedWatchlist.filter((item) =>
+        selectedTargets.includes(watchItemKey(item)),
       )
+      const { job_id } = extensionBase
+        ? await api.extendDataset(extensionBase.id, datasetName.trim(), selectedItems)
+        : await api.preprocessBatch(selectedPresetId!, datasetName.trim(), selectedItems)
       const started = await api.job(job_id)
       setJob(started)
+      setExtensionBase(null)
       setDatasetName('')
       refreshDatasets()
       watchJob(job_id)
@@ -672,17 +719,41 @@ export function Datasets() {
         </aside>
       )}
 
-      <section className={browse ? 'datasets-main reviewing' : 'datasets-main'}>
+      <section
+        className={browse ? 'datasets-main reviewing' : 'datasets-main'}
+        ref={datasetsMainRef}
+      >
         {error ? <p className="error">오류: {error}</p> : null}
         {message && !error ? <p className="message">{message}</p> : null}
 
         {!browse && (
           <>
             <section className="control-section datasets-launch">
-          <h2>일괄 전처리 실행</h2>
+          <div className="section-title-row">
+            <h2>{extensionBase ? '데이터셋 확장' : '일괄 전처리 실행'}</h2>
+            {extensionBase ? (
+              <button className="ghost" onClick={cancelExtension} type="button">
+                확장 취소
+              </button>
+            ) : null}
+          </div>
           <div className="batch-form">
+            {extensionBase ? (
+              <div className="dataset-extension-base">
+                <strong>{extensionBase.name}</strong>
+                <span>
+                  {extensionBase.preset_snapshot.preset_name ??
+                    `프리셋 #${extensionBase.preset_id}`}
+                  {extensionBase.preset_snapshot.preset_version
+                    ? ` v${extensionBase.preset_snapshot.preset_version}`
+                    : ''}
+                  {' · '}기존 대상 {extensionBase.preset_snapshot.targets?.length ?? 0}개
+                </span>
+                <small>기존 데이터셋은 유지하며 기존 대상과 추가 대상을 모두 다시 전처리합니다.</small>
+              </div>
+            ) : null}
             <label className="field">
-              데이터셋 이름
+              새 데이터셋 이름
               <input
                 onChange={(event) => setDatasetName(event.target.value)}
                 placeholder="예: day20-cls3-2026q3"
@@ -692,57 +763,67 @@ export function Datasets() {
             </label>
             <div className="field">
               <span className="field-title-row">
-                대상 데이터 ({selectedTargets.length}/{usableKeys.length})
+                {extensionBase ? '추가 대상 데이터' : '대상 데이터'} ({selectedTargets.length}/
+                {selectableKeys.length})
                 <button
                   className="ghost"
-                  disabled={usableKeys.length === 0}
+                  disabled={selectableKeys.length === 0}
                   onClick={toggleAllTargets}
                   type="button"
                 >
-                  {selectedTargets.length === usableKeys.length && usableKeys.length > 0
+                  {selectedTargets.length === selectableKeys.length && selectableKeys.length > 0
                     ? '전체 해제'
                     : '전체 선택'}
                 </button>
               </span>
               <div aria-label="대상 데이터 선택" className="batch-symbols" role="group">
-                {watchlist.length === 0 ? (
+                {selectableKeys.length === 0 ? (
                   <p className="empty">
-                    종목 & 데이터 탭에서 수집 항목을 먼저 추가하세요.
+                    {extensionBase
+                      ? '추가할 수 있는 새로운 수집 데이터가 없습니다.'
+                      : '종목 & 데이터 탭에서 수집 항목을 먼저 추가하세요.'}
                   </p>
                 ) : (
-                  sortedWatchlist.map((item) => {
-                    const key = watchItemKey(item)
-                    const status = targetStatuses[key]
-                    const statusLoaded = Object.hasOwn(targetStatuses, key)
-                    const cacheRange = status ? compactRange(item, status) : null
-                    // 요청 기간과 캐시 범위가 같으면 같은 값을 두 번 적을 뿐이라 배지를 숨긴다
-                    const range = rangeLabel(item)
-                    const showRange = range !== null && range !== cacheRange
-                    return (
-                    <label
-                      className={status ? 'inline-check' : 'inline-check unusable'}
-                      key={key}
-                      title={status ? undefined : '수집된 봉이 없어 전처리 대상으로 쓸 수 없습니다'}
-                    >
-                      <input
-                        checked={selectedTargets.includes(key)}
-                        disabled={statusLoaded && !status}
-                        onChange={() => toggleTarget(key)}
-                        type="checkbox"
-                      />
-                      {item.name || item.symbol} · {timeframeLabel(item.timeframe)}
-                      {showRange ? (
-                        <em className="target-range" title="수집 요청 기간">
-                          {range}
-                        </em>
-                      ) : null}
-                      <span className="muted-text">
-                        {item.symbol} ·{' '}
-                        {cacheRange ?? (statusLoaded ? '수집 데이터 없음' : '범위 확인 중')}
-                      </span>
-                    </label>
-                    )
-                  })
+                  sortedWatchlist
+                    .filter((item) => selectableKeySet.has(watchItemKey(item)))
+                    .map((item) => {
+                      const key = watchItemKey(item)
+                      const status = targetStatuses[key]
+                      const statusLoaded = Object.hasOwn(targetStatuses, key)
+                      const cacheRange = status ? compactRange(item, status) : null
+                      // 요청 기간과 캐시 범위가 같으면 같은 값을 두 번 적을 뿐이라 배지를 숨긴다
+                      const range = rangeLabel(item)
+                      const showRange = range !== null && range !== cacheRange
+                      return (
+                        <label
+                          className={status ? 'inline-check' : 'inline-check unusable'}
+                          key={key}
+                          title={
+                            status
+                              ? undefined
+                              : '수집된 봉이 없어 전처리 대상으로 쓸 수 없습니다'
+                          }
+                        >
+                          <input
+                            checked={selectedTargets.includes(key)}
+                            disabled={statusLoaded && !status}
+                            onChange={() => toggleTarget(key)}
+                            type="checkbox"
+                          />
+                          {item.name || item.symbol} · {timeframeLabel(item.timeframe)}
+                          {showRange ? (
+                            <em className="target-range" title="수집 요청 기간">
+                              {range}
+                            </em>
+                          ) : null}
+                          <span className="muted-text">
+                            {item.symbol} ·{' '}
+                            {cacheRange ??
+                              (statusLoaded ? '수집 데이터 없음' : '범위 확인 중')}
+                          </span>
+                        </label>
+                      )
+                    })
                 )}
               </div>
             </div>
@@ -750,17 +831,22 @@ export function Datasets() {
               className="primary"
               disabled={
                 jobRunning ||
-                !selectedPresetId ||
+                (!extensionBase && !selectedPresetId) ||
                 selectedTargets.length === 0 ||
                 datasetName.trim() === ''
               }
               onClick={startBatch}
               type="button"
             >
-              {jobRunning ? '실행 중...' : '일괄 전처리 시작'}
+              {jobRunning
+                ? '실행 중...'
+                : extensionBase
+                  ? '확장 데이터셋 생성'
+                  : '일괄 전처리 시작'}
             </button>
             <p className="hint">
-              선택한 공통 프리셋과 타임프레임별 fractal n을 각 수집 범위에 적용합니다.
+              {extensionBase ? '기존 프리셋 스냅샷' : '선택한 공통 프리셋'}과
+              타임프레임별 fractal n을 각 수집 범위에 적용합니다.
               전체 샘플을 클래스별로 train/validation/test 60/20/20으로 자동 배정합니다.
             </p>
           </div>
@@ -881,13 +967,22 @@ export function Datasets() {
                     <span role="cell">{formatDate(dataset.created_at)}</span>
                     <span className="dataset-actions" role="cell">
                       {dataset.status === 'ready' && (
-                        <button
-                          className="ghost"
-                          onClick={() => openBrowser(dataset)}
-                          type="button"
-                        >
-                          검수
-                        </button>
+                        <>
+                          <button
+                            className="ghost"
+                            onClick={() => openBrowser(dataset)}
+                            type="button"
+                          >
+                            검수
+                          </button>
+                          <button
+                            className="ghost"
+                            onClick={() => beginExtension(dataset)}
+                            type="button"
+                          >
+                            확장
+                          </button>
+                        </>
                       )}
                       <button
                         className="ghost danger"

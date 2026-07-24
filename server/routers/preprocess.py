@@ -26,6 +26,7 @@ from pivot.ingestion.fetch import (
     cache_broker,
     filter_overseas_day_market,
 )
+from pivot.storage.datasets import DatasetNotFoundError
 from pivot.storage.presets import PresetNotFoundError, validate_preset
 from pivot.symbols.master import DOMESTIC_SYMBOL_RE
 from server.deps import DATA_ROOT, dataset_repo, job_repo, object_storage, preset_repo
@@ -87,7 +88,8 @@ class BatchTarget(BaseModel):
 
 
 class BatchRequest(BaseModel):
-    preset_id: int
+    preset_id: int | None = None
+    base_dataset_id: int | None = None
     dataset_name: str
     symbols: list[str]
     sources: dict[str, InstrumentSource] = Field(default_factory=dict)
@@ -96,6 +98,10 @@ class BatchRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_instruments(self):
+        if self.base_dataset_id is None and self.preset_id is None:
+            raise ValueError("preset_id is required for a new dataset")
+        if self.base_dataset_id is not None and (self.symbols or self.sources):
+            raise ValueError("dataset extension accepts targets only")
         normalized_sources = {
             symbol.strip().upper(): source for symbol, source in self.sources.items()
         }
@@ -272,36 +278,71 @@ def start_batch(request: BatchRequest) -> dict:
     if not name:
         raise HTTPException(422, "dataset_name is required")
 
-    presets = preset_repo()
-    try:
-        preset_row = presets.get(request.preset_id)
-    except PresetNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    if preset_row["archived_at"] is not None:
-        raise HTTPException(409, f"preset {request.preset_id} is archived")
-    try:
-        preset = validate_preset(
-            preset_row["preset"], schema_version=preset_row["schema_version"]
-        )
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-
-    requested_targets = request.targets or [
-        BatchTarget(
-            symbol=symbol,
-            timeframe=preset.timeframe.code,
-            region=request.sources.get(symbol, InstrumentSource()).region,
-            exchange=request.sources.get(symbol, InstrumentSource()).exchange,
-        )
-        for symbol in request.symbols
-    ]
+    datasets = dataset_repo()
+    extended_from_dataset_id = request.base_dataset_id
+    split_seed = request.split_seed
+    if extended_from_dataset_id is not None:
+        try:
+            base_dataset = datasets.get(extended_from_dataset_id)
+        except DatasetNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        if base_dataset["status"] != "ready":
+            raise HTTPException(409, "only ready datasets can be extended")
+        base_snapshot = base_dataset.get("preset_snapshot") or {}
+        stored_targets = base_snapshot.get("targets") or []
+        if not stored_targets:
+            raise HTTPException(409, "base dataset has no reproducible targets")
+        if not request.targets:
+            raise HTTPException(422, "extension targets must not be empty")
+        try:
+            preset = validate_preset(
+                base_snapshot["preset"],
+                schema_version=int(base_snapshot["schema_version"]),
+            )
+            base_targets = [BatchTarget.model_validate(target) for target in stored_targets]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(409, "base dataset snapshot is not reproducible") from exc
+        preset_row = {
+            "id": base_dataset["preset_id"],
+            "name": base_snapshot.get("preset_name", preset.name),
+            "version": int(base_snapshot.get("preset_version", 1)),
+            "schema_version": int(base_snapshot["schema_version"]),
+            "preset": base_snapshot["preset"],
+        }
+        split_seed = int((base_snapshot.get("split") or {}).get("seed", split_seed))
+        requested_targets = [*base_targets, *request.targets]
+    else:
+        presets = preset_repo()
+        try:
+            preset_row = presets.get(request.preset_id)
+        except PresetNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        if preset_row["archived_at"] is not None:
+            raise HTTPException(409, f"preset {request.preset_id} is archived")
+        try:
+            preset = validate_preset(
+                preset_row["preset"], schema_version=preset_row["schema_version"]
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        requested_targets = request.targets or [
+            BatchTarget(
+                symbol=symbol,
+                timeframe=preset.timeframe.code,
+                region=request.sources.get(symbol, InstrumentSource()).region,
+                exchange=request.sources.get(symbol, InstrumentSource()).exchange,
+            )
+            for symbol in request.symbols
+        ]
     if not requested_targets:
         raise HTTPException(422, "targets must not be empty")
+    identities = [_target_identity(target) for target in requested_targets]
+    if len(identities) != len(set(identities)):
+        raise HTTPException(422, "extension target already exists in base dataset")
     targets = [_batch_target(target) for target in requested_targets]
     symbols = list(dict.fromkeys(target["symbol"] for target in targets))
     timeframes = list(dict.fromkeys(target["timeframe"] for target in targets))
 
-    datasets = dataset_repo()
     if any(row["name"] == name for row in datasets.list()):
         raise HTTPException(409, f"dataset name {name!r} already exists")
 
@@ -318,7 +359,7 @@ def start_batch(request: BatchRequest) -> dict:
             preset_id=preset_row["id"],
             preset_snapshot=build_snapshot(
                 preset_row,
-                split_config(request.split_seed),
+                split_config(split_seed),
                 preset=preset,
                 sources=sources,
                 targets=[
@@ -328,6 +369,7 @@ def start_batch(request: BatchRequest) -> dict:
                     }
                     for target in targets
                 ],
+                extended_from_dataset_id=extended_from_dataset_id,
             ),
             timeframe=timeframes[0] if len(timeframes) == 1 else "mixed",
             feature_columns=list(preset.features),
@@ -348,6 +390,7 @@ def start_batch(request: BatchRequest) -> dict:
                 "symbols": symbols,
                 "sources": sources,
                 "targets": targets,
+                "extended_from_dataset_id": extended_from_dataset_id,
             },
             total_items=len(targets),
         )
@@ -374,7 +417,7 @@ def start_batch(request: BatchRequest) -> dict:
             targets=targets,
             data_root=DATA_ROOT,
             broker=BROKER,
-            split_seed=request.split_seed,
+            split_seed=split_seed,
         )
     )
     return {"job_id": job["id"], "dataset_id": dataset["id"]}

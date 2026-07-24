@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from pivot.config import FractalConfig, LabelingConfig, PreprocessPreset
+from pivot.dataset.batch import build_snapshot, split_config
 from pivot.storage.datasets import DatasetRepository
 from pivot.storage.jobs import JobRepository
 from server.routers import preprocess
@@ -167,6 +168,120 @@ def test_batch_start_records_mixed_targets_and_counts_each_collection_item(monke
     assert dataset["symbol_count"] == 1
     assert job["total_items"] == 2
     assert len(started) == 1
+
+
+def test_batch_extension_reuses_snapshot_and_merges_new_targets(monkeypatch):
+    db = FakeDb()
+    datasets = DatasetRepository(db)
+    jobs = JobRepository(db)
+    preset = PreprocessPreset(name="archived-base")
+    preset_row = {
+        "id": 7,
+        "name": preset.name,
+        "version": 3,
+        "schema_version": 1,
+        "preset": preset.model_dump(mode="json"),
+        "archived_at": "2026-07-01T00:00:00+00:00",
+    }
+    base_target = {
+        "symbol": "005930",
+        "timeframe": "day",
+        "region": "domestic",
+        "exchange": "",
+        "start": None,
+        "end": None,
+    }
+    base = datasets.create(
+        name="base",
+        preset_id=preset_row["id"],
+        preset_snapshot=build_snapshot(
+            preset_row,
+            split_config(17),
+            preset=preset,
+            targets=[base_target],
+        ),
+        timeframe="day",
+        feature_columns=list(preset.features),
+        symbols=["005930"],
+        splits={},
+    )
+    datasets.finalize_ready(base["id"], sample_count=1, class_counts={"0": 1})
+
+    started = []
+    monkeypatch.setattr(preprocess, "dataset_repo", lambda: datasets)
+    monkeypatch.setattr(preprocess, "job_repo", lambda: jobs)
+    monkeypatch.setattr(preprocess, "object_storage", lambda: object())
+    monkeypatch.setattr(preprocess, "start_background", started.append)
+
+    response = preprocess.start_batch(
+        preprocess.BatchRequest(
+            base_dataset_id=base["id"],
+            dataset_name="base-expanded",
+            symbols=[],
+            targets=[preprocess.BatchTarget(symbol="000660", timeframe="min1")],
+        )
+    )
+
+    expanded = datasets.get(response["dataset_id"])
+    snapshot = expanded["preset_snapshot"]
+    job = jobs.get(response["job_id"])
+    assert expanded["preset_id"] == preset_row["id"]
+    assert expanded["timeframe"] == "mixed"
+    assert snapshot["extended_from_dataset_id"] == base["id"]
+    assert snapshot["split"]["seed"] == 17
+    assert [target["symbol"] for target in snapshot["targets"]] == [
+        "005930",
+        "000660",
+    ]
+    assert job["total_items"] == 2
+    assert job["payload"]["extended_from_dataset_id"] == base["id"]
+    assert len(started) == 1
+
+
+def test_batch_extension_rejects_target_already_in_base(monkeypatch):
+    db = FakeDb()
+    datasets = DatasetRepository(db)
+    preset = PreprocessPreset(name="base")
+    preset_row = {
+        "id": 1,
+        "name": preset.name,
+        "version": 1,
+        "schema_version": 1,
+        "preset": preset.model_dump(mode="json"),
+    }
+    target = {
+        "symbol": "005930",
+        "timeframe": "day",
+        "region": "domestic",
+        "exchange": "",
+        "start": None,
+        "end": None,
+    }
+    base = datasets.create(
+        name="base",
+        preset_id=1,
+        preset_snapshot=build_snapshot(
+            preset_row, split_config(), preset=preset, targets=[target]
+        ),
+        timeframe="day",
+        feature_columns=list(preset.features),
+        symbols=["005930"],
+        splits={},
+    )
+    datasets.finalize_ready(base["id"], sample_count=1, class_counts={"0": 1})
+    monkeypatch.setattr(preprocess, "dataset_repo", lambda: datasets)
+
+    with pytest.raises(HTTPException, match="already exists") as raised:
+        preprocess.start_batch(
+            preprocess.BatchRequest(
+                base_dataset_id=base["id"],
+                dataset_name="duplicate-extension",
+                symbols=[],
+                targets=[preprocess.BatchTarget.model_validate(target)],
+            )
+        )
+
+    assert raised.value.status_code == 422
 
 
 def test_job_creation_failure_discards_building_dataset(monkeypatch):
